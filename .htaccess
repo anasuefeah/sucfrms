@@ -1,0 +1,21 @@
+# SUCFRMS — Apache configuration
+# Prevents the "Index of /" folder-listing page from ever being shown,
+# and makes sure index.php is what loads when visiting the app's URL.
+
+# Never list directory contents — always resolve to index.php instead.
+Options -Indexes
+
+DirectoryIndex index.php
+
+# Block direct browsing of sensitive files even if Indexes is re-enabled elsewhere.
+<IfModule mod_authz_core.c>
+    <FilesMatch "\.(sql|log|md)$">
+        Require all denied
+    </FilesMatch>
+</IfModule>
+<IfModule !mod_authz_core.c>
+    <FilesMatch "\.(sql|log|md)$">
+        Order allow,deny
+        Deny from all
+    </FilesMatch>
+</IfModule>
