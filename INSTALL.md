@@ -158,6 +158,7 @@ chown -R daemon:daemon /opt/lampp/htdocs/SUCFRMS/uploads/
 | Problem | Solution |
 |---------|----------|
 | `Connection failed: Access denied` | Check `$user` and `$pass` in `config/db.php` |
+| `Table 'sucfrms.users' doesn't exist` | The database exists, but the schema was not imported or only partially imported. Select the `SUCFRMS` database in phpMyAdmin, then import `database.sql` from the project root. |
 | `Connection failed: Unknown database 'SUCFRMS'` | You haven't created the database yet — go to Step 3 |
 | Browser shows **"Index of /..."** (a plain file listing) instead of the app | You're one folder too deep, or `index.php` isn't in the folder you're opening. Extracting the ZIP usually creates `SUCFRMS/SUCFRMS/...` if you unzip it *into* a folder already named `SUCFRMS`/`sucfrms`. Open the folder you copied into `htdocs` and confirm `index.php` sits directly inside it (next to `config/`, `assets/`, etc.) — if there's a nested `SUCFRMS` folder inside, move everything up one level so `index.php` is at `htdocs\SUCFRMS\index.php`, then visit `http://localhost/SUCFRMS/`. A `.htaccess` in this project also disables folder listing so this shows a normal 404 instead once the files are in the right place. |
 | Blank page or 500 error | Enable PHP error display: in `php.ini` set `display_errors = On` |

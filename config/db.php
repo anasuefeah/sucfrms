@@ -4,25 +4,22 @@ $db   = 'SUCFRMS';
 $user = 'root';
 $pass = '';
 
-try {
-    $pdo = new PDO("mysql:host=$host;dbname=$db;charset=utf8mb4", $user, $pass);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-} catch (PDOException $e) {
+
+function renderDatabaseSetupError(string $title, string $message, array $steps, ?string $detail = null): void
+{
     http_response_code(500);
-    $isUnknownDb = stripos($e->getMessage(), 'Unknown database') !== false;
     ?>
     <!DOCTYPE html>
     <html lang="en">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>SUCFRMS — Database Connection Error</title>
+        <title>SUCFRMS - Database Setup Required</title>
         <style>
             * { box-sizing: border-box; }
             body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
                    background: #f4f7fb; color: #0f172a; padding: 2rem 1rem; }
-            .box { max-width: 640px; margin: 3rem auto; background: #fff; border: 1px solid #e2e8f0;
+            .box { max-width: 680px; margin: 3rem auto; background: #fff; border: 1px solid #e2e8f0;
                    border-radius: 16px; box-shadow: 0 10px 30px rgba(15,23,42,.08); padding: 2rem; }
             h1 { font-size: 1.3rem; color: #334155; margin: 0 0 .5rem; }
             p { line-height: 1.6; }
@@ -34,27 +31,81 @@ try {
     </head>
     <body>
         <div class="box">
-            <h1>Couldn't connect to the database</h1>
-            <?php if ($isUnknownDb): ?>
-            <p>The app can reach MySQL, but the <code><?= htmlspecialchars($db) ?></code> database doesn't exist yet.</p>
+            <h1><?= htmlspecialchars($title) ?></h1>
+            <p><?= $message ?></p>
             <ol>
-                <li>Open <strong>phpMyAdmin</strong> (or the MySQL client you use).</li>
-                <li>Create a database named exactly <code><?= htmlspecialchars($db) ?></code>.</li>
-                <li>Import <code>database.sql</code> from the project root into it.</li>
-                <li>Reload this page.</li>
+                <?php foreach ($steps as $step): ?>
+                    <li><?= $step ?></li>
+                <?php endforeach; ?>
             </ol>
-            <?php else: ?>
-            <p>Please check that:</p>
-            <ol>
-                <li><strong>MySQL is running</strong> in your XAMPP / server control panel.</li>
-                <li>The credentials in <code>config/db.php</code> (host, username, password) match your MySQL setup.</li>
-                <li>The database <code><?= htmlspecialchars($db) ?></code> exists — import <code>database.sql</code> if you haven't already.</li>
-            </ol>
+            <?php if ($detail): ?>
+                <div class="detail"><?= htmlspecialchars($detail) ?></div>
             <?php endif; ?>
-            <div class="detail"><?= htmlspecialchars($e->getMessage()) ?></div>
         </div>
     </body>
     </html>
     <?php
     exit;
+}
+
+try {
+    $dsn = "mysql:host=$host;dbname=$db;charset=utf8mb4";
+    if ($port !== '') {
+        $dsn .= ";port=$port";
+    }
+
+    $pdo = new PDO($dsn, $user, $pass);
+    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+
+    $requiredTables = ['campuses', 'users', 'cycles'];
+    $placeholders = implode(',', array_fill(0, count($requiredTables), '?'));
+    $schemaCheck = $pdo->prepare("
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = DATABASE()
+          AND table_name IN ($placeholders)
+    ");
+    $schemaCheck->execute($requiredTables);
+    $existingTables = $schemaCheck->fetchAll(PDO::FETCH_COLUMN);
+    $missingTables = array_values(array_diff($requiredTables, $existingTables));
+
+    if ($missingTables) {
+        renderDatabaseSetupError(
+            'Database schema is incomplete',
+            'The app connected to MySQL, but the required table(s) <code>' . htmlspecialchars(implode('</code>, <code>', $missingTables)) . '</code> are missing.',
+            [
+                'Open <strong>phpMyAdmin</strong> and select the <code>' . htmlspecialchars($db) . '</code> database.',
+                'Import <code>database.sql</code> from this project folder.',
+                'After the import succeeds, reload this page.',
+            ],
+            'Missing table(s): ' . implode(', ', $missingTables)
+        );
+    }
+} catch (PDOException $e) {
+    $isUnknownDb = stripos($e->getMessage(), 'Unknown database') !== false;
+
+    if ($isUnknownDb) {
+        renderDatabaseSetupError(
+            "Couldn't connect to the database",
+            'The app can reach MySQL, but the <code>' . htmlspecialchars($db) . '</code> database does not exist yet.',
+            [
+                'Open <strong>phpMyAdmin</strong> or your MySQL client.',
+                'Create a database named exactly <code>' . htmlspecialchars($db) . '</code>.',
+                'Import <code>database.sql</code> from the project root into it.',
+                'Reload this page.',
+            ],
+            $e->getMessage()
+        );
+    }
+
+    renderDatabaseSetupError(
+        "Couldn't connect to the database",
+        'Please check your database setup.',
+        [
+            '<strong>MySQL is running</strong> on your hosting account or server.',            'The credentials in <code>config/db.php</code> match your MySQL setup.',
+            'The database <code>' . htmlspecialchars($db) . '</code> exists and <code>database.sql</code> has been imported.',
+        ],
+        $e->getMessage()
+    );
 }

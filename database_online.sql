@@ -1,42 +1,20 @@
-﻿-- ============================================================
--- SUCFRMS — Faculty Reclassification Management Information System
--- Full Schema + Seed Data
--- Compatible with MySQL 5.7+ / MariaDB 10.3+
--- ============================================================
-
--- Prevent errors from strict mode and encoding mismatches
 SET NAMES utf8mb4;
 SET CHARACTER SET utf8mb4;
 SET character_set_client = utf8mb4;
 SET FOREIGN_KEY_CHECKS = 0;
 SET SQL_MODE = 'NO_AUTO_VALUE_ON_ZERO';
 SET time_zone = '+00:00';
-
-CREATE DATABASE IF NOT EXISTS SUCFRMS CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-USE SUCFRMS;
-
--- ============================================================
--- 1. CAMPUSES
---    Must be created before users due to FK reference
--- ============================================================
 CREATE TABLE IF NOT EXISTS campuses (
     campus_id   INT AUTO_INCREMENT PRIMARY KEY,
     campus_name VARCHAR(100) NOT NULL UNIQUE,
     is_active   TINYINT(1) DEFAULT 1,
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-
--- ============================================================
--- 2. USERS
--- ============================================================
 CREATE TABLE IF NOT EXISTS users (
     user_id     INT AUTO_INCREMENT PRIMARY KEY,
-    -- Name stored in parts to match the registration form
     first_name  VARCHAR(100) NOT NULL,
     middle_name VARCHAR(100) DEFAULT NULL,
     last_name   VARCHAR(100) NOT NULL,
-    -- full_name is a generated column for convenience (search, display, PDF)
-    -- Format: "Last, First M." for regular users; just "last_name" when first_name is empty (e.g. system accounts)
     full_name   VARCHAR(310) GENERATED ALWAYS AS (
                     IF(first_name = '' OR first_name IS NULL,
                         last_name,
@@ -49,18 +27,12 @@ CREATE TABLE IF NOT EXISTS users (
     role        ENUM('faculty','checker','admin','checker_faculty','talisay_checker') DEFAULT 'faculty',
     status      ENUM('active','inactive','rejected') DEFAULT 'active',
     campus_id   INT DEFAULT NULL,
-    -- rank stores the current faculty rank (e.g. "Assistant Professor II")
-    -- used as the starting point for reclassification scoring
     rank        VARCHAR(100),
     employee_id VARCHAR(50) UNIQUE,
     profile_pic VARCHAR(255) DEFAULT NULL,
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (campus_id) REFERENCES campuses(campus_id) ON DELETE SET NULL
 );
-
--- ============================================================
--- 4. RECLASSIFICATION CYCLES
--- ============================================================
 CREATE TABLE IF NOT EXISTS cycles (
     cycle_id            INT AUTO_INCREMENT PRIMARY KEY,
     cycle_name          VARCHAR(100) NOT NULL,
@@ -72,10 +44,6 @@ CREATE TABLE IF NOT EXISTS cycles (
     created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (created_by) REFERENCES users(user_id) ON DELETE SET NULL
 );
-
--- ============================================================
--- 5. RECLASSIFICATION APPLICATIONS
--- ============================================================
 CREATE TABLE IF NOT EXISTS applications (
     application_id     INT AUTO_INCREMENT PRIMARY KEY,
     tracking_number    VARCHAR(30) DEFAULT NULL UNIQUE,
@@ -100,10 +68,6 @@ CREATE TABLE IF NOT EXISTS applications (
     FOREIGN KEY (cycle_id)   REFERENCES cycles(cycle_id) ON DELETE SET NULL,
     FOREIGN KEY (checker_id) REFERENCES users(user_id) ON DELETE SET NULL
 );
-
--- ============================================================
--- 6. KRA SUBMISSIONS
--- ============================================================
 CREATE TABLE IF NOT EXISTS kra_submissions (
     submission_id   INT AUTO_INCREMENT PRIMARY KEY,
     application_id  INT NOT NULL,
@@ -124,10 +88,6 @@ CREATE TABLE IF NOT EXISTS kra_submissions (
     FOREIGN KEY (user_id)        REFERENCES users(user_id) ON DELETE CASCADE,
     FOREIGN KEY (verified_by)    REFERENCES users(user_id) ON DELETE SET NULL
 );
-
--- ============================================================
--- 7. KRA EVIDENCE FILES  (multiple files per submission)
--- ============================================================
 CREATE TABLE IF NOT EXISTS kra_evidence_files (
     evidence_id       INT AUTO_INCREMENT PRIMARY KEY,
     submission_id     INT NOT NULL,
@@ -139,10 +99,6 @@ CREATE TABLE IF NOT EXISTS kra_evidence_files (
     FOREIGN KEY (submission_id) REFERENCES kra_submissions(submission_id) ON DELETE CASCADE,
     FOREIGN KEY (uploaded_by)   REFERENCES users(user_id) ON DELETE SET NULL
 );
-
--- ============================================================
--- 8. SCORING CRITERIA
--- ============================================================
 CREATE TABLE IF NOT EXISTS scoring_criteria (
     criteria_id     INT AUTO_INCREMENT PRIMARY KEY,
     cycle_id        INT DEFAULT NULL,
@@ -156,17 +112,10 @@ CREATE TABLE IF NOT EXISTS scoring_criteria (
     is_active       TINYINT(1) DEFAULT 1,
     updated_by      INT DEFAULT NULL,
     updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    -- NULL cycle_id + NULL position_rank = global default for all cycles and positions
-    -- cycle_id set  + NULL position_rank = cycle-wide (all positions in that cycle)
-    -- cycle_id set  + position_rank set  = most specific (cycle + position)
     UNIQUE KEY uq_cycle_pos_criterion (cycle_id, position_rank, criterion_key),
     FOREIGN KEY (cycle_id)   REFERENCES cycles(cycle_id) ON DELETE CASCADE,
     FOREIGN KEY (updated_by) REFERENCES users(user_id) ON DELETE SET NULL
 );
-
--- ============================================================
--- 9. PASSWORD RESETS
--- ============================================================
 CREATE TABLE IF NOT EXISTS password_resets (
     reset_id      INT AUTO_INCREMENT PRIMARY KEY,
     user_id       INT NOT NULL UNIQUE,
@@ -178,12 +127,6 @@ CREATE TABLE IF NOT EXISTS password_resets (
     released_at   TIMESTAMP NULL,
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
-
--- ============================================================
--- 10. APPLICATION CHECKER REVIEWS
---     Multi-checker approval tracking per application.
---     Each checker gets one row per application they review.
--- ============================================================
 CREATE TABLE IF NOT EXISTS application_checker_reviews (
     review_id      INT AUTO_INCREMENT PRIMARY KEY,
     application_id INT NOT NULL,
@@ -196,10 +139,6 @@ CREATE TABLE IF NOT EXISTS application_checker_reviews (
     FOREIGN KEY (application_id) REFERENCES applications(application_id) ON DELETE CASCADE,
     FOREIGN KEY (checker_id)     REFERENCES users(user_id) ON DELETE CASCADE
 );
-
--- ============================================================
--- 11. AUDIT LOGS
--- ============================================================
 CREATE TABLE IF NOT EXISTS audit_logs (
     log_id           INT AUTO_INCREMENT PRIMARY KEY,
     user_id          INT DEFAULT NULL,
@@ -209,33 +148,16 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     timestamp        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE SET NULL
 );
-
--- ============================================================
--- SEED: DEFAULT CAMPUSES
--- ============================================================
 INSERT INTO campuses (campus_name) VALUES
     ('CHMSU-Fortune Towne'),
     ('CHMSU-Binalbagan'),
     ('CHMSU-Alijis'),
     ('CHMSU-Talisay')
 ON DUPLICATE KEY UPDATE campus_id = campus_id;
-
--- ============================================================
--- SEED: DEFAULT ADMIN ACCOUNT
---   Password is a placeholder — run pages/setup_admin.php
---   to set a real bcrypt password before going live.
--- ============================================================
 INSERT INTO users (first_name, middle_name, last_name, email, password, role, status, employee_id)
-VALUES ('System', NULL, 'Administrator', 'admin@chmsuft.edu.ph', 'PLACEHOLDER', 'admin', 'active', 'ADMIN-001')
+VALUES ('System', NULL, 'Administrator', 'admin@chmsuft.edu.ph', '$2y$10$eHQd6ot06VL7ExAEv9.T5OLUTx1nJGitYK1QEicvGCnZCqORK64Ru', 'admin', 'active', 'ADMIN-001')
 ON DUPLICATE KEY UPDATE user_id = user_id;
-
--- ============================================================
--- SEED: SCORING CRITERIA  (DBM-CHED Joint Circular No. 3, s. 2022)
--- Global defaults — copied per-position when a cycle is created.
--- ============================================================
 INSERT INTO scoring_criteria (kra_category, criterion_key, criterion_label, max_points, weight_pct, description) VALUES
-
--- ── KRA I: INSTRUCTION ───────────────────────────────────────
 ('Instruction','kra1_a_set','Criterion A – Student Evaluation of Teaching (SET)',36.00,100.00,'Student evaluation rating using prescribed template.'),
 ('Instruction','kra1_a_sef','Criterion A – Supervisor Evaluation Form (SEF)',24.00,100.00,'Supervisor\'s evaluation rating using prescribed template.'),
 ('Instruction','kra1_b_textbook_sole','Criterion B – Textbook, Sole Author',30.00,100.00,'Copy of instructional material developed. Copy of evidence that the material underwent peer-review or evaluation process. Copy of approval for use in the department/institution.'),
@@ -257,8 +179,6 @@ INSERT INTO scoring_criteria (kra_category, criterion_key, criterion_label, max_
 ('Instruction','kra1_c_panel_masters','Criterion C – Panel Member: Master\'s Thesis',4.00,100.00,'Copy of appointment/invitation as panel member. Copy of proof of participation.'),
 ('Instruction','kra1_c_panel_doctoral','Criterion C – Panel Member: Doctoral Dissertation',6.00,100.00,'Copy of appointment/invitation as panel member. Copy of proof of participation.'),
 ('Instruction','kra1_c_mentor_competition','Criterion C – Mentor: Student/Team Competition Winner',0.00,100.00,'CONFIRMED SOURCE GAP: The Points column for Mentorship Services (JC01 s.2026, Section 15 item 2, p.78) is blank in the official circular. This is not an extraction error. Set max_points to a non-zero value only after confirming with CHED-RO or your adviser. Until set, all mentorship submissions raise PENDING_DOCUMENTATION and are not scored. Hard rules regardless of point value: (1) regional/national/international competitions only — local-only excluded; (2) Champion through 3rd place only — consolation prizes excluded. Required evidence: award certificate or photo of trophy/plaque/medal, competition mechanics document, award-giving organization profile with mandate/history/prior winners list. Suggested starting point for discussion: 1 pt (matching Panel Member Special/Capstone — lowest confirmed rate in Crit C). This is a disclosed design recommendation, not a sourced value.'),
-
--- ── KRA II: RESEARCH, INVENTION & CREATIVE WORK ──────────────
 ('Research','kra2_a_book_sole','Criterion A – Book, Sole Author',100.00,100.00,'Copy of published research output showing author name, date, and publication title.'),
 ('Research','kra2_a_book_co','Criterion A – Book, Co-Author',100.00,100.00,'Copy of published research output showing author name, date, and publication title. For multiple authors — certification from all authors showing percentage contribution using prescribed template.'),
 ('Research','kra2_a_monograph_sole','Criterion A – Monograph, Sole Author',100.00,100.00,'Copy of published research output showing author name, date, and publication title.'),
@@ -293,8 +213,6 @@ INSERT INTO scoring_criteria (kra_category, criterion_key, criterion_label, max_
 ('Research','kra2_c_short_story','Criterion C – Literary Publication: Short Story',10.00,100.00,'Copy of published literary work for literary publications.'),
 ('Research','kra2_c_essay','Criterion C – Literary Publication: Essay',10.00,100.00,'Copy of published literary work for literary publications.'),
 ('Research','kra2_c_poetry','Criterion C – Literary Publication: Poetry',10.00,100.00,'Copy of published literary work for literary publications.'),
-
--- ── KRA III: EXTENSION SERVICES ──────────────────────────────
 ('Extension','kra3_a_moa','Criterion A – MOA/Linkage Partnership',5.00,100.00,'Copy of MOA. Certification from the President that partnership was successfully initiated or implemented by the faculty.'),
 ('Extension','kra3_a_income_below6m','Criterion A – Income Generation: Below PHP 6 Million',6.00,100.00,'Copy of implementation report or terminal activity report. Copy of financial reports showing income generated and certification from the President acknowledging faculty\'s contribution.'),
 ('Extension','kra3_a_income_6to12m','Criterion A – Income Generation: PHP 6M to PHP 12M',12.00,100.00,'Copy of implementation report or terminal activity report. Copy of financial reports showing income generated and certification from the President acknowledging faculty\'s contribution.'),
@@ -332,8 +250,6 @@ INSERT INTO scoring_criteria (kra_category, criterion_key, criterion_label, max_
 ('Extension','kra3_d_program_chair','Criterion D (BONUS) – Program Chair / Project Head (College/Dept)',3.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
 ('Extension','kra3_d_committee_chair_dept','Criterion D (BONUS) – Committee Chair (College/Dept)',2.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
 ('Extension','kra3_d_committee_member_dept','Criterion D (BONUS) – Committee Member (College/Dept)',1.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
-
--- ── KRA IV: PROFESSIONAL DEVELOPMENT ─────────────────────────
 ('Professional Development','kra4_a_org_membership','Criterion A – Active Professional Org Membership',5.00,100.00,'Copy of proof of membership such as certificate of membership or ID. Copy of certification of engagement, role, or assignment from the head of the organization.'),
 ('Professional Development','kra4_b_postmaster_cert','Criterion B – Post-Master\'s Diploma / Certificate',10.00,100.00,'Copy of transcript of records, diploma, or certificate for educational qualifications.'),
 ('Professional Development','kra4_b_postdoc_cert','Criterion B – Post-Doctoral Diploma / Certificate',10.00,100.00,'Copy of transcript of records, diploma, or certificate for educational qualifications.'),
@@ -355,18 +271,11 @@ INSERT INTO scoring_criteria (kra_category, criterion_key, criterion_label, max_
 ('Professional Development','kra4_d_industry_managerial','Criterion D (BONUS, New Faculty) – Industry: Managerial/Supervisory',4.00,100.00,'Copy of service record, certificate of employment, or notice of appointment for industry experience.'),
 ('Professional Development','kra4_d_industry_technical','Criterion D (BONUS, New Faculty) – Industry: Technical/Skilled',3.00,100.00,'Copy of service record, certificate of employment, or notice of appointment for industry experience.'),
 ('Professional Development','kra4_d_industry_support','Criterion D (BONUS, New Faculty) – Industry: Support/Administrative Staff',2.00,100.00,'Copy of service record, certificate of employment, or notice of appointment for industry experience.')
-
 ON DUPLICATE KEY UPDATE
     criterion_label = VALUES(criterion_label),
     max_points      = VALUES(max_points),
     weight_pct      = VALUES(weight_pct),
     description     = VALUES(description);
-
--- ============================================================
--- 13. PRE-EVALUATION
---     Faculty self-assessment before a cycle opens.
---     Stores KRA entries and evidence independently of any cycle.
--- ============================================================
 CREATE TABLE IF NOT EXISTS pre_eval_entries (
     entry_id        INT AUTO_INCREMENT PRIMARY KEY,
     user_id         INT NOT NULL,
@@ -378,7 +287,6 @@ CREATE TABLE IF NOT EXISTS pre_eval_entries (
     updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
-
 CREATE TABLE IF NOT EXISTS pre_eval_files (
     file_id           INT AUTO_INCREMENT PRIMARY KEY,
     user_id           INT NOT NULL,
@@ -392,12 +300,6 @@ CREATE TABLE IF NOT EXISTS pre_eval_files (
     FOREIGN KEY (user_id)  REFERENCES users(user_id) ON DELETE CASCADE,
     FOREIGN KEY (entry_id) REFERENCES pre_eval_entries(entry_id) ON DELETE SET NULL
 );
-
-
---     Powers the "Help" and "What's New" menu items.
---     category = 'help'     → general help articles
---     category = 'whats_new' → release notes / changelog entries
--- ============================================================
 CREATE TABLE IF NOT EXISTS help_articles (
     article_id   INT AUTO_INCREMENT PRIMARY KEY,
     title        VARCHAR(255) NOT NULL,
@@ -409,13 +311,6 @@ CREATE TABLE IF NOT EXISTS help_articles (
     updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (created_by) REFERENCES users(user_id) ON DELETE SET NULL
 );
-
--- ============================================================
--- 13. FEEDBACK SUBMISSIONS
---     Powers the "Send Feedback" menu item.
---     Authenticated users (user_id set) or anonymous guests
---     (user_id NULL, contact_email provided) can submit.
--- ============================================================
 CREATE TABLE IF NOT EXISTS feedback_submissions (
     feedback_id   INT AUTO_INCREMENT PRIMARY KEY,
     user_id       INT DEFAULT NULL,
@@ -430,10 +325,6 @@ CREATE TABLE IF NOT EXISTS feedback_submissions (
     FOREIGN KEY (user_id)     REFERENCES users(user_id) ON DELETE SET NULL,
     FOREIGN KEY (resolved_by) REFERENCES users(user_id) ON DELETE SET NULL
 );
-
--- ============================================================
--- SEED: SAMPLE HELP ARTICLES
--- ============================================================
 INSERT INTO help_articles (title, content, category, created_by) VALUES
 (
     'Getting Started with SUCFRMS',
@@ -460,13 +351,6 @@ INSERT INTO help_articles (title, content, category, created_by) VALUES
     NULL
 )
 ON DUPLICATE KEY UPDATE article_id = article_id;
-
--- ============================================================
--- 14. RUNTIME MIGRATIONS for JC01 s.2026 scoring columns
---     These ALTER TABLE statements are safe to re-run (IF NOT EXISTS logic
---     is handled by the orchestrator at runtime; these are here for fresh installs).
--- ============================================================
--- Add orchestrator result columns to applications
 ALTER TABLE applications
     ADD COLUMN IF NOT EXISTS committee_route       VARCHAR(10)  DEFAULT NULL,
     ADD COLUMN IF NOT EXISTS evaluation_period_ok  TINYINT(1)   DEFAULT 1,
@@ -474,25 +358,17 @@ ALTER TABLE applications
     ADD COLUMN IF NOT EXISTS pending_documentation TEXT         DEFAULT NULL,
     ADD COLUMN IF NOT EXISTS config_incomplete     TEXT         DEFAULT NULL,
     ADD COLUMN IF NOT EXISTS orchestrator_flags    TEXT         DEFAULT NULL;
-
--- Correct the panel member point values per JC01 s.2026
 UPDATE scoring_criteria SET max_points = 4.00
     WHERE criterion_key = 'kra1_c_panel_masters'
       AND max_points = 2.00
       AND cycle_id IS NULL;
-
 UPDATE scoring_criteria SET max_points = 6.00
     WHERE criterion_key = 'kra1_c_panel_doctoral'
       AND max_points = 2.00
       AND cycle_id IS NULL;
-
--- Reset mentorship to 0.00 (CONFIG_MENTORSHIP_POINTS not yet confirmed from JC01 p.78)
--- Admin must explicitly set this to a non-zero value after confirming with CHED-RO.
 UPDATE scoring_criteria
     SET max_points  = 0.00,
         description = 'CONFIRMED SOURCE GAP: The Points column for Mentorship Services (JC01 s.2026, Section 15 item 2, p.78) is blank in the official circular — verified directly against the scanned page. Set max_points to a non-zero value only after confirming with CHED-RO or your adviser. Until set (max_points = 0), all mentorship submissions raise PENDING_DOCUMENTATION and are not scored. Hard rules: (1) regional/national/international only — local-only excluded; (2) Champion through 3rd place only — consolation prizes excluded. Required evidence: award certificate/photo, competition mechanics, org profile with prior winners list. Suggested discussion starting point: 1 pt (matching lowest confirmed Crit C rate — design recommendation, NOT sourced).'
     WHERE criterion_key = 'kra1_c_mentor_competition'
       AND cycle_id IS NULL;
-
--- Re-enable foreign key checks after all inserts
 SET FOREIGN_KEY_CHECKS = 1;

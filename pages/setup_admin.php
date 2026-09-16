@@ -7,7 +7,7 @@
 require_once __DIR__ . '/../config/db.php';
 
 // Also allow promoting an existing user by email
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['promote_email'])) {
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && !empty($_POST['promote_email'])) {
     $email = trim($_POST['promote_email']);
     $stmt  = $pdo->prepare("UPDATE users SET role = 'admin' WHERE email = ?");
     $stmt->execute([$email]);
@@ -18,13 +18,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['promote_email'])) {
 }
 
 // Create default admin
-$email    = 'admin@sucfrms.edu.ph';
+$email    = 'admin@chmsuft.edu.ph';
 $password = 'Admin@1234';
 $hash     = password_hash($password, PASSWORD_DEFAULT);
 
-$stmt = $pdo->prepare("INSERT INTO users (first_name, middle_name, last_name, email, password, role, employee_id)
-    VALUES ('', NULL, 'System Administrator', ?, ?, 'admin', 'ADMIN-001')
-    ON DUPLICATE KEY UPDATE password = VALUES(password), role = 'admin'");
+$stmt = $pdo->prepare("INSERT INTO users (first_name, middle_name, last_name, email, password, role, status, employee_id)
+    VALUES ('System', NULL, 'Administrator', ?, ?, 'admin', 'active', 'ADMIN-001')
+    ON DUPLICATE KEY UPDATE email = VALUES(email), password = VALUES(password), role = 'admin', status = 'active'");
 $stmt->execute([$email, $hash]);
 ?>
 <!DOCTYPE html>
