@@ -1,8 +1,11 @@
 <?php
-$host = 'localhost';
-$db   = 'SUCFRMS';
-$user = 'root';
-$pass = '';
+// ── Database credentials ──────────────────────────────────────
+// For live deployment: set these to your hosting provider's DB details.
+// For local XAMPP: defaults below work out of the box.
+$host = getenv('DB_HOST') ?: 'localhost';
+$db   = getenv('DB_NAME') ?: 'SUCFRMS';
+$user = getenv('DB_USER') ?: 'root';
+$pass = getenv('DB_PASS') ?: '';
 
 try {
     $pdo = new PDO("mysql:host=$host;dbname=$db;charset=utf8mb4", $user, $pass);
