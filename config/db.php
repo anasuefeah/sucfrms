@@ -53,9 +53,6 @@ function renderDatabaseSetupError(string $title, string $message, array $steps, 
 
 try {
     $dsn = "mysql:host=$host;dbname=$db;charset=utf8mb4";
-    if ($port !== '') {
-        $dsn .= ";port=$port";
-    }
 
     $pdo = new PDO($dsn, $user, $pass);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
@@ -74,9 +71,11 @@ try {
     $missingTables = array_values(array_diff($requiredTables, $existingTables));
 
     if ($missingTables) {
+        $missingTableHtml = '<code>' . implode('</code>, <code>', array_map('htmlspecialchars', $missingTables)) . '</code>';
+
         renderDatabaseSetupError(
             'Database schema is incomplete',
-            'The app connected to MySQL, but the required table(s) <code>' . htmlspecialchars(implode('</code>, <code>', $missingTables)) . '</code> are missing.',
+            'The app connected to MySQL, but the required table(s) ' . $missingTableHtml . ' are missing.',
             [
                 'Open <strong>phpMyAdmin</strong> and select the <code>' . htmlspecialchars($db) . '</code> database.',
                 'Import <code>database.sql</code> from this project folder.',
@@ -106,7 +105,8 @@ try {
         "Couldn't connect to the database",
         'Please check your database setup.',
         [
-            '<strong>MySQL is running</strong> on your hosting account or server.',            'The credentials in <code>config/db.php</code> match your MySQL setup.',
+            '<strong>MySQL is running</strong> on your hosting account or server.',
+            'The credentials in <code>config/db.php</code> match your MySQL setup.',
             'The database <code>' . htmlspecialchars($db) . '</code> exists and <code>database.sql</code> has been imported.',
         ],
         $e->getMessage()
