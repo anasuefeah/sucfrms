@@ -50,6 +50,8 @@ class KRA1Scorer
         $crit_a   = 0.0;
         $crit_b   = 0.0;
         $crit_c   = 0.0;
+        $crit_a_set_ratings = [];
+        $crit_a_sef_ratings = [];
         $pending  = [];
         $config_i = [];
 
@@ -58,14 +60,39 @@ class KRA1Scorer
             $critType = $parts[0] ?? '';
             $pts      = 0.0;
 
+            if (str_starts_with($critType, 'B|')) {
+                $flat    = explode('|', $critType);
+                $rawPts  = $flat[1] ?? '';
+                $label   = implode('|', array_slice($flat, 2));
+                $contrib = min(100, max(1, (float)($parts[2] ?? 100)));
+                $base    = (float)str_replace('co', '', $rawPts);
+                $pts     = round(str_ends_with($rawPts, 'co') ? $base * ($contrib / 100) : $base, 2);
+                $crit_b += $pts;
+                if (empty($s['evidence_names'])) {
+                    $pending[] = "KRA I Crit B: '{$label}' - no evidence files attached.";
+                }
+                continue;
+            }
+
+            if (str_starts_with($critType, 'C|')) {
+                $flat  = explode('|', $critType);
+                $label = implode('|', array_slice($flat, 2));
+                $pts   = (float)($flat[1] ?? 0);
+                $crit_c += $pts;
+                if (empty($s['evidence_names'])) {
+                    $pending[] = "KRA I Crit C: '{$label}' - missing approval sheet / RRPA / COPC evidence.";
+                }
+                continue;
+            }
+
             switch ($critType) {
                 // ── Criterion A: Teaching Effectiveness ─────────────
                 case 'A-set-sef':
                     $set = min(100, max(0, (float)($parts[1] ?? 0)));
                     $sef = min(100, max(0, (float)($parts[2] ?? 0)));
                     // Formula: SET/100 × 36 + SEF/100 × 24
-                    $pts = round(($set / 100) * 36 + ($sef / 100) * 24, 2);
-                    $crit_a += $pts;
+                    if ($set > 0) $crit_a_set_ratings[] = $set;
+                    if ($sef > 0) $crit_a_sef_ratings[] = $sef;
 
                     if ($set === 0.0 && $sef === 0.0) {
                         $pending[] = 'KRA I Crit A: SET and SEF ratings are both 0 — pending documentation.';
@@ -73,6 +100,19 @@ class KRA1Scorer
                     break;
 
                 // ── Criterion B: Instructional Materials ────────────
+                case 'A-set-sef-sem':
+                    $set = min(100, max(0, (float)($parts[3] ?? 0)));
+                    $sef = min(100, max(0, (float)($parts[4] ?? 0)));
+                    if ($set > 0) $crit_a_set_ratings[] = $set;
+                    if ($sef > 0) $crit_a_sef_ratings[] = $sef;
+
+                    if ($set === 0.0 && $sef === 0.0) {
+                        $period = $parts[1] ?? 'Unknown period';
+                        $sem    = $parts[2] ?? '?';
+                        $pending[] = "KRA I Crit A: {$period} semester {$sem} SET and SEF ratings are both 0 - pending documentation.";
+                    }
+                    break;
+
                 case 'B-material':
                     $label   = $parts[1] ?? '';
                     $contrib = min(100, max(1, (float)($parts[2] ?? 100)));
@@ -164,11 +204,17 @@ class KRA1Scorer
                     if (is_numeric($parts[0]) || is_numeric($parts[1] ?? '')) {
                         $set = min(100, max(0, (float)($parts[0] ?? 0)));
                         $sef = min(100, max(0, (float)($parts[1] ?? 0)));
-                        $pts = round(($set / 100) * 36 + ($sef / 100) * 24, 2);
-                        $crit_a += $pts;
+                        if ($set > 0) $crit_a_set_ratings[] = $set;
+                        if ($sef > 0) $crit_a_sef_ratings[] = $sef;
                     }
                     break;
             }
+        }
+
+        if ($crit_a_set_ratings || $crit_a_sef_ratings) {
+            $avg_set = $crit_a_set_ratings ? array_sum($crit_a_set_ratings) / count($crit_a_set_ratings) : 0;
+            $avg_sef = $crit_a_sef_ratings ? array_sum($crit_a_sef_ratings) / count($crit_a_sef_ratings) : 0;
+            $crit_a = round(($avg_set / 100) * 36 + ($avg_sef / 100) * 24, 2);
         }
 
         // Apply sub-caps
@@ -245,7 +291,7 @@ class KRA1Scorer
 
     /**
      * Compute per-entry score from a remarks string (for kra_ajax.php compatibility).
-     * This is the canonical per-entry scorer called by kra_ajax.php and step2_upload.php.
+     * This is the canonical per-entry scorer called by kra_ajax.php and kra_entry.php.
      */
     public static function computeFromRemarks(string $remarks): float
     {
@@ -253,13 +299,38 @@ class KRA1Scorer
         $parts        = array_map('trim', explode('|||', $remarks));
         $critType     = $parts[0] ?? '';
 
+        if (str_starts_with($critType, 'B|')) {
+            $flat    = explode('|', $critType);
+            $rawPts  = $flat[1] ?? '';
+            $base    = (float)str_replace('co', '', $rawPts);
+            $contrib = min(100, max(1, (float)($parts[2] ?? 100)));
+            return round(str_ends_with($rawPts, 'co') ? $base * ($contrib / 100) : $base, 2);
+        }
+
+        if (str_starts_with($critType, 'C|')) {
+            $flat = explode('|', $critType);
+            return (float)($flat[1] ?? 0);
+        }
+
         switch ($critType) {
             case 'A-set-sef':
                 $set = min(100, max(0, (float)($parts[1] ?? 0)));
                 $sef = min(100, max(0, (float)($parts[2] ?? 0)));
                 return round(($set / 100) * 36 + ($sef / 100) * 24, 2);
 
+            case 'A-set-sef-sem':
+                $set = min(100, max(0, (float)($parts[3] ?? 0)));
+                $sef = min(100, max(0, (float)($parts[4] ?? 0)));
+                return round(($set / 100) * 36 + ($sef / 100) * 24, 2);
+
             case 'B-material':
+                if (str_starts_with($critType, 'B|')) {
+                    $flat    = explode('|', $critType);
+                    $rawPts  = $flat[1] ?? '';
+                    $base    = (float)str_replace('co', '', $rawPts);
+                    $contrib = min(100, max(1, (float)($parts[2] ?? 100)));
+                    return round(str_ends_with($rawPts, 'co') ? $base * ($contrib / 100) : $base, 2);
+                }
                 $label   = $parts[1] ?? '';
                 $contrib = min(100, max(1, (float)($parts[2] ?? 100)));
                 $base    = self::resolveIMBase($label, $dummy_config);
@@ -267,6 +338,10 @@ class KRA1Scorer
                 return round(self::isCoAuthor($label) ? $base * ($contrib / 100) : (float)$base, 2);
 
             case 'C-thesis':
+                if (str_starts_with($critType, 'C|')) {
+                    $flat = explode('|', $critType);
+                    return (float)($flat[1] ?? 0);
+                }
                 return self::resolveThesisPoints($parts[1] ?? '', $dummy_config);
 
             case 'C-mentor':

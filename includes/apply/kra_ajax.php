@@ -4,7 +4,7 @@ error_reporting(0);
 ob_start(); // Buffer output before includes to prevent HTML leaking into JSON
 /**
  * KRA AJAX endpoint
- * Handles JSON requests from the KRA entry table modal in step2_upload.php
+ * Handles JSON requests from the KRA entry table modal in kra_entry.php
  */
 if (session_status() === PHP_SESSION_NONE) session_start();
 require_once __DIR__ . '/../../config/db.php';
@@ -77,6 +77,46 @@ function computeKraScore(string $category, string $remarks): float {
 }
 
 // ── Legacy fallback scorers (retained for safety) ────────────────────────────
+function kraRemarksAreMeaningful(string $category, string $remarks): bool {
+    $parts = array_map('trim', explode('|||', $remarks));
+    $type = $parts[0] ?? '';
+    if ($type === '') return false;
+
+    if ($category === 'Instruction') {
+        if ($type === 'A-set-sef') {
+            return ($parts[1] ?? '') !== '' && ($parts[2] ?? '') !== '';
+        }
+        if ($type === 'A-set-sef-sem') {
+            return ($parts[3] ?? '') !== '' && ($parts[4] ?? '') !== '';
+        }
+        return str_starts_with($type, 'B|') || str_starts_with($type, 'C|')
+            || in_array($type, ['B-material', 'C-thesis', 'C-mentor'], true);
+    }
+
+    if ($category === 'Research') {
+        return stripos($type, 'Criterion') === 0 || (bool)preg_match('/\(\d+(?:\.\d+)?\s*pts?\)/i', $type);
+    }
+
+    if ($category === 'Extension') {
+        $allowed_extension = [
+            'moa-linkage', 'income', 'accredit-local', 'accredit-intl',
+            'judge-research', 'judge-other', 'consultant-local', 'consultant-intl',
+            'media-column-regular', 'media-column-occasional', 'media-tv-radio-host', 'media-guest',
+            'resource-speaker-local', 'resource-speaker-intl', 'outreach-isr-lead', 'outreach-isr-member',
+            'csr-satisfaction', 'president', 'vice-president', 'chancellor', 'vice-chancellor',
+            'campus director', 'office director', 'dean', 'associate dean', 'dept head',
+            'program chair', 'committee chair', 'committee member', 'coordinator',
+        ];
+        return in_array($type, $allowed_extension, true);
+    }
+
+    if ($category === 'Professional Development') {
+        return in_array($type, ['A-org', 'B-training', 'B-paper', 'B-degree', 'C-award'], true);
+    }
+
+    return false;
+}
+
 function _legacyKRA1Score(string $remarks): float {
     $p = array_map('trim', explode('|||', $remarks));
     $ct = $p[0] ?? '';
@@ -84,6 +124,22 @@ function _legacyKRA1Score(string $remarks): float {
         $set = min(100, max(0, (float)($p[1] ?? 0)));
         $sef = min(100, max(0, (float)($p[2] ?? 0)));
         return round(($set / 100) * 36 + ($sef / 100) * 24, 2);
+    }
+    if ($ct === 'A-set-sef-sem') {
+        $set = min(100, max(0, (float)($p[3] ?? 0)));
+        $sef = min(100, max(0, (float)($p[4] ?? 0)));
+        return round(($set / 100) * 36 + ($sef / 100) * 24, 2);
+    }
+    if (str_starts_with($ct, 'B|')) {
+        $flat = explode('|', $ct);
+        $raw = $flat[1] ?? '';
+        $base = (float)str_replace('co', '', $raw);
+        $contrib = min(100, max(1, (float)($p[2] ?? 100)));
+        return round(str_ends_with($raw, 'co') ? $base * ($contrib / 100) : $base, 2);
+    }
+    if (str_starts_with($ct, 'C|')) {
+        $flat = explode('|', $ct);
+        return (float)($flat[1] ?? 0);
     }
     if ($ct === 'B-material') {
         $label = $p[1] ?? ''; $contrib = min(100, max(1, (float)($p[2] ?? 100)));
@@ -121,7 +177,7 @@ function _legacyKRA1Score(string $remarks): float {
 
 function _legacyKRA2Score(string $remarks): float {
     $p = array_map('trim', explode('|||', $remarks));
-    $base = 0; $contrib = min(100, max(1, (float)($p[2] ?? 100)));
+    $base = 0; $contrib = min(100, max(1, (float)($p[5] ?? 100)));
     if (preg_match('/\((\d+(?:\.\d+)?)\s*pts?\)/i', $p[0] ?? '', $m)) $base = (float)$m[1];
     return round($base * ($contrib / 100), 2);
 }
@@ -185,7 +241,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             echo json_encode(['ok' => false, 'error' => 'Invalid category']);
             exit;
         }
-        $rows = $pdo->prepare("SELECT submission_id, computed_points, remarks, document_path, verified FROM kra_submissions WHERE application_id = ? AND kra_category = ? ORDER BY submitted_at ASC");
+        $rows = $pdo->prepare("SELECT submission_id, computed_points, remarks, document_path, verified, revision_status FROM kra_submissions WHERE application_id = ? AND kra_category = ? ORDER BY submitted_at ASC");
         $rows->execute([$app_id, $cat]);
         $entries = $rows->fetchAll(PDO::FETCH_ASSOC);
 
@@ -240,6 +296,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         // â”€â”€ Server-side score computation (never trust client-sent score) â”€â”€
+        if (!kraRemarksAreMeaningful($category, $remarks)) {
+            echo json_encode(['ok' => false, 'error' => 'Please select a valid criterion and fill the required score fields before uploading or saving.']);
+            exit;
+        }
+
         $points = computeKraScore($category, $remarks);
 
         // Handle file upload — insert into kra_evidence_files (multiple files per submission)
@@ -309,12 +370,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($edit_id > 0) {
             // Update existing entry
-            $existing = $pdo->prepare("SELECT document_path FROM kra_submissions WHERE submission_id = ? AND application_id = ?");
+            $existing = $pdo->prepare("SELECT document_path, verified, revision_status FROM kra_submissions WHERE submission_id = ? AND application_id = ?");
             $existing->execute([$edit_id, $app_id]);
             $existing = $existing->fetch();
             if ($existing) {
-                $pdo->prepare("UPDATE kra_submissions SET computed_points=?, remarks=?, verified=0, submitted_at=NOW() WHERE submission_id=?")
-                    ->execute([$points, $remarks, $edit_id]);
+                $entry_flagged = ($existing['revision_status'] ?? '') === 'needs_revision';
+                // Reject edits to an already-verified entry unless it is flagged for revision
+                if (!empty($existing['verified']) && !$entry_flagged) {
+                    echo json_encode(['ok' => false, 'error' => 'This entry has already been verified by a checker and can no longer be edited.']);
+                    exit;
+                }
+                if ($entry_flagged) {
+                    // Fixing a flagged entry clears the flag immediately — no need to wait for resubmit
+                    $pdo->prepare("UPDATE kra_submissions SET computed_points=?, remarks=?, verified=0, submitted_at=NOW(),
+                            revision_status='ok', revision_note=NULL, revision_by=NULL, revision_at=NULL
+                        WHERE submission_id=?")
+                        ->execute([$points, $remarks, $edit_id]);
+                } else {
+                    $pdo->prepare("UPDATE kra_submissions SET computed_points=?, remarks=?, verified=0, submitted_at=NOW() WHERE submission_id=?")
+                        ->execute([$points, $remarks, $edit_id]);
+                }
                 if (!empty($files_to_insert)) {
                     // Check remaining cap before bulk insert
                     $file_count = $pdo->prepare("SELECT COUNT(*) FROM kra_evidence_files WHERE submission_id=?");
@@ -335,12 +410,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         } elseif (in_array($category, $single_entry_cats)) {
             // Upsert for single-entry categories
-            $existing = $pdo->prepare("SELECT submission_id, document_path FROM kra_submissions WHERE application_id=? AND kra_category=? LIMIT 1");
+            $existing = $pdo->prepare("SELECT submission_id, document_path, verified, revision_status FROM kra_submissions WHERE application_id=? AND kra_category=? LIMIT 1");
             $existing->execute([$app_id, $category]);
             $existing = $existing->fetch();
             if ($existing) {
-                $pdo->prepare("UPDATE kra_submissions SET computed_points=?, remarks=?, verified=0, submitted_at=NOW() WHERE submission_id=?")
-                    ->execute([$points, $remarks, $existing['submission_id']]);
+                $entry_flagged = ($existing['revision_status'] ?? '') === 'needs_revision';
+                if (!empty($existing['verified']) && !$entry_flagged) {
+                    echo json_encode(['ok' => false, 'error' => 'This entry has already been verified by a checker and can no longer be edited.']);
+                    exit;
+                }
+                if ($entry_flagged) {
+                    $pdo->prepare("UPDATE kra_submissions SET computed_points=?, remarks=?, verified=0, submitted_at=NOW(),
+                            revision_status='ok', revision_note=NULL, revision_by=NULL, revision_at=NULL
+                        WHERE submission_id=?")
+                        ->execute([$points, $remarks, $existing['submission_id']]);
+                } else {
+                    $pdo->prepare("UPDATE kra_submissions SET computed_points=?, remarks=?, verified=0, submitted_at=NOW() WHERE submission_id=?")
+                        ->execute([$points, $remarks, $existing['submission_id']]);
+                }
                 if (!empty($files_to_insert)) {
                     $file_count = $pdo->prepare("SELECT COUNT(*) FROM kra_evidence_files WHERE submission_id=?");
                     $file_count->execute([$existing['submission_id']]);

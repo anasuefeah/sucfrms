@@ -28,7 +28,7 @@ foreach ($all_cycles as $cy) {
 }
 
 // â”€â”€ Load applications â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-$where  = "WHERE u.role IN ('faculty','checker_faculty') AND a.cycle_id=?";
+$where  = "WHERE u.role = 'faculty' AND a.cycle_id=?";
 $params = [$cycle_id];
 if ($campus_id) { $where .= ' AND u.campus_id=?'; $params[] = $campus_id; }
 $allowed = ['submitted','under_review','approved','rejected','admin_rejected','reclassified'];
@@ -37,7 +37,7 @@ if ($status && in_array($status, $allowed)) { $where .= ' AND a.status=?'; $para
 $rows = $pdo->prepare("
     SELECT a.*, u.full_name, u.employee_id, u.rank, u.email,
            COALESCE(camp.campus_name,'N/A') AS campus_name,
-           chk.full_name AS checker_name
+           chk.checker_label AS checker_name, chk.user_id AS checker_uid
     FROM applications a
     JOIN users u ON a.user_id = u.user_id
     LEFT JOIN campuses camp ON u.campus_id = camp.campus_id
@@ -225,7 +225,7 @@ foreach ($applications as $idx => $a) {
                   'Current Rank', $rank ?: 'N/A');
     $pdf->InfoRow('Cycle',        $selected_cycle['cycle_name'] ?? 'N/A',
                   'Status',       ucwords(str_replace('_',' ',$a['status'])));
-    $pdf->InfoRow('Reviewed By',  $a['checker_name'] ?? 'N/A', '', '');
+    $pdf->InfoRow('Reviewed By',  !empty($a['checker_uid']) ? checkerDisplayLabel(['checker_label'=>$a['checker_name'],'user_id'=>$a['checker_uid']]) : 'N/A', '', '');
     if (!empty($a['checker_remarks'])) {
         $pdf->InfoRow('Remarks', pdfClean2($a['checker_remarks']));
     }
@@ -373,7 +373,7 @@ foreach ($applications as $idx => $a) {
     $pdf->SectionLabel('Certification & Signatures');
     $pdf->Ln(12);
 
-    $sig_names = [$a['full_name'], $a['checker_name'] ?? 'N/A', 'Campus Director / Dean', 'University President'];
+    $sig_names = [$a['full_name'], (!empty($a['checker_uid']) ? checkerDisplayLabel(['checker_label'=>$a['checker_name'],'user_id'=>$a['checker_uid']]) : 'N/A'), 'Campus Director / Dean', 'University President'];
     $sig_roles = ['Faculty - Applicant', 'Checker / Evaluator', 'Campus Director / Dean', 'University President'];
     $sw = 80;
 

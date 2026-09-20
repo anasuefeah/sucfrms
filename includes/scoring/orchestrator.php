@@ -107,42 +107,54 @@ class Orchestrator
         $grand_total = $kra1['subtotal'] + $kra2['subtotal'] + $kra3['subtotal'] + $kra4['subtotal'];
         // No global cap per JC01 s.2026 (GRAND_TOTAL_CAP = null/unset)
 
-        // Compute weighted score using rank-based weights
-        $weights       = self::getKraWeights($current_rank);
-        $weighted_score = round(
-            ($kra1['subtotal'] * $weights['Instruction']) +
-            ($kra2['subtotal'] * $weights['Research']) +
-            ($kra3['subtotal'] * $weights['Extension']) +
-            ($kra4['subtotal'] * $weights['Professional Development']),
+        // ── STEP 5a: PASS 1 — weighted score using the CURRENT rank's weights ──
+        // Look up the bracket, get the initial increment, apply it to get the
+        // Initial Reclassified Rank. This pass never sees Auto Sub Rank.
+        $weights_pass1          = self::getKraWeights($current_rank);
+        $weighted_score_pass1   = round(
+            ($kra1['subtotal'] * $weights_pass1['Instruction']) +
+            ($kra2['subtotal'] * $weights_pass1['Research']) +
+            ($kra3['subtotal'] * $weights_pass1['Extension']) +
+            ($kra4['subtotal'] * $weights_pass1['Professional Development']),
             2
         );
+        $sub_rank_increment_pass1 = self::getSubRankIncrement($weighted_score_pass1);
+        $initial_reclassified_rank = self::computeTargetRank($current_rank, $sub_rank_increment_pass1);
 
-        $sub_rank_increment = self::getSubRankIncrement($weighted_score);
-
-        // ── STEP 6: Auto sub-rank ─────────────────────────────────
-        // ORDER OF OPERATIONS (per system spec):
-        //   1. Apply auto sub-rank bump to the base rank FIRST.
-        //   2. Bumped rank becomes the new base rank.
-        //   3. THEN compute point-based scoring from JC3 criteria on the bumped base.
-        // We therefore run auto-subrank detection FIRST, bump the base rank,
-        // then compute the sub-rank increment from the weighted score.
-        $auto_subrank = AutoSubrank::compute($pdo, $app, $kra4, $weighted_score, $sub_rank_increment);
-
-        // Apply doctrine/award auto-bump to base rank FIRST
-        $auto_bump        = $auto_subrank['bonus_increment']; // +0, +1, or +2
-        $bumped_base_rank = \Scoring\Orchestrator::computeTargetRank($current_rank, $auto_bump);
-
-        // NOW compute point-based sub-rank increment on top of the bumped base rank
-        $bumped_weights         = self::getKraWeights($bumped_base_rank);
-        $bumped_weighted_score  = round(
-            ($kra1['subtotal'] * $bumped_weights['Instruction']) +
-            ($kra2['subtotal'] * $bumped_weights['Research']) +
-            ($kra3['subtotal'] * $bumped_weights['Extension']) +
-            ($kra4['subtotal'] * $bumped_weights['Professional Development']),
+        // ── STEP 5b: PASS 2 — recompute using the Initial Reclassified Rank's
+        // weight row (NOT the original rank), since the weight table itself
+        // changes once the rank changes. A different result vs. Pass 1 is
+        // expected, not an error.
+        $weights_pass2        = self::getKraWeights($initial_reclassified_rank);
+        $weighted_score_pass2 = round(
+            ($kra1['subtotal'] * $weights_pass2['Instruction']) +
+            ($kra2['subtotal'] * $weights_pass2['Research']) +
+            ($kra3['subtotal'] * $weights_pass2['Extension']) +
+            ($kra4['subtotal'] * $weights_pass2['Professional Development']),
             2
         );
-        $sub_rank_increment     = self::getSubRankIncrement($bumped_weighted_score);
-        $weighted_score         = $bumped_weighted_score; // use bumped-base weighted score
+        $sub_rank_increment_pass2 = self::getSubRankIncrement($weighted_score_pass2);
+        // FINAL Reclassified Rank uses Pass 2's increment, applied on top of
+        // the Initial Reclassified Rank (not the original current rank).
+        $reclassified_rank = self::computeTargetRank($initial_reclassified_rank, $sub_rank_increment_pass2);
+
+        // ── STEP 6: Auto Sub Rank ─────────────────────────────────────
+        // Score-based increment (Steps 5a/5b above) and Auto Sub Rank
+        // (doctorate or prestigious award) are two SEPARATE mechanisms that
+        // both apply — never alternatives, and never blended into the Pass 1
+        // / Pass 2 weight lookups above. They are added together only here,
+        // on top of the already-final Reclassified Rank, to get Final Rank.
+        $auto_subrank = AutoSubrank::compute($pdo, $app, $kra4, $weighted_score_pass2, $sub_rank_increment_pass2);
+        $auto_bump    = $auto_subrank['bonus_increment']; // +0, +1, or +2
+        $final_rank   = self::computeTargetRank($reclassified_rank, $auto_bump);
+
+        // ── Back-compat aliases for the rest of this method / DB persistence.
+        // "weighted_score" / "sub_rank_increment" / "target_rank" keep meaning
+        // Pass 2's fully-recomputed values and the combined final rank, so
+        // existing callers/columns that read these keys are unaffected.
+        $weighted_score      = $weighted_score_pass2;
+        $sub_rank_increment  = $sub_rank_increment_pass2 + $auto_bump;
+        $bumped_base_rank    = $reclassified_rank; // kept for the code below that still references this name
 
         // ── STEP 7: Self-assessment summary ─────────────────────────
         $pending_docs   = array_merge(
@@ -167,7 +179,10 @@ class Orchestrator
                                . 'approvals are outside this system\'s boundary.'];
 
         // ── Committee routing ────────────────────────────────────────
-        $target_rank     = self::computeTargetRank($bumped_base_rank, $sub_rank_increment);
+        // target_rank = Final Rank = Reclassified Rank + Auto Sub Rank, already
+        // computed above as $final_rank (Step 4 of the spec: the two mechanisms
+        // are added together, not blended into the two-pass weight lookups).
+        $target_rank     = $final_rank;
         $committee_route = AutoSubrank::routeCommittee($target_rank);
 
         // ── Persist results to DB ─────────────────────────────────────
@@ -205,9 +220,24 @@ class Orchestrator
         $faculty_for_iss['full_name']    = trim(($app['first_name'] ?? '') . ' ' . ($app['last_name'] ?? ''));
         $faculty_for_iss['current_rank'] = $current_rank;
         $faculty_for_iss['rank']         = $current_rank;
-        $iss = self::buildISS($app, $faculty_for_iss, $kra1, $kra2, $kra3, $kra4,
-                              $weighted_score, $sub_rank_increment,
-                              $bumped_base_rank, $target_rank);
+        $iss = self::buildISS($app, $faculty_for_iss, $kra1, $kra2, $kra3, $kra4, [
+            'current_rank'                 => $current_rank,
+            'weights_pass1'                => $weights_pass1,
+            'weighted_score_pass1'         => $weighted_score_pass1,
+            'sub_rank_increment_pass1'     => $sub_rank_increment_pass1,
+            'initial_reclassified_rank'    => $initial_reclassified_rank,
+            'weights_pass2'                => $weights_pass2,
+            'weighted_score_pass2'         => $weighted_score_pass2,
+            'sub_rank_increment_pass2'     => $sub_rank_increment_pass2,
+            'reclassified_rank'            => $reclassified_rank,
+            'qualified_auto_subrank_phd'   => $auto_subrank['qualified_auto_subrank_phd'],
+            'qualified_auto_subrank_award' => $auto_subrank['qualified_auto_subrank_award'],
+            'auto_subrank_bonus'           => $auto_bump,
+            'final_rank'                   => $final_rank,
+            // Back-compat top-level fields other callers of buildISS's output may expect.
+            'weighted_score'               => $weighted_score,
+            'sub_rank_increment'           => $sub_rank_increment,
+        ]);
 
         // ── OSS row (this applicant's contribution to the OSS) ────────
         $oss_row = [
@@ -278,8 +308,11 @@ class Orchestrator
         $title_map = [];
         foreach ($all_subs as $s) {
             $parts = explode('|||', $s['remarks'] ?? '');
-            // title is $parts[1] for Research; $parts[1] for Instruction B/C; $parts[1] for PD
-            $title = trim($parts[1] ?? '');
+            // title/description-like field varies by category:
+            // Research now stores developers|||affiliation|||area|||specific_contribution|||contrib,
+            // so the closest match for a paper's identity is Specific Contribution ($parts[4]).
+            // Instruction B/C and Professional Development still keep their descriptive text at $parts[1].
+            $title = trim(($s['kra_category'] === 'Research' ? ($parts[4] ?? '') : ($parts[1] ?? '')));
             if ($title === '' || strlen($title) < 5) continue;
             $cat = $s['kra_category'];
             $title_map[$title][] = $cat;
@@ -471,15 +504,14 @@ class Orchestrator
     private static function buildISS(
         array $app, array $faculty,
         array $kra1, array $kra2, array $kra3, array $kra4,
-        float $weighted_score, int $sub_rank_increment,
-        string $bumped_base_rank, string $computed_rank
+        array $rank_calc
     ): array {
         return [
             'faculty_name'       => ($faculty['full_name'] ?? '')
                                     ?: trim(($faculty['first_name'] ?? '') . ' ' . ($faculty['last_name'] ?? '')),
             'employee_id'        => $faculty['employee_id'] ?? '',
             'current_rank'       => $faculty['current_rank'] ?? $faculty['rank'] ?? '',
-            'bumped_base_rank'   => $bumped_base_rank,
+            'bumped_base_rank'   => $rank_calc['reclassified_rank'], // back-compat alias
             'cycle_id'           => $app['cycle_id'] ?? null,
             'application_status' => $app['status'] ?? '',
             'kra_scores' => [
@@ -494,10 +526,39 @@ class Orchestrator
                            'crit_a' => $kra4['criterion_a'], 'crit_b' => $kra4['criterion_b'],
                            'crit_c' => $kra4['criterion_c'], 'crit_d_bonus' => $kra4['criterion_d_bonus']],
             ],
+            // Capped raw points per KRA — this is what Table 1 of the ISS PDF
+            // multiplies against each rank tier's weight row.
+            'kra_raw_points' => [
+                'kra1' => $kra1['subtotal'],
+                'kra2' => $kra2['subtotal'],
+                'kra3' => $kra3['subtotal'],
+                'kra4' => $kra4['subtotal'],
+            ],
             'grand_total'        => $kra1['subtotal'] + $kra2['subtotal'] + $kra3['subtotal'] + $kra4['subtotal'],
-            'weighted_score'     => $weighted_score,
-            'sub_rank_increment' => $sub_rank_increment,
-            'computed_rank'      => $computed_rank,
+
+            // ── Rank-weighted scoring / reclassification breakdown ──────────
+            // Table 1 uses getKraWeights() for every tier (see kra_pdf_render.php);
+            // the fields below are the specific values for THIS applicant's
+            // two-pass recompute and Auto Sub Rank combination (Steps 1-4 of spec).
+            'base_rank'                    => $rank_calc['current_rank'],
+            'weight_row_pass1'             => $rank_calc['weights_pass1'],
+            'weighted_score_pass1'         => $rank_calc['weighted_score_pass1'],
+            'sub_rank_increment_pass1'     => $rank_calc['sub_rank_increment_pass1'],
+            'initial_reclassified_rank'    => $rank_calc['initial_reclassified_rank'],
+            'weight_row_pass2'             => $rank_calc['weights_pass2'],
+            'weighted_score_pass2'         => $rank_calc['weighted_score_pass2'],
+            'sub_rank_increment_pass2'     => $rank_calc['sub_rank_increment_pass2'],
+            'reclassified_rank'            => $rank_calc['reclassified_rank'],
+            'qualified_auto_subrank_phd'   => $rank_calc['qualified_auto_subrank_phd'],
+            'qualified_auto_subrank_award' => $rank_calc['qualified_auto_subrank_award'],
+            'auto_subrank_bonus'           => $rank_calc['auto_subrank_bonus'],
+            'final_rank'                   => $rank_calc['final_rank'],
+
+            // Back-compat top-level fields (Pass 2 values / final rank).
+            'weighted_score'     => $rank_calc['weighted_score'],
+            'sub_rank_increment' => $rank_calc['sub_rank_increment'],
+            'computed_rank'      => $rank_calc['final_rank'],
+
             'pending_documentation' => array_merge(
                 $kra1['pending_documentation'],
                 $kra2['pending_documentation'],

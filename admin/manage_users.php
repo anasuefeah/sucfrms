@@ -26,13 +26,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pdo->prepare("UPDATE users SET status='active' WHERE user_id=?")->execute([$uid]);
         logAudit($pdo, $_SESSION['user_id'], 'User Reactivated', "Reactivated user ID {$uid}.");
         flashMessage('success', 'User has been <strong>reactivated</strong>.');
-    } elseif ($action === 'update_role') {
-        $uid  = intval($_POST['uid']);
-        $role = $_POST['new_role'];
-        if (in_array($role, ['faculty','checker','admin','checker_faculty','talisay_checker']) && $uid !== $_SESSION['user_id']) {
-            $pdo->prepare("UPDATE users SET role=? WHERE user_id=?")->execute([$role, $uid]);
-            logAudit($pdo, $_SESSION['user_id'], 'Role Changed', "User ID {$uid} set to {$role}.");
-            flashMessage('success', "Role updated to <strong>" . ucfirst(str_replace('_',' ',$role)) . "</strong>. Takes effect on their next page load.");
+    } elseif ($action === 'add_checker') {
+        $first_name  = trim($_POST['first_name'] ?? '');
+        $middle_name = trim($_POST['middle_name'] ?? '');
+        $last_name   = trim($_POST['last_name'] ?? '');
+        $email       = trim($_POST['email'] ?? '');
+        $password    = $_POST['password'] ?? '';
+        $checker_role = $_POST['checker_role'] ?? '';
+
+        if (!$first_name || !$last_name || !$email || !$password || !in_array($checker_role, ['checker','talisay_checker'])) {
+            flashMessage('danger', 'Please fill in all required fields to add a checker.');
+        } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            flashMessage('danger', 'Invalid email address.');
+        } elseif (strlen($password) < 8) {
+            flashMessage('danger', 'Password must be at least 8 characters.');
+        } else {
+            $dup = $pdo->prepare("SELECT user_id FROM users WHERE email = ?");
+            $dup->execute([$email]);
+            if ($dup->fetch()) {
+                flashMessage('danger', 'An account with this email already exists.');
+            } else {
+                $label = nextCheckerLabel($pdo);
+                $hash  = password_hash($password, PASSWORD_DEFAULT);
+                $pdo->prepare("INSERT INTO users (first_name, middle_name, last_name, email, password, role, status, checker_label) VALUES (?, ?, ?, ?, ?, ?, 'active', ?)")
+                    ->execute([$first_name, ($middle_name ?: null), $last_name, $email, $hash, $checker_role, $label]);
+                logAudit($pdo, $_SESSION['user_id'], 'Checker Account Created', "Created {$label} (" . ($checker_role === 'talisay_checker' ? 'Talisay Checker' : 'Checker') . ") account. Email: {$email}.");
+                flashMessage('success', "Checker account created as <strong>{$label}</strong>.");
+            }
         }
     } elseif ($action === 'delete_user') {
         $uid = intval($_POST['uid']);
@@ -73,6 +93,60 @@ $users = $users->fetchAll();
 
 <?php showFlash(); ?>
 
+<!-- Add checker card -->
+<div class="neon-card mb-4" style="padding:1.1rem 1.25rem;">
+    <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:1rem;">
+        <div style="width:36px;height:36px;border-radius:8px;background:#1e4d8c;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+            <i class="bi bi-person-plus-fill" style="color:#fff;font-size:0.9rem;"></i>
+        </div>
+        <div>
+            <div style="font-weight:700;color:#1a3a6b;font-size:0.95rem;">Add Checker</div>
+            <div style="font-size:0.72rem;color:#94a3b8;">Create a checker account directly &mdash; they will appear anonymously to faculty as an auto-numbered "Checker"</div>
+        </div>
+    </div>
+    <form method="POST" class="d-flex gap-3 align-items-end flex-wrap" id="addCheckerForm">
+        <input type="hidden" name="action" value="add_checker">
+        <div style="min-width:160px;">
+            <label style="font-size:0.72rem;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;display:block;margin-bottom:5px;">First Name <span style="color:#334155;">*</span></label>
+            <input type="text" name="first_name" required pattern=".*\S.*"
+                   style="width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:0.5rem 0.65rem;font-size:0.85rem;color:#1e293b;background:#f8fafc;outline:none;">
+        </div>
+        <div style="min-width:140px;">
+            <label style="font-size:0.72rem;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;display:block;margin-bottom:5px;">Middle Name</label>
+            <input type="text" name="middle_name"
+                   style="width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:0.5rem 0.65rem;font-size:0.85rem;color:#1e293b;background:#f8fafc;outline:none;">
+        </div>
+        <div style="min-width:160px;">
+            <label style="font-size:0.72rem;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;display:block;margin-bottom:5px;">Last Name <span style="color:#334155;">*</span></label>
+            <input type="text" name="last_name" required pattern=".*\S.*"
+                   style="width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:0.5rem 0.65rem;font-size:0.85rem;color:#1e293b;background:#f8fafc;outline:none;">
+        </div>
+        <div style="flex:1;min-width:200px;">
+            <label style="font-size:0.72rem;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;display:block;margin-bottom:5px;">Email <span style="color:#334155;">*</span></label>
+            <input type="email" name="email" required
+                   style="width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:0.5rem 0.65rem;font-size:0.85rem;color:#1e293b;background:#f8fafc;outline:none;">
+        </div>
+        <div style="min-width:170px;">
+            <label style="font-size:0.72rem;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;display:block;margin-bottom:5px;">Password <span style="color:#334155;">*</span></label>
+            <input type="password" name="password" required minlength="8" placeholder="Min. 8 characters"
+                   style="width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:0.5rem 0.65rem;font-size:0.85rem;color:#1e293b;background:#f8fafc;outline:none;">
+        </div>
+        <div style="min-width:150px;">
+            <label style="font-size:0.72rem;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;display:block;margin-bottom:5px;">Role <span style="color:#334155;">*</span></label>
+            <select name="checker_role" required
+                    style="width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:0.5rem 0.65rem;font-size:0.85rem;color:#1e293b;background:#f8fafc;outline:none;cursor:pointer;">
+                <option value="checker">Checker</option>
+                <option value="talisay_checker">Talisay Checker</option>
+            </select>
+        </div>
+        <button type="button"
+                style="background:#16a34a;color:#fff;border:1px solid #16a34a;border-radius:8px;padding:0.5rem 1.35rem;font-size:0.85rem;font-weight:600;cursor:pointer;white-space:nowrap;"
+                onclick="if(document.getElementById('addCheckerForm').reportValidity()) confirmDelete('Create this checker account?','addCheckerForm','Add Checker','bi-person-plus')">
+            <i class="bi bi-person-plus me-1"></i>Add Checker
+        </button>
+    </form>
+</div>
+
 <div class="neon-card" style="padding:1rem 1.25rem;">
     <!-- Header -->
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem;flex-wrap:wrap;gap:0.75rem;">
@@ -109,7 +183,6 @@ $users = $users->fetchAll();
                     <option value="">All Roles</option>
                     <option value="faculty"         <?= $filter==='faculty'         ?'selected':'' ?>>Faculty</option>
                     <option value="checker"         <?= $filter==='checker'         ?'selected':'' ?>>Checker</option>
-                    <option value="checker_faculty" <?= $filter==='checker_faculty' ?'selected':'' ?>>Checker/Faculty</option>
                     <option value="talisay_checker" <?= $filter==='talisay_checker' ?'selected':'' ?>>Talisay Checker</option>
                     <option value="admin"           <?= $filter==='admin'           ?'selected':'' ?>>Admin</option>
                 </select>
@@ -152,7 +225,6 @@ $users = $users->fetchAll();
                 $role_cfg = [
                     'admin'           => ['#f1f5f9','#334155','Admin'],
                     'checker'         => ['#eff6ff','#1e4d8c','Checker'],
-                    'checker_faculty' => ['#f0f4fb','#1a3a6b','Checker/Faculty'],
                     'talisay_checker' => ['#f0f4fb','#1a3a6b','Talisay Checker'],
                     'faculty'         => ['#eff6ff','#1e4d8c','Faculty'],
                 ];
@@ -202,21 +274,6 @@ $users = $users->fetchAll();
                 <td style="padding:0.75rem 0.75rem;">
                     <?php if ($u['user_id'] !== $_SESSION['user_id']): ?>
                     <div style="display:flex;gap:0.35rem;align-items:center;flex-wrap:wrap;">
-                        <!-- Role selector -->
-                        <form method="POST" class="d-flex gap-1" id="roleForm_<?= $u['user_id'] ?>">
-                            <input type="hidden" name="action" value="update_role">
-                            <input type="hidden" name="uid" value="<?= $u['user_id'] ?>">
-                            <select name="new_role"
-                                    style="border:1.5px solid #e2e8f0;border-radius:6px;padding:3px 6px;font-size:0.72rem;color:#1e293b;background:#f8fafc;outline:none;">
-                                <option value="faculty"         <?= $u['role']==='faculty'         ?'selected':'' ?>>Faculty</option>
-                                <option value="checker_faculty" <?= $u['role']==='checker_faculty' ?'selected':'' ?>>Checker/Faculty</option>
-                                <option value="checker"         <?= $u['role']==='checker'         ?'selected':'' ?>>Checker</option>
-                                <option value="talisay_checker" <?= $u['role']==='talisay_checker' ?'selected':'' ?>>Talisay Checker</option>
-                            </select>
-                            <button type="button"
-                                    style="padding:3px 10px;border-radius:6px;background:#1a3a6b;color:#fff;border:none;font-size:0.72rem;font-weight:600;cursor:pointer;"
-                                    onclick="confirmDelete('Change this user\'s role?','roleForm_<?= $u['user_id'] ?>','Set Role','bi-person-gear')">Set</button>
-                        </form>
                         <!-- Activate/Deactivate -->
                         <?php if ($u['status'] === 'inactive'): ?>
                         <form method="POST" id="activateForm_<?= $u['user_id'] ?>">

@@ -29,7 +29,7 @@ if ($filter_action) { $where[] = 'al.action_performed LIKE ?'; $params[] = "%$fi
 $where_sql = $where ? 'WHERE ' . implode(' AND ', $where) : '';
 
 $stmt = $pdo->prepare("
-    SELECT al.*, u.full_name
+    SELECT al.*, u.full_name, u.checker_label
     FROM audit_logs al
     LEFT JOIN users u ON al.user_id = u.user_id
     $where_sql
@@ -225,9 +225,13 @@ if (empty($logs)) {
         $dt = date('M d, Y h:i A', strtotime($log['timestamp']));
 
         if ($role === 'admin') {
+            $actor_role = $log['role_at_time'] ?? '';
+            $actor_display = in_array($actor_role, ['checker','talisay_checker'])
+                ? checkerDisplayLabel(['checker_label' => $log['checker_label'] ?? null, 'user_id' => $log['user_id'] ?? null])
+                : ($log['full_name'] ?? 'System');
             $row = [
                 [8,   (string)($i + 1),                              'C'],
-                [44,  $log['full_name'] ?? 'System',                 'L'],
+                [44,  $actor_display,                                 'L'],
                 [18,  ucfirst($log['role_at_time'] ?? '-'),           'C'],
                 [36,  $log['action_performed'],                       'L'],
                 [124, $details,                                       'L'],

@@ -129,7 +129,7 @@ $kra_tabs = [
         </div>
         <?php if ($can_edit): ?>
         <div style="flex-shrink:0;">
-            <a href="?page=apply&step=2" class="btn btn-primary btn-sm" style="font-weight:600;padding:0.45rem 1.1rem;white-space:nowrap;">
+            <a href="?page=apply" class="btn btn-primary btn-sm" style="font-weight:600;padding:0.45rem 1.1rem;white-space:nowrap;">
                 <i class="bi bi-pencil-square me-1"></i>Edit Application
             </a>
         </div>
@@ -165,7 +165,7 @@ $kra_tabs = [
         <div>
             <div style="font-size:0.72rem;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px;">Checker Remarks</div>
             <div style="font-size:0.88rem;color:#1e293b;"><?= sanitize($app['checker_remarks']) ?></div>
-            <div class="mt-2"><a href="?page=apply&step=2" class="btn btn-sm btn-warning" style="font-weight:600;">Edit &amp; Resubmit</a></div>
+            <div class="mt-2"><a href="?page=apply" class="btn btn-sm btn-warning" style="font-weight:600;">Edit &amp; Resubmit</a></div>
         </div>
     </div>
     <?php else: ?>
@@ -242,7 +242,7 @@ $kra_tabs = [
             <div style="font-size:0.75rem;color:#94a3b8;margin-top:1px;">Your Key Result Areas documentation and evidence</div>
         </div>
         <?php if ($can_edit): ?>
-        <a href="?page=apply&step=2" class="btn btn-primary btn-sm" style="font-weight:600;padding:0.45rem 1.1rem;">
+        <a href="?page=apply" class="btn btn-primary btn-sm" style="font-weight:600;padding:0.45rem 1.1rem;">
             <i class="bi bi-plus-circle me-1"></i>Add / Edit Entries
         </a>
         <?php else: ?>
@@ -334,7 +334,7 @@ $kra_tabs = [
                     <?php if ($app['status'] === 'needs_revision' && !$is_flagged): ?>
                     <span style="color:#cbd5e1;font-size:0.8rem;">&mdash;</span>
                     <?php else: ?>
-                    <a href="?page=apply&step=2&tab=<?= $tab ?>&edit_sid=<?= $s['submission_id'] ?>"
+                    <a href="?page=apply&tab=<?= $tab ?>&edit_sid=<?= $s['submission_id'] ?>"
                        style="font-size:0.8rem;padding:0.28rem 0.65rem;border-radius:5px;background:#f0f4fb;color:#1a3a6b;border:1px solid #dbeafe;text-decoration:none;font-weight:600;display:inline-flex;align-items:center;gap:4px;white-space:nowrap;">
                         <i class="bi bi-pencil" style="font-size:0.75rem;"></i>Edit
                     </a>
@@ -353,7 +353,7 @@ $kra_tabs = [
 No KRA Submissions Yet</div>
         <div style="font-size:0.82rem;color:#cbd5e1;margin-bottom:1.25rem;">Start by adding your Key Result Areas documentation</div>
         <?php if ($can_edit): ?>
-        <a href="?page=apply&step=2" class="btn btn-primary btn-sm" style="font-weight:600;padding:0.5rem 1.25rem;">
+        <a href="?page=apply" class="btn btn-primary btn-sm" style="font-weight:600;padding:0.5rem 1.25rem;">
             <i class="bi bi-plus-circle me-1"></i>Start Entering KRA Scores
         </a>
         <?php endif; ?>
@@ -382,22 +382,9 @@ if ($show_comparison):
         <div>
             <div style="font-size:0.9rem;font-weight:700;color:#1a3a6b;display:flex;align-items:center;gap:0.5rem;">
                 <i class="bi bi-bar-chart-steps"></i>Score Evaluation Comparison
-                <?php if ($is_live): ?>
-                <span id="cmpLiveDot"
-                      style="display:inline-flex;align-items:center;gap:4px;font-size:0.68rem;
-                             font-weight:600;color:#16a34a;background:#f0fdf4;
-                             border:1px solid #bbf7d0;border-radius:20px;padding:1px 8px;">
-                    <span style="width:7px;height:7px;border-radius:50%;background:#16a34a;
-                                 animation:livePulse 1.4s ease-in-out infinite;"></span>
-                    Live
-                </span>
-                <?php endif; ?>
             </div>
             <div style="font-size:0.72rem;color:#94a3b8;margin-top:1px;">
                 Your submitted scores alongside checker evaluations
-                <?php if ($is_live): ?>
-                &nbsp;&middot;&nbsp; <span id="cmpLastUpdated" style="color:#64748b;">Loading&hellip;</span>
-                <?php endif; ?>
             </div>
         </div>
         <?php if (!$is_live): ?>
@@ -547,8 +534,8 @@ if ($show_comparison):
                 // Remarks
                 html += `<td style="padding:.6rem .75rem;vertical-align:middle;font-size:.78rem;color:#475569;">`;
                 let hasRem = false;
-                if (hasRev && s.revision_note) {
-                    html += `<div class="cmp-rev-note"><strong style="color:#334155;">Revision:</strong> ${esc(s.revision_note)}</div>`;
+                if (s.checker_note) {
+                    html += `<div style="padding:.3rem .55rem;background:#eff6ff;border-left:3px solid #1e4d8c;border-radius:0 4px 4px 0;font-size:.72rem;margin-bottom:4px;"><strong style="color:#1e4d8c;">Score note:</strong> ${esc(s.checker_note)}</div>`;
                     hasRem = true;
                 }
                 if (isFirst && s1Remarks) { html += `<div style="font-size:.72rem;color:#1e4d8c;margin-top:2px;">${s1Remarks}</div>`; hasRem = true; }

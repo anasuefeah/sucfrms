@@ -146,7 +146,9 @@ CREATE TABLE IF NOT EXISTS kra_evidence_files (
 CREATE TABLE IF NOT EXISTS scoring_criteria (
     criteria_id     INT AUTO_INCREMENT PRIMARY KEY,
     cycle_id        INT DEFAULT NULL,
+    cycle_scope     INT GENERATED ALWAYS AS (IFNULL(cycle_id, 0)) STORED,
     position_rank   VARCHAR(100) DEFAULT NULL,
+    position_scope  VARCHAR(100) GENERATED ALWAYS AS (IFNULL(position_rank, '')) STORED,
     kra_category    ENUM('Instruction','Research','Extension','Professional Development') NOT NULL,
     criterion_key   VARCHAR(100) NOT NULL,
     criterion_label VARCHAR(255) NOT NULL,
@@ -160,6 +162,8 @@ CREATE TABLE IF NOT EXISTS scoring_criteria (
     -- cycle_id set  + NULL position_rank = cycle-wide (all positions in that cycle)
     -- cycle_id set  + position_rank set  = most specific (cycle + position)
     UNIQUE KEY uq_cycle_pos_criterion (cycle_id, position_rank, criterion_key),
+    UNIQUE KEY uq_scoring_scope_key (cycle_scope, position_scope, criterion_key),
+    UNIQUE KEY uq_scoring_scope_label (cycle_scope, position_scope, kra_category, criterion_label),
     FOREIGN KEY (cycle_id)   REFERENCES cycles(cycle_id) ON DELETE CASCADE,
     FOREIGN KEY (updated_by) REFERENCES users(user_id) ON DELETE SET NULL
 );
@@ -198,7 +202,93 @@ CREATE TABLE IF NOT EXISTS application_checker_reviews (
 );
 
 -- ============================================================
--- 11. AUDIT LOGS
+-- 11. AUTO SUB-RANK  (per reclassification application)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS auto_sub_rank (
+    auto_rank_id       INT AUTO_INCREMENT PRIMARY KEY,
+    application_id     INT NOT NULL UNIQUE,
+
+    -- Doctorate criterion (system-calculated, read-only for faculty)
+    doctorate_mode     ENUM('triggered','points_only','not_eligible','blocked_historical')
+                           NOT NULL DEFAULT 'not_eligible'
+                           COMMENT 'triggered=+1 rank | points_only=+40 pts | not_eligible=no doctorate | blocked_historical=already used in prior cycle',
+    doctorate_points   DECIMAL(5,2) NOT NULL DEFAULT 0
+                           COMMENT '40 when points_only or blocked_historical, 0 otherwise',
+    doctorate_details  TEXT DEFAULT NULL,
+
+    -- Doctorate checker verification
+    doctorate_verified      ENUM('pending','verified','rejected') NOT NULL DEFAULT 'pending',
+    doctorate_verified_by   INT DEFAULT NULL,
+    doctorate_verified_at   TIMESTAMP NULL DEFAULT NULL,
+    doctorate_verification_notes TEXT DEFAULT NULL,
+
+    -- Award criterion
+    award_mode         ENUM('triggered','not_eligible','insufficient_score')
+                           NOT NULL DEFAULT 'not_eligible'
+                           COMMENT 'triggered=+1 rank | insufficient_score=award present but score<41',
+    award_details      TEXT DEFAULT NULL,
+    award_evidence     VARCHAR(255) DEFAULT NULL,
+
+    -- Award checker verification
+    award_verified      ENUM('pending','verified','rejected') NOT NULL DEFAULT 'pending',
+    award_verified_by   INT DEFAULT NULL,
+    award_verified_at   TIMESTAMP NULL DEFAULT NULL,
+    award_verification_notes TEXT DEFAULT NULL,
+
+    -- Calculation metadata (audit trail)
+    calculation_reason       TEXT DEFAULT NULL,
+    weighted_score_at_calc   DECIMAL(7,2) DEFAULT NULL,
+    rank_at_calc             VARCHAR(100) DEFAULT NULL,
+    historical_usage_checked TINYINT(1) NOT NULL DEFAULT 0,
+
+    created_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    -- Keep legacy status columns so old data is not lost
+    doctorate_status   ENUM('Triggered','Not Triggered','Needs Review') DEFAULT 'Needs Review',
+    award_status       ENUM('Triggered','Not Triggered','Needs Review') DEFAULT 'Needs Review',
+
+    FOREIGN KEY (application_id)      REFERENCES applications(application_id) ON DELETE CASCADE,
+    FOREIGN KEY (doctorate_verified_by) REFERENCES users(user_id) ON DELETE SET NULL,
+    FOREIGN KEY (award_verified_by)     REFERENCES users(user_id) ON DELETE SET NULL,
+    INDEX idx_asr_app  (application_id),
+    INDEX idx_asr_dmode (doctorate_mode),
+    INDEX idx_asr_amode (award_mode)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================================
+-- 12. PRE-EVALUATION AUTO SUB-RANK  (per faculty user, no checker)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS pre_eval_auto_sub_rank (
+    pea_id             INT AUTO_INCREMENT PRIMARY KEY,
+    user_id            INT NOT NULL UNIQUE,
+
+    doctorate_mode     ENUM('triggered','points_only','not_eligible','blocked_historical')
+                           NOT NULL DEFAULT 'not_eligible',
+    doctorate_points   DECIMAL(5,2) NOT NULL DEFAULT 0,
+    doctorate_details  TEXT DEFAULT NULL,
+
+    award_mode         ENUM('triggered','not_eligible','insufficient_score')
+                           NOT NULL DEFAULT 'not_eligible',
+    award_details      TEXT DEFAULT NULL,
+    award_evidence     VARCHAR(255) DEFAULT NULL,
+
+    -- Calculation metadata
+    calculation_reason       TEXT DEFAULT NULL,
+    weighted_score_at_calc   DECIMAL(7,2) DEFAULT NULL,
+    rank_at_calc             VARCHAR(100) DEFAULT NULL,
+
+    -- Keep legacy status columns so old data is not lost
+    doctorate_status   ENUM('Triggered','Not Triggered','Needs Review') DEFAULT 'Needs Review',
+    award_status       ENUM('Triggered','Not Triggered','Needs Review') DEFAULT 'Needs Review',
+
+    updated_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================================
+-- 13. AUDIT LOGS
 -- ============================================================
 CREATE TABLE IF NOT EXISTS audit_logs (
     log_id           INT AUTO_INCREMENT PRIMARY KEY,
@@ -222,12 +312,17 @@ ON DUPLICATE KEY UPDATE campus_id = campus_id;
 
 -- ============================================================
 -- SEED: DEFAULT ADMIN ACCOUNT
---   Password is a placeholder — run pages/setup_admin.php
---   to set a real bcrypt password before going live.
 -- ============================================================
 INSERT INTO users (first_name, middle_name, last_name, email, password, role, status, employee_id)
-VALUES ('System', NULL, 'Administrator', 'admin@chmsuft.edu.ph', 'PLACEHOLDER', 'admin', 'active', 'ADMIN-001')
-ON DUPLICATE KEY UPDATE user_id = user_id;
+VALUES ('System', NULL, 'Administrator', 'succhmsuadmin@gmail.com',
+        '$2y$10$TKh8H1.PfbuS35e/VTMC5eFxHU0qlLGk.XdBZl0ey/tqULq9BjzO2',
+        'admin', 'active', 'ADMIN-001')
+ON DUPLICATE KEY UPDATE
+    email    = VALUES(email),
+    password = VALUES(password),
+    role     = VALUES(role),
+    status   = VALUES(status);
+-- Password: Admin@1234
 
 -- ============================================================
 -- SEED: SCORING CRITERIA  (DBM-CHED Joint Circular No. 3, s. 2022)
@@ -493,6 +588,25 @@ UPDATE scoring_criteria
         description = 'CONFIRMED SOURCE GAP: The Points column for Mentorship Services (JC01 s.2026, Section 15 item 2, p.78) is blank in the official circular — verified directly against the scanned page. Set max_points to a non-zero value only after confirming with CHED-RO or your adviser. Until set (max_points = 0), all mentorship submissions raise PENDING_DOCUMENTATION and are not scored. Hard rules: (1) regional/national/international only — local-only excluded; (2) Champion through 3rd place only — consolation prizes excluded. Required evidence: award certificate/photo, competition mechanics, org profile with prior winners list. Suggested discussion starting point: 1 pt (matching lowest confirmed Crit C rate — design recommendation, NOT sourced).'
     WHERE criterion_key = 'kra1_c_mentor_competition'
       AND cycle_id IS NULL;
+
+-- ============================================================
+-- 15. RUNTIME MIGRATION for anonymous checker identity
+--     checker_label holds the auto-incremented anonymous name
+--     ("Checker #1", "Checker #2", ...) shown wherever a checker's
+--     identity appears as text on faculty- or checker-facing pages.
+--     Real name stays visible only in Manage Users (admin view).
+-- ============================================================
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS checker_label VARCHAR(50) DEFAULT NULL AFTER role;
+
+-- Backfill labels for any pre-existing checker/talisay_checker accounts
+-- created before this column existed.
+SET @cl_rownum = (SELECT COALESCE(MAX(CAST(SUBSTRING(checker_label, 10) AS UNSIGNED)), 0)
+                   FROM users WHERE checker_label REGEXP '^Checker #[0-9]+$');
+UPDATE users
+    SET checker_label = CONCAT('Checker #', (@cl_rownum := @cl_rownum + 1))
+    WHERE role IN ('checker','talisay_checker') AND checker_label IS NULL
+    ORDER BY user_id ASC;
 
 -- Re-enable foreign key checks after all inserts
 SET FOREIGN_KEY_CHECKS = 1;

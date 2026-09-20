@@ -16,7 +16,7 @@ if (!isLoggedIn()) {
 
 // If they already changed it (flag gone), send them home
 if (empty($_SESSION['force_pw_change'])) {
-    $dest = in_array($_SESSION['role'] ?? '', ['faculty','checker_faculty'])
+    $dest = ($_SESSION['role'] ?? '') === 'faculty'
         ? 'portal.php'
         : '../index.php';
     header('Location: ' . $dest);
@@ -64,7 +64,7 @@ $full_name = formatDisplayName([
     'full_name'   => $_SESSION['full_name']   ?? 'User',
 ]);
 $role      = $_SESSION['role'] ?? 'faculty';
-$home_url  = in_array($role, ['faculty','checker_faculty']) ? 'portal.php' : '../index.php';
+$home_url  = $role === 'faculty' ? 'portal.php' : '../index.php';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -137,14 +137,12 @@ $home_url  = in_array($role, ['faculty','checker_faculty']) ? 'portal.php' : '..
             text-align: center;
         }
         .success-icon {
-            width: 72px; height: 72px;
+            width: 80px; height: 80px;
             border-radius: 50%;
-            background: #f0fdf4;
+            background: #1a3a6b;
             display: flex; align-items: center; justify-content: center;
             margin: 0 auto 1.25rem;
-            border: 2px solid #bbf7d0;
         }
-        .success-icon i { font-size: 2rem; color: #16a34a; }
         .success-title { font-size: 1.1rem; font-weight: 700; color: #0f172a; margin-bottom: .5rem; }
         .success-sub   { font-size: .85rem; color: #64748b; line-height: 1.6; margin-bottom: 1.5rem; }
 
@@ -159,6 +157,17 @@ $home_url  = in_array($role, ['faculty','checker_faculty']) ? 'portal.php' : '..
             padding-right: 2.5rem;
         }
         .input-wrap input:focus { border-color: #1e4d8c; }
+        /* Hide browser native password reveal buttons */
+        .input-wrap input::-ms-reveal,
+        .input-wrap input::-ms-clear { display: none !important; }
+        .input-wrap input::-webkit-credentials-auto-fill-button,
+        .input-wrap input::-webkit-strong-password-auto-fill-button {
+            display: none !important;
+            visibility: hidden !important;
+            pointer-events: none !important;
+            position: absolute !important;
+            right: -9999px !important;
+        }
         .input-wrap .eye-btn {
             position: absolute; right: .6rem; top: 50%;
             transform: translateY(-50%);
@@ -219,6 +228,11 @@ $home_url  = in_array($role, ['faculty','checker_faculty']) ? 'portal.php' : '..
         .btn-submit:hover { background: #1e4d8c; }
         .btn-submit:disabled { background: #94a3b8; cursor: not-allowed; }
 
+        @keyframes cpCheckDraw {
+            from { stroke-dashoffset: 50; }
+            to   { stroke-dashoffset: 0;  }
+        }
+
         /* Countdown */
         .countdown { font-size: .78rem; color: #94a3b8; text-align: center; margin-top: .75rem; }
         .countdown strong { color: #1e4d8c; }
@@ -249,8 +263,13 @@ $home_url  = in_array($role, ['faculty','checker_faculty']) ? 'portal.php' : '..
 
     <!-- ── Success ── -->
     <div class="success-body">
-        <div class="success-icon">
-            <i class="bi bi-shield-check-fill"></i>
+        <div class="success-icon" style="width:80px;height:80px;border-radius:50%;background:#1a3a6b;display:flex;align-items:center;justify-content:center;margin:0 auto 1.25rem;border:none;">
+            <svg width="44" height="44" viewBox="0 0 52 52" style="display:block;">
+                <polyline points="12,27 22,37 40,17" fill="none" stroke="#fff" stroke-width="4.5"
+                          stroke-linecap="round" stroke-linejoin="round"
+                          stroke-dasharray="50" stroke-dashoffset="50"
+                          style="animation:cpCheckDraw 0.4s ease 0.15s both;"/>
+            </svg>
         </div>
         <div class="success-title">Password Set Successfully</div>
         <div class="success-sub">
@@ -275,7 +294,6 @@ $home_url  = in_array($role, ['faculty','checker_faculty']) ? 'portal.php' : '..
 
     <!-- ── Alert banner ── -->
     <div class="alert-banner">
-        <i class="bi bi-exclamation-triangle-fill"></i>
         <div>
             <strong>Action required before you continue.</strong><br>
             You logged in with a temporary password. Please set a permanent password now to access the system.
@@ -284,10 +302,6 @@ $home_url  = in_array($role, ['faculty','checker_faculty']) ? 'portal.php' : '..
 
     <!-- ── Form ── -->
     <div class="card-body">
-
-        <p style="font-size:.88rem;color:#1e293b;font-weight:600;margin-bottom:1.25rem;">
-            Hello, <?= htmlspecialchars($full_name) ?> 👋
-        </p>
 
         <?php if ($error): ?>
         <div class="err-box">
@@ -306,8 +320,10 @@ $home_url  = in_array($role, ['faculty','checker_faculty']) ? 'portal.php' : '..
                            placeholder="Min. 8 characters"
                            autocomplete="new-password"
                            oninput="checkStrength(this.value)"
+                           data-lpignore="true"
+                           data-form-type="other"
                            required>
-                    <button type="button" class="eye-btn" onclick="toggleEye('np', this)">
+                    <button type="button" class="eye-btn" onclick="toggleEye('np', this)" aria-label="Toggle password visibility">
                         <i class="bi bi-eye"></i>
                     </button>
                 </div>
@@ -335,8 +351,10 @@ $home_url  = in_array($role, ['faculty','checker_faculty']) ? 'portal.php' : '..
                            placeholder="Re-enter password"
                            autocomplete="new-password"
                            oninput="checkMatch()"
+                           data-lpignore="true"
+                           data-form-type="other"
                            required>
-                    <button type="button" class="eye-btn" onclick="toggleEye('cp', this)">
+                    <button type="button" class="eye-btn" onclick="toggleEye('cp', this)" aria-label="Toggle password visibility">
                         <i class="bi bi-eye"></i>
                     </button>
                 </div>
@@ -344,8 +362,7 @@ $home_url  = in_array($role, ['faculty','checker_faculty']) ? 'portal.php' : '..
             </div>
 
             <button type="submit" class="btn-submit" id="submitBtn" disabled>
-                <i class="bi bi-shield-lock-fill"></i>
-                Set Password &amp; Continue
+                Set Password
             </button>
 
         </form>
@@ -364,14 +381,16 @@ $home_url  = in_array($role, ['faculty','checker_faculty']) ? 'portal.php' : '..
 const COLORS = ['#e2e8f0','#475569','#475569','#1a3a6b'];
 
 function toggleEye(inputId, btn) {
-    const inp  = document.getElementById(inputId);
+    const inp = document.getElementById(inputId);
     const icon = btn.querySelector('i');
     if (inp.type === 'password') {
         inp.type = 'text';
-        icon.className = 'bi bi-eye-slash';
+        btn.setAttribute('aria-pressed', 'true');
+        if (icon) icon.className = 'bi bi-eye-slash';
     } else {
         inp.type = 'password';
-        icon.className = 'bi bi-eye';
+        btn.setAttribute('aria-pressed', 'false');
+        if (icon) icon.className = 'bi bi-eye';
     }
 }
 

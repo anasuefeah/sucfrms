@@ -32,7 +32,7 @@ $count_stmt->execute($params);
 $total_rows  = $count_stmt->fetchColumn();
 $total_pages = max(1, ceil($total_rows / $per_page));
 
-$logs_stmt = $pdo->prepare("SELECT al.*, u.full_name FROM audit_logs al LEFT JOIN users u ON al.user_id = u.user_id $where_sql ORDER BY al.timestamp DESC LIMIT " . (int)$per_page . " OFFSET " . (int)$offset);
+$logs_stmt = $pdo->prepare("SELECT al.*, u.full_name, u.checker_label FROM audit_logs al LEFT JOIN users u ON al.user_id = u.user_id $where_sql ORDER BY al.timestamp DESC LIMIT " . (int)$per_page . " OFFSET " . (int)$offset);
 $logs_stmt->execute($params);
 $logs = $logs_stmt->fetchAll();
 
@@ -215,7 +215,13 @@ function actionBadge(string $action): array {
                 <td style="padding:0.65rem 1rem;color:#94a3b8;font-size:0.78rem;vertical-align:middle;"><?= $offset + $i + 1 ?></td>
                 <?php if ($role === 'admin'): ?>
                 <td style="padding:0.65rem 0.75rem;font-weight:600;color:#1e293b;font-size:0.82rem;vertical-align:middle;">
-                    <?= sanitize($log['full_name'] ?? 'System') ?>
+                    <?php
+                    $actor_role = $log['role_at_time'] ?? '';
+                    $actor_display = in_array($actor_role, ['checker','talisay_checker'])
+                        ? checkerDisplayLabel(['checker_label' => $log['checker_label'] ?? null, 'user_id' => $log['user_id'] ?? null])
+                        : ($log['full_name'] ?? 'System');
+                    ?>
+                    <?= sanitize($actor_display) ?>
                 </td>
                 <td style="padding:0.65rem 0.75rem;vertical-align:middle;">
                     <?php

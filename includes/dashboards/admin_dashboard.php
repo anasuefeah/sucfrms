@@ -2,13 +2,13 @@
 $cycle = getActiveCycle($pdo);
 
 // Core stats
-$total_faculty  = (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role IN ('faculty','checker_faculty')")->fetchColumn();
+$total_faculty  = (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role = 'faculty'")->fetchColumn();
 $total_applied  = (int)$pdo->query("SELECT COUNT(DISTINCT user_id) FROM applications WHERE status != 'draft'")->fetchColumn();
 $total_approved = (int)$pdo->query("SELECT COUNT(*) FROM applications WHERE status='approved'")->fetchColumn();
 $pending_review = (int)$pdo->query("SELECT COUNT(*) FROM applications WHERE status='submitted'")->fetchColumn();
 $under_review   = (int)$pdo->query("SELECT COUNT(*) FROM applications WHERE status='under_review'")->fetchColumn();
 $needs_revision = (int)$pdo->query("SELECT COUNT(*) FROM applications WHERE status='needs_revision'")->fetchColumn();
-$total_checkers = (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role IN ('checker','checker_faculty','talisay_checker') AND status='active'")->fetchColumn();
+$total_checkers = (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role IN ('checker','talisay_checker') AND status='active'")->fetchColumn();
 
 // Deadline info removed — cycle timing is controlled by Open/Closed status only.
 $days_left = null; $deadline_str = ''; $deadline_urgent = false;
@@ -29,7 +29,7 @@ $campus_stats = $pdo->query("
            COUNT(DISTINCT CASE WHEN a.status = 'approved' THEN a.application_id END) AS reclass_count,
            COUNT(DISTINCT CASE WHEN a.status IN ('submitted','under_review') THEN a.application_id END) AS pending_count
     FROM campuses c
-    LEFT JOIN users u ON u.campus_id = c.campus_id AND u.role IN ('faculty','checker_faculty')
+    LEFT JOIN users u ON u.campus_id = c.campus_id AND u.role = 'faculty'
     LEFT JOIN applications a ON a.user_id = u.user_id
     WHERE c.is_active = 1
     GROUP BY c.campus_id, c.campus_name ORDER BY applied_count DESC
@@ -177,7 +177,14 @@ $kpi = [
                     transition:border-color .15s,box-shadow .15s;"
              onmouseover="this.style.borderColor='#1a3a6b';this.style.boxShadow='0 2px 10px rgba(26,58,107,.08)'"
              onmouseout="this.style.borderColor='#e2e8f0';this.style.boxShadow=''">
-            <div style="font-size:1.9rem;font-weight:800;color:#1a3a6b;line-height:1;letter-spacing:-1px;">
+            <?php
+            $admin_poll_keys = ['admin_faculty','admin_applied','admin_pending','admin_review','admin_revision','admin_approved'];
+            static $admin_kpi_idx = 0;
+            $apk = $admin_poll_keys[$admin_kpi_idx] ?? '';
+            $admin_kpi_idx++;
+            ?>
+            <div style="font-size:1.9rem;font-weight:800;color:#1a3a6b;line-height:1;letter-spacing:-1px;"
+                 data-poll-key="<?= $apk ?>">
                 <?= $val ?>
             </div>
             <div style="font-size:0.7rem;font-weight:600;color:#64748b;margin-top:5px;

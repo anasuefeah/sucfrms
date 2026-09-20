@@ -69,7 +69,7 @@ if (empty($_SESSION['_notif_cleanup_done'])) {
               AND n.type IN ('new_submission', 'revision_resubmitted')");
         $pdo->exec("DELETE n FROM notifications n
             JOIN users u ON n.user_id = u.user_id
-            WHERE u.role IN ('checker','checker_faculty')
+            WHERE u.role = 'checker'
               AND n.type = 'new_talisay_submission'");
     } catch (\Exception $e) {}
     $_SESSION['_notif_cleanup_done'] = true;
@@ -99,16 +99,16 @@ if (isset($_GET['notif_action'])) {
             // Talisay checkers should NOT see new_submission (that's for campus checkers)
             $excluded_types[] = 'new_submission';
             $excluded_types[] = 'revision_resubmitted';
-        } elseif (in_array($role_notif, ['checker', 'checker_faculty'])) {
+        } elseif ($role_notif === 'checker') {
             // Campus checkers should NOT see new_talisay_submission (that's for talisay only)
             $excluded_types[] = 'new_talisay_submission';
         }
         if (!empty($excluded_types)) {
             $ph = implode(',', array_fill(0, count($excluded_types), '?'));
-            $rows = $pdo->prepare("SELECT notif_id, type, message, application_id, is_read, created_at FROM notifications WHERE user_id=? AND type NOT IN ($ph) ORDER BY created_at DESC LIMIT 30");
+            $rows = $pdo->prepare("SELECT n.notif_id, n.type, n.message, n.application_id, n.submission_id, ks.kra_category, n.is_read, UNIX_TIMESTAMP(n.created_at) AS created_at FROM notifications n LEFT JOIN kra_submissions ks ON ks.submission_id = n.submission_id WHERE n.user_id=? AND n.type NOT IN ($ph) ORDER BY n.created_at DESC LIMIT 30");
             $rows->execute(array_merge([$uid], $excluded_types));
         } else {
-            $rows = $pdo->prepare("SELECT notif_id, type, message, application_id, is_read, created_at FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 30");
+            $rows = $pdo->prepare("SELECT n.notif_id, n.type, n.message, n.application_id, n.submission_id, ks.kra_category, n.is_read, UNIX_TIMESTAMP(n.created_at) AS created_at FROM notifications n LEFT JOIN kra_submissions ks ON ks.submission_id = n.submission_id WHERE n.user_id=? ORDER BY n.created_at DESC LIMIT 30");
             $rows->execute([$uid]);
         }
         echo json_encode(['ok' => true, 'notifs' => $rows->fetchAll(PDO::FETCH_ASSOC)]);
@@ -127,9 +127,9 @@ try {
     $pdo->exec("ALTER TABLE users MODIFY COLUMN status ENUM('active','inactive','rejected') DEFAULT 'active'");
 } catch (\Exception $e) { /* already updated or not needed */ }
 
-// ── Runtime migration: add 'checker_faculty' and 'talisay_checker' to users.role ENUM ──
+// ── Runtime migration: add 'talisay_checker' to users.role ENUM ──
 try {
-    $pdo->exec("ALTER TABLE users MODIFY COLUMN role ENUM('faculty','checker','admin','checker_faculty','talisay_checker') DEFAULT 'faculty'");
+    $pdo->exec("ALTER TABLE users MODIFY COLUMN role ENUM('faculty','checker','admin','talisay_checker') DEFAULT 'faculty'");
 } catch (\Exception $e) { /* already updated */ }
 
 // ── Runtime migration: split full_name into first_name / middle_name / last_name ──
@@ -178,13 +178,19 @@ try {
     )");
 } catch (\Exception $e) { /* already exists */ }
 
+// ── Runtime migration: notifications.submission_id — lets a "needs_revision"
+//    notification deep-link straight to the flagged KRA entry ──
+try {
+    $pdo->exec("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS submission_id INT DEFAULT NULL AFTER application_id");
+} catch (\Exception $e) { /* already exists / unsupported syntax on older MySQL */ }
+
 // ── Runtime migration: create help_articles table ──
 try {
     $pdo->exec("CREATE TABLE IF NOT EXISTS help_articles (
         article_id   INT AUTO_INCREMENT PRIMARY KEY,
         title        VARCHAR(255) NOT NULL,
         content      TEXT NOT NULL,
-        category     ENUM('help','whats_new') NOT NULL DEFAULT 'help',
+        category     ENUM('help') NOT NULL DEFAULT 'help',
         is_published TINYINT(1) DEFAULT 1,
         created_by   INT DEFAULT NULL,
         created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -232,6 +238,52 @@ try {
 } catch (\Exception $e) { /* already corrected or table missing */ }
 
 // ── AJAX: submit feedback ──
+// Runtime migration: de-duplicate scoring criteria and make NULL scopes unique.
+// MySQL unique indexes allow multiple NULLs, so repeated seeds could create
+// duplicate global/cycle-wide rows such as Criterion A SET/SEF.
+try {
+    $pdo->exec("DELETE sc FROM scoring_criteria sc
+        JOIN (
+            SELECT MIN(criteria_id) AS keep_id, cycle_id, position_rank, kra_category, criterion_label
+            FROM scoring_criteria
+            GROUP BY cycle_id, position_rank, kra_category, criterion_label
+            HAVING COUNT(*) > 1
+        ) dup
+          ON sc.cycle_id <=> dup.cycle_id
+         AND sc.position_rank <=> dup.position_rank
+         AND sc.kra_category = dup.kra_category
+         AND sc.criterion_label = dup.criterion_label
+         AND sc.criteria_id <> dup.keep_id");
+
+    $pdo->exec("DELETE sc FROM scoring_criteria sc
+        JOIN (
+            SELECT MIN(criteria_id) AS keep_id, cycle_id, position_rank, criterion_key
+            FROM scoring_criteria
+            GROUP BY cycle_id, position_rank, criterion_key
+            HAVING COUNT(*) > 1
+        ) dup
+          ON sc.cycle_id <=> dup.cycle_id
+         AND sc.position_rank <=> dup.position_rank
+         AND sc.criterion_key = dup.criterion_key
+         AND sc.criteria_id <> dup.keep_id");
+} catch (\Exception $e) { /* table may not exist yet */ }
+try {
+    $pdo->exec("ALTER TABLE scoring_criteria
+        ADD COLUMN cycle_scope INT GENERATED ALWAYS AS (IFNULL(cycle_id, 0)) STORED AFTER cycle_id");
+} catch (\Exception $e) { /* already exists / unsupported */ }
+try {
+    $pdo->exec("ALTER TABLE scoring_criteria
+        ADD COLUMN position_scope VARCHAR(100) GENERATED ALWAYS AS (IFNULL(position_rank, '')) STORED AFTER position_rank");
+} catch (\Exception $e) { /* already exists / unsupported */ }
+try {
+    $pdo->exec("ALTER TABLE scoring_criteria
+        ADD UNIQUE KEY uq_scoring_scope_key (cycle_scope, position_scope, criterion_key)");
+} catch (\Exception $e) { /* already exists / unsupported */ }
+try {
+    $pdo->exec("ALTER TABLE scoring_criteria
+        ADD UNIQUE KEY uq_scoring_scope_label (cycle_scope, position_scope, kra_category, criterion_label)");
+} catch (\Exception $e) { /* already exists / unsupported */ }
+
 if (isset($_GET['action']) && $_GET['action'] === 'submit_feedback') {
     header('Content-Type: application/json');
     $subject = trim($_POST['subject'] ?? '');
@@ -317,16 +369,14 @@ if (empty($_SESSION['_notif_names_fixed'])) {
 }
 
 // Role-based allowed pages
-$faculty_pages         = ['dashboard','my_application','my_audit','profile','apply','score_comparison','help','whats_new'];
-$checker_pages         = ['dashboard','review_queue','review_application','checker_audit','profile','help','whats_new'];
-$checker_faculty_pages = ['dashboard','my_application','my_audit','profile','apply','review_queue','review_application','checker_audit','score_comparison','help','whats_new'];
-$talisay_pages         = ['dashboard','review_queue','review_application','checker_audit','profile','help','whats_new'];
-$admin_pages           = ['dashboard','manage_users','audit','cycles','config','analytics','profile','all_applications','manage_campuses','view_application','help','whats_new','feedback'];
+$faculty_pages         = ['dashboard','my_application','my_audit','profile','apply','score_comparison','help'];
+$checker_pages         = ['dashboard','review_queue','review_application','checker_audit','profile','help'];
+$talisay_pages         = ['dashboard','review_queue','review_application','checker_audit','profile','help'];
+$admin_pages           = ['dashboard','manage_users','audit','cycles','config','analytics','profile','all_applications','manage_campuses','view_application','help','feedback'];
 
 $allowed = match($role) {
     'admin'            => $admin_pages,
     'checker'          => $checker_pages,
-    'checker_faculty'  => $checker_faculty_pages,
     'talisay_checker'  => $talisay_pages,
     default            => $faculty_pages,
 };
@@ -374,9 +424,8 @@ include 'includes/header.php';
                     <?php endif; endif; ?>
                     <div class="min-w-0">
                         <p class="sidebar-profile-name text-truncate"><?= htmlspecialchars($_SESSION['full_name'] ?? '') ?></p>
-                        <span class="badge <?= $role === 'admin' ? 'bg-warning text-dark' : ($role === 'checker' ? 'bg-success' : ($role === 'checker_faculty' ? 'bg-purple text-white' : 'bg-info')) ?>"
-                              style="<?= $role === 'checker_faculty' ? 'background:#1a3a6b!important;' : '' ?>">
-                            <?= $role === 'checker_faculty' ? 'Checker/Faculty' : ucfirst($role) ?>
+                        <span class="badge <?= $role === 'admin' ? 'bg-warning text-dark' : ($role === 'checker' ? 'bg-success' : 'bg-info') ?>">
+                            <?= ucfirst(str_replace('_',' ',$role)) ?>
                         </span>
                     </div>
                 </div>
@@ -410,26 +459,6 @@ include 'includes/header.php';
                     </a>
                     <div class="sidebar-section-label">Account</div>
                     <a href="?page=checker_audit" class="nav-link sidebar-link <?= $page==='checker_audit'?'active':'' ?>">
-                        <i class="bi bi-clock-history me-2"></i>My Activity Log
-                    </a>
-                    <a href="?page=profile" class="nav-link sidebar-link <?= $page==='profile'?'active':'' ?>">
-                        <i class="bi bi-person me-2"></i>Profile
-                    </a>
-
-                    <?php elseif ($role === 'checker_faculty'): ?>
-                    <div class="sidebar-section-label">My Application</div>
-                    <a href="?page=my_application" class="nav-link sidebar-link <?= $page==='my_application'?'active':'' ?>">
-                        <i class="bi bi-file-earmark-person me-2"></i>Application Status
-                    </a>
-                    <a href="?page=apply" class="nav-link sidebar-link <?= $page==='apply'?'active':'' ?>">
-                        <i class="bi bi-ui-checks-grid me-2"></i>Apply / KRA Entry
-                    </a>
-                    <div class="sidebar-section-label">Review</div>
-                    <a href="?page=review_queue" class="nav-link sidebar-link <?= $page==='review_queue'?'active':'' ?>">
-                        <i class="bi bi-inbox me-2"></i>Review Queue
-                    </a>
-                    <div class="sidebar-section-label">Account</div>
-                    <a href="?page=my_audit" class="nav-link sidebar-link <?= in_array($page,['my_audit','checker_audit'])?'active':'' ?>">
                         <i class="bi bi-clock-history me-2"></i>My Activity Log
                     </a>
                     <a href="?page=profile" class="nav-link sidebar-link <?= $page==='profile'?'active':'' ?>">
@@ -506,7 +535,7 @@ include 'includes/header.php';
 
                 <div class="sidebar-bottom">
                     <div class="sidebar-divider" style="margin:0 0 .75rem;"></div>
-                    <?php if (in_array($role, ['faculty','checker_faculty'])): ?>
+                    <?php if ($role === 'faculty'): ?>
                     <a href="pages/portal.php"
                        style="display:flex;align-items:center;gap:0.4rem;padding:0.3rem 0.75rem;
                               margin-bottom:0.4rem;border-radius:6px;text-decoration:none;
@@ -539,7 +568,7 @@ include 'includes/header.php';
             <?php showFlash(); ?>
             <?php switch ($page) {
                 case 'dashboard':
-                    $dash_role = $role === 'checker_faculty' ? 'checker' : ($role === 'talisay_checker' ? 'talisay_checker' : $role);
+                    $dash_role = $role === 'talisay_checker' ? 'talisay_checker' : $role;
                     include 'includes/dashboards/' . $dash_role . '_dashboard.php';
                     break;
                 case 'my_application':
@@ -549,7 +578,7 @@ include 'includes/header.php';
                     include 'includes/faculty/score_comparison.php';
                     break;
                 case 'apply':
-                    if ($role === 'faculty' || $role === 'checker_faculty') include 'modules/apply.php';
+                    if ($role === 'faculty') include 'modules/apply.php';
                     break;
                 case 'my_audit':
                 case 'checker_audit':
@@ -595,9 +624,6 @@ include 'includes/header.php';
                     break;
                 case 'help':
                     include 'includes/help.php';
-                    break;
-                case 'whats_new':
-                    include 'includes/whats_new.php';
                     break;
                 default:
                     break;

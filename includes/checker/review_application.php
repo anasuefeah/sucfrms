@@ -25,6 +25,10 @@ catch (\Exception $e) {
         ADD COLUMN revision_by INT DEFAULT NULL AFTER revision_note,
         ADD COLUMN revision_at TIMESTAMP NULL AFTER revision_by");
 }
+try { $pdo->query("SELECT checker_note FROM kra_submissions LIMIT 1"); }
+catch (\Exception $e) {
+    $pdo->exec("ALTER TABLE kra_submissions ADD COLUMN checker_note TEXT DEFAULT NULL AFTER revision_at");
+}
 // Per-checker verification tracking
 try { $pdo->query("SELECT ckv_id FROM kra_checker_verifications LIMIT 1"); }
 catch (\Exception $e) {
@@ -126,7 +130,7 @@ function countRejectedCheckers($pdo, int $app_id): int {
 // -- Helper: total active checkers in the system ---------------
 function countActiveCheckers($pdo): int {
     $stmt = $pdo->query("SELECT COUNT(*) FROM users
-        WHERE role IN ('checker','checker_faculty') AND status = 'active'");
+        WHERE role = 'checker' AND status = 'active'");
     return max(1, (int)$stmt->fetchColumn());
 }
 
@@ -154,7 +158,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'start_review' && $app['status'] === 'submitted') {
         $pdo->prepare("UPDATE applications SET status='under_review', checker_id=? WHERE application_id=?")
             ->execute([$checker_id, $app_id]);
-        $my_name = $_SESSION['full_name'] ?? "Checker #{$checker_id}";
         logAudit($pdo, $checker_id, 'Review Started', "You started reviewing {$app['full_name']}'s application.");
         // Notify faculty their application is now under review
         createNotif($pdo, $app['user_id'], 'under_review', 'Your application is now under review by a campus checker.', $app_id);
@@ -182,15 +185,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pdo->prepare("UPDATE kra_submissions
                     SET computed_points=?,
                         faculty_original_score = COALESCE(faculty_original_score, computed_points),
-                        verified=1, verified_by=?, verified_at=NOW()
+                        verified=1, verified_by=?, verified_at=NOW(),
+                        checker_note=?
                     WHERE submission_id=? AND application_id=?")
-                    ->execute([$new_pts, $checker_id, $sub_id, $app_id]);
+                    ->execute([$new_pts, $checker_id, $alter_note ?: null, $sub_id, $app_id]);
 
                 // Log for the checker (their own activity)
                 logAudit($pdo, $checker_id, 'Score Adjusted', "You adjusted {$app['full_name']}'s {$old['kra_category']} score from {$old['computed_points']} to {$new_pts}." . ($alter_note ? " Note: {$alter_note}" : ''));
 
                 // Log for the faculty (so it appears in their activity log)
-                $checker_name = $_SESSION['full_name'] ?? "Checker #{$checker_id}";
+                $checker_name = $_SESSION['checker_label'] ?? "Checker #{$checker_id}";
                 logAudit($pdo, $app['user_id'], 'Score Adjusted by Checker', "{$old['kra_category']} score adjusted from {$old['computed_points']} to {$new_pts} by {$checker_name}." . ($alter_note ? " Note: {$alter_note}" : ''));
 
                 // Notify faculty of score adjustment
@@ -238,8 +242,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         echo "<script>window.location.href='index.php?page={$return_page}&id={$app_id}&score_saved=1#kra-verification';</script>"; exit;
     }
 
-    // Request revision on a specific KRA entry &mdash; blocked once approved
-    if ($action === 'request_revision' && in_array($app['status'], ['submitted','under_review','needs_revision'])) {
+    // Request revision on a specific KRA entry &mdash; requires review already started
+    if ($action === 'request_revision' && in_array($app['status'], ['under_review','needs_revision'])) {
         $sub_id   = intval($_POST['submission_id'] ?? 0);
         $rev_note = trim($_POST['revision_note'] ?? '');
         if ($sub_id && $rev_note) {
@@ -261,17 +265,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $rev_cat_row->execute([$sub_id]);
             $rev_cat = $rev_cat_row->fetchColumn() ?: 'KRA';
             logAudit($pdo, $checker_id, 'Revision Requested', "You requested a revision on {$app['full_name']}'s {$rev_cat} entry. Note: {$rev_note}");
-            // Notify faculty to fix flagged KRA entry
+            // Notify faculty to fix flagged KRA entry — deep-links to that entry's KRA tab
             createNotif($pdo, $app['user_id'], 'needs_revision',
                 'A checker has flagged a KRA entry for revision. Please review and resubmit.',
-                $app_id);
+                $app_id, $sub_id);
             flashMessage('warning', 'Revision requested. Faculty can now edit only the flagged entry and resubmit.');
             echo "<script>window.location.href='index.php?page={$return_page}&id={$app_id}';</script>"; exit;
         }
     }
 
-    // Clear a revision flag
-    if ($action === 'clear_revision' && in_array($app['status'], ['submitted','under_review','needs_revision'])) {
+    // Clear a revision flag — only allowed after faculty resubmits (status back to under_review)
+    if ($action === 'clear_revision' && in_array($app['status'], ['submitted','under_review'])) {
         $sub_id = intval($_POST['submission_id'] ?? 0);
         if ($sub_id) {
             $pdo->prepare("UPDATE kra_submissions SET revision_status='ok',
@@ -289,6 +293,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         && in_array($app['status'], ['under_review','talisay_review','needs_revision'])
         && (isChecker() || isTalisayChecker() || isAdmin())) {
         $sub_id = intval($_POST['submission_id'] ?? 0);
+        $verify_note = trim($_POST['note'] ?? '');
         if ($sub_id) {
             $row = $pdo->prepare("SELECT kra_category FROM kra_submissions WHERE submission_id=? AND application_id=?");
             $row->execute([$sub_id, $app_id]);
@@ -300,8 +305,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 // Stamp faculty_original_score if not yet set
                 $pdo->prepare("UPDATE kra_submissions SET faculty_original_score = COALESCE(faculty_original_score, computed_points) WHERE submission_id=?")
                     ->execute([$sub_id]);
+                // Save the checker's note (same field alter_score writes to)
+                $pdo->prepare("UPDATE kra_submissions SET checker_note=? WHERE submission_id=?")
+                    ->execute([$verify_note ?: null, $sub_id]);
                 // If all active checkers have verified, set the global verified=1
-                $total_ck = (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role IN ('checker','checker_faculty') AND status='active'")->fetchColumn();
+                $total_ck = (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role = 'checker' AND status='active'")->fetchColumn();
                 // Simpler: just count directly
                 $done_stmt = $pdo->prepare("SELECT COUNT(*) FROM kra_checker_verifications WHERE submission_id=?");
                 $done_stmt->execute([$sub_id]);
@@ -310,7 +318,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $pdo->prepare("UPDATE kra_submissions SET verified=1, verified_by=?, verified_at=NOW() WHERE submission_id=?")
                         ->execute([$checker_id, $sub_id]);
                 }
-                logAudit($pdo, $checker_id, 'Evidence Verified', "You verified {$app['full_name']}'s {$row['kra_category']} entry.");
+                logAudit($pdo, $checker_id, 'Evidence Verified', "You verified {$app['full_name']}'s {$row['kra_category']} entry." . ($verify_note ? " Note: {$verify_note}" : ''));
             }
         }
         if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && $_SERVER['HTTP_X_REQUESTED_WITH'] === 'XMLHttpRequest') {
@@ -483,13 +491,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         logAudit($pdo, $checker_id, 'Checker Rejected', "You returned {$app['full_name']}'s application. ({$rejected_count}/{$total_checkers} rejections) Reason: {$remarks}");
 
         if ($rejected_count >= $total_checkers) {
-            $all_remarks_stmt = $pdo->prepare("SELECT u.full_name, r.remarks
+            $all_remarks_stmt = $pdo->prepare("SELECT u.user_id, u.checker_label, r.remarks
                 FROM application_checker_reviews r
                 JOIN users u ON r.checker_id = u.user_id
                 WHERE r.application_id = ? AND r.decision = 'rejected'");
             $all_remarks_stmt->execute([$app_id]);
             $combined = implode(' | ', array_map(
-                fn($row) => $row['full_name'] . ': ' . $row['remarks'],
+                fn($row) => checkerDisplayLabel($row) . ': ' . $row['remarks'],
                 $all_remarks_stmt->fetchAll()
             ));
             $pdo->prepare("UPDATE applications SET status='rejected', reviewed_at=NOW(),
@@ -516,6 +524,85 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         logAudit($pdo, $_SESSION['user_id'], 'Application Rejected by Admin', "You rejected {$app['full_name']}'s application (final decision). Remarks: {$admin_remarks}");
         flashMessage('warning', "Application has been <strong>rejected</strong>. This is a final decision.");
         echo "<script>window.location.href='index.php?page=all_applications&filter=approved';</script>"; exit;
+    }
+
+    // ── Auto Sub-Rank: checker verifies or rejects evidence ───────────────
+    if ($action === 'verify_asr_evidence'
+        && in_array($app['status'], ['under_review','talisay_review','needs_revision','submitted'])
+        && (isChecker() || isTalisayChecker() || isAdmin())) {
+
+        if (!class_exists('\Scoring\AutoSubRankCalculator')) {
+            require_once __DIR__ . '/../../includes/scoring/autosubrank.php';
+        }
+
+        $criterion  = $_POST['criterion']         ?? '';   // 'doctorate' or 'award'
+        $decision   = $_POST['verification']       ?? '';   // 'verified' or 'rejected'
+        $notes      = trim($_POST['verify_notes'] ?? '');
+
+        if (in_array($criterion, ['doctorate','award']) && in_array($decision, ['verified','rejected'])) {
+
+            // Build the right column set
+            if ($criterion === 'doctorate') {
+                $pdo->prepare("
+                    INSERT INTO auto_sub_rank
+                        (application_id, doctorate_verified, doctorate_verified_by,
+                         doctorate_verified_at, doctorate_verification_notes)
+                    VALUES (?, ?, ?, NOW(), ?)
+                    ON DUPLICATE KEY UPDATE
+                        doctorate_verified       = VALUES(doctorate_verified),
+                        doctorate_verified_by    = VALUES(doctorate_verified_by),
+                        doctorate_verified_at    = NOW(),
+                        doctorate_verification_notes = VALUES(doctorate_verification_notes)
+                ")->execute([$app_id, $decision, $checker_id, $notes]);
+            } else {
+                $pdo->prepare("
+                    INSERT INTO auto_sub_rank
+                        (application_id, award_verified, award_verified_by,
+                         award_verified_at, award_verification_notes)
+                    VALUES (?, ?, ?, NOW(), ?)
+                    ON DUPLICATE KEY UPDATE
+                        award_verified       = VALUES(award_verified),
+                        award_verified_by    = VALUES(award_verified_by),
+                        award_verified_at    = NOW(),
+                        award_verification_notes = VALUES(award_verification_notes)
+                ")->execute([$app_id, $decision, $checker_id, $notes]);
+            }
+
+            // If checker rejects evidence: recalculate auto sub-rank without that criterion
+            if ($decision === 'rejected') {
+                // Force the mode to not_eligible for the rejected criterion
+                $col = ($criterion === 'doctorate') ? 'doctorate_mode' : 'award_mode';
+                $pdo->prepare("UPDATE auto_sub_rank SET {$col}='not_eligible' WHERE application_id=?")
+                    ->execute([$app_id]);
+
+                // Recalculate application score (doctorate no longer contributes)
+                recalcApplicationScore($pdo, $app_id);
+            }
+
+            $crit_label = ucfirst($criterion);
+            logAudit($pdo, $checker_id, "ASR Evidence {$decision}",
+                "You {$decision} the {$crit_label} evidence for {$app['full_name']}'s application #{$app_id}." .
+                ($notes ? " Note: {$notes}" : ''));
+
+            // Notify faculty
+            $notif_type = $decision === 'verified' ? 'asr_evidence_verified' : 'asr_evidence_rejected';
+            $notif_msg  = $decision === 'verified'
+                ? "Your {$crit_label} evidence has been verified by a checker."
+                : "Your {$crit_label} evidence was rejected by a checker. Reason: " . ($notes ?: 'No reason given') . ". Please check your Auto Sub-Rank tab.";
+            createNotif($pdo, $app['user_id'], $notif_type, $notif_msg, $app_id);
+
+            if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && $_SERVER['HTTP_X_REQUESTED_WITH'] === 'XMLHttpRequest') {
+                header('Content-Type: application/json');
+                echo json_encode(['ok' => true, 'decision' => $decision, 'criterion' => $criterion]);
+                exit;
+            }
+
+            $verb = $decision === 'verified' ? 'verified' : 'rejected';
+            flashMessage($decision === 'verified' ? 'success' : 'warning',
+                "{$crit_label} evidence <strong>{$verb}</strong>." .
+                ($decision === 'rejected' ? ' Score has been recalculated.' : ''));
+        }
+        echo "<script>window.location.href='index.php?page={$return_page}&id={$app_id}#asr-verification';</script>"; exit;
     }
 }
 
@@ -567,8 +654,15 @@ $slots_taken       = count($checker_reviews);
 // No join needed &mdash; every active checker can decide directly
 $can_join          = false; // removed
 $can_act_checker   = !isAdmin() && !$i_decided && in_array($app['status'], ['submitted','under_review']);
-// Revision only allowed while still under active review &mdash; NOT after checkers have approved or admin has acted
-$can_act_revision  = !isAdmin() && !$i_decided && in_array($app['status'], ['submitted','under_review','needs_revision']);
+// Review is "started" once app status moves to under_review or needs_revision (set by start_review action)
+$i_started_review  = in_array($app['status'], ['under_review','needs_revision','talisay_review']);
+// Revision/verify only allowed AFTER review has been started — not while status is still 'submitted'
+$can_act_revision  = !isAdmin() && !$i_decided && $i_started_review;
+$auto_revision_notice = 'One or more KRA entries need revision. Please check the highlighted entries and resubmit.';
+$visible_checker_remarks = trim((string)($app['checker_remarks'] ?? ''));
+if ($visible_checker_remarks === $auto_revision_notice) {
+    $visible_checker_remarks = '';
+}
 
 ?>
 <?php showFlash(); ?>
@@ -723,13 +817,13 @@ if ($has_flags):
     <?php
     // Get all active checkers with their decision for this application
     $all_checkers_stmt = $pdo->prepare("
-        SELECT u.user_id, u.full_name, u.first_name, u.middle_name, u.last_name,
+        SELECT u.user_id, u.checker_label,
                r.decision, r.remarks, r.decided_at
         FROM users u
         LEFT JOIN application_checker_reviews r
             ON r.application_id = ? AND r.checker_id = u.user_id
-        WHERE u.role IN ('checker','checker_faculty') AND u.status = 'active'
-        ORDER BY u.full_name ASC
+        WHERE u.role = 'checker' AND u.status = 'active'
+        ORDER BY u.user_id ASC
     ");
     $all_checkers_stmt->execute([$app_id]);
     $all_checkers_list = $all_checkers_stmt->fetchAll();
@@ -752,12 +846,12 @@ if ($has_flags):
                             background:<?= $slot_colors[$idx % count($slot_colors)] ?>;
                             display:flex;align-items:center;justify-content:center;flex-shrink:0;">
                     <span style="color:#fff;font-size:0.68rem;font-weight:700;">
-                        <?= strtoupper(substr($chk['full_name'],0,1)) ?>
+                        <i class="bi bi-person-fill"></i>
                     </span>
                 </div>
                 <div style="min-width:0;">
                     <div style="font-size:0.75rem;font-weight:600;color:#1e293b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-                        <?= htmlspecialchars(formatDisplayName($chk)) ?><?= $is_me ? ' <span style="color:#64748b;font-weight:400;font-size:0.65rem;">(you)</span>' : '' ?>
+                        <?= htmlspecialchars(checkerDisplayLabel($chk)) ?><?= $is_me ? ' <span style="color:#64748b;font-weight:400;font-size:0.65rem;">(you)</span>' : '' ?>
                     </div>
                 </div>
             </div>
@@ -795,8 +889,8 @@ if ($has_flags):
             </span>
         </div>
         <div class="col-md-3"><span class="text-muted small d-block">Submitted</span><strong><?= $app['submitted_at'] ? date('M d, Y H:i', strtotime($app['submitted_at'])) : 'N/A' ?></strong></div>
-        <?php if ($app['checker_remarks']): ?>
-        <div class="col-12"><span class="text-muted small d-block">Remarks</span><span class="text-warning"><?= sanitize($app['checker_remarks']) ?></span></div>
+        <?php if ($visible_checker_remarks !== ''): ?>
+        <div class="col-12"><span class="text-muted small d-block">Remarks</span><span class="text-warning"><?= sanitize($visible_checker_remarks) ?></span></div>
         <?php endif; ?>
         <div class="col-12">
             <div class="p-3 rounded" style="background:#eff6ff;border:1px solid #a5d6a7;">
@@ -887,6 +981,285 @@ if ($has_flags):
     </div>
 </div>
 
+<!-- -- Auto Sub-Rank Verification ────────────────────────── -->
+<div id="asr-verification" style="scroll-margin-top:80px;"></div>
+<?php
+// ── Load AutoSubRankCalculator ───────────────────────────────────────────
+if (!class_exists('\Scoring\AutoSubRankCalculator')) {
+    require_once __DIR__ . '/../../includes/scoring/autosubrank.php';
+}
+// Recalculate (in case scores changed during this review session)
+$asr_checker_calc = new \Scoring\AutoSubRankCalculator($pdo, $app_id);
+$asr_checker_res  = $asr_checker_calc->calculate();
+$asr_checker_calc->persist($asr_checker_res);
+$asr_row_ck = \Scoring\AutoSubRankCalculator::loadForApplication($pdo, $app_id) ?: [];
+
+$ck_d_mode   = $asr_checker_res['doctorate_mode'];
+$ck_a_mode   = $asr_checker_res['award_mode'];
+$ck_d_color  = \Scoring\AutoSubRankCalculator::modeColor($ck_d_mode);
+$ck_a_color  = \Scoring\AutoSubRankCalculator::modeColor($ck_a_mode);
+$ck_d_label  = \Scoring\AutoSubRankCalculator::modeLabel($ck_d_mode);
+$ck_a_label  = \Scoring\AutoSubRankCalculator::modeLabel($ck_a_mode);
+$ck_d_verified = $asr_row_ck['doctorate_verified'] ?? 'pending';
+$ck_a_verified = $asr_row_ck['award_verified']     ?? 'pending';
+$ck_dv_color   = \Scoring\AutoSubRankCalculator::verifiedColor($ck_d_verified);
+$ck_av_color   = \Scoring\AutoSubRankCalculator::verifiedColor($ck_a_verified);
+$ck_ri         = $asr_checker_res['total_rank_increase'];
+
+// Can checker act? Not if app is already approved/rejected/archived
+$ck_can_verify = !isAdmin()
+    && in_array($app['status'], ['submitted','under_review','talisay_review','needs_revision']);
+?>
+
+<div class="neon-card mb-3" style="padding:0;overflow:hidden;">
+    <!-- Header -->
+    <div style="background:linear-gradient(90deg,#1e3a6b,#1e4d8c);padding:0.75rem 1.25rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;">
+        <div style="display:flex;align-items:center;gap:0.6rem;">
+            <i class="bi bi-arrow-up-circle-fill" style="color:#fff;font-size:1rem;"></i>
+            <span style="color:#fff;font-weight:700;font-size:0.88rem;">Auto Sub-Rank Assessment</span>
+            <span style="background:rgba(255,255,255,0.15);color:#fff;font-size:0.65rem;padding:2px 8px;border-radius:20px;font-weight:600;">System Calculated</span>
+        </div>
+        <?php if ($ck_ri > 0): ?>
+        <span style="background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0;padding:3px 12px;border-radius:20px;font-size:0.72rem;font-weight:700;">
+            <i class="bi bi-arrow-up me-1"></i>+<?= $ck_ri ?> sub-rank<?= $ck_ri > 1 ? 's' : '' ?>
+        </span>
+        <?php else: ?>
+        <span style="background:rgba(255,255,255,0.1);color:rgba(255,255,255,0.6);border:1px solid rgba(255,255,255,0.2);padding:3px 12px;border-radius:20px;font-size:0.72rem;font-weight:600;">
+            No sub-rank increase
+        </span>
+        <?php endif; ?>
+    </div>
+
+    <div style="padding:1rem 1.25rem;">
+
+        <!-- Explanation callout -->
+        <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:7px;padding:0.6rem 0.9rem;margin-bottom:1rem;font-size:0.78rem;color:#1e4d8c;">
+            <i class="bi bi-info-circle me-1"></i>
+            <strong>Your role:</strong> Verify that each piece of evidence is <em>authentic</em>.
+            The system has already determined the optimal strategy.
+            Rejecting evidence will remove that criterion from the score entirely.
+        </div>
+
+        <!-- ── Criterion 1: Doctorate ───────────────────────────────── -->
+        <div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:0.85rem;" id="asr-doc-panel">
+            <!-- Sub-header -->
+            <div style="background:#f8fafc;border-bottom:1px solid #e2e8f0;padding:0.5rem 0.9rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.4rem;">
+                <span style="font-size:0.72rem;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.05em;">
+                    <i class="bi bi-mortarboard me-1"></i>Criterion 1 — Doctorate Degree
+                </span>
+                <div style="display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap;">
+                    <!-- System decision (read-only) -->
+                    <span style="background:<?= $ck_d_color ?>15;color:<?= $ck_d_color ?>;border:1px solid <?= $ck_d_color ?>40;padding:2px 8px;border-radius:20px;font-size:0.67rem;font-weight:700;">
+                        <?= htmlspecialchars($ck_d_label) ?>
+                    </span>
+                    <!-- Current verification status -->
+                    <span id="asr-doc-status-badge"
+                          style="background:<?= $ck_dv_color ?>12;color:<?= $ck_dv_color ?>;border:1px solid <?= $ck_dv_color ?>40;padding:2px 8px;border-radius:20px;font-size:0.67rem;font-weight:700;">
+                        <i class="bi bi-shield me-1"></i><?= ucfirst($ck_d_verified) ?>
+                    </span>
+                </div>
+            </div>
+
+            <div style="padding:0.8rem 0.9rem;">
+                <?php if ($asr_checker_res['has_doctorate']): ?>
+
+                <!-- Evidence info -->
+                <div style="display:flex;gap:0.85rem;flex-wrap:wrap;margin-bottom:0.75rem;">
+                    <div style="flex:1;min-width:160px;">
+                        <div style="font-size:0.68rem;color:#94a3b8;font-weight:600;text-transform:uppercase;margin-bottom:0.2rem;">Doctorate</div>
+                        <div style="font-size:0.82rem;color:#1e293b;"><?= htmlspecialchars($asr_checker_res['doctorate_details'] ?: 'Doctorate (Professional Development)') ?></div>
+                    </div>
+                    <div style="flex:1;min-width:200px;">
+                        <div style="font-size:0.68rem;color:#94a3b8;font-weight:600;text-transform:uppercase;margin-bottom:0.2rem;">System Reasoning</div>
+                        <div style="font-size:0.78rem;color:#475569;line-height:1.5;"><?= htmlspecialchars($asr_checker_res['doctorate_reason']) ?></div>
+                    </div>
+                </div>
+
+                <?php if (!empty($asr_row_ck['doctorate_verification_notes']) && $ck_d_verified !== 'pending'): ?>
+                <div style="background:<?= $ck_dv_color ?>0d;border:1px solid <?= $ck_dv_color ?>30;border-radius:6px;padding:0.45rem 0.7rem;font-size:0.75rem;color:<?= $ck_dv_color ?>;margin-bottom:0.7rem;">
+                    <i class="bi bi-chat-left-text me-1"></i><strong>Verification note:</strong> <?= htmlspecialchars($asr_row_ck['doctorate_verification_notes']) ?>
+                </div>
+                <?php endif; ?>
+
+                <?php if ($ck_can_verify): ?>
+                <!-- Verify / Reject form -->
+                <form id="asr-doc-form" method="POST"
+                      style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:7px;padding:0.7rem 0.85rem;">
+                    <input type="hidden" name="action"     value="verify_asr_evidence">
+                    <input type="hidden" name="criterion"  value="doctorate">
+                    <div style="font-size:0.72rem;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem;">
+                        <i class="bi bi-shield-check me-1"></i>Your Verification
+                    </div>
+                    <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.5rem;">
+                        <button type="button"
+                                onclick="submitAsrVerify('asr-doc-form','verified','asr-doc-status-badge','#16a34a','Verified')"
+                                style="flex:1;min-width:100px;padding:0.45rem 0.7rem;border-radius:6px;border:1.5px solid #16a34a;background:#f0fdf4;color:#16a34a;font-size:0.78rem;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:0.3rem;"
+                                <?= $ck_d_verified === 'verified' ? 'style="opacity:0.5;" disabled' : '' ?>>
+                            <i class="bi bi-check-circle-fill"></i>Verified — Evidence is Authentic
+                        </button>
+                        <button type="button"
+                                onclick="submitAsrVerify('asr-doc-form','rejected','asr-doc-status-badge','#dc2626','Rejected')"
+                                style="flex:1;min-width:100px;padding:0.45rem 0.7rem;border-radius:6px;border:1.5px solid #dc2626;background:#fef2f2;color:#dc2626;font-size:0.78rem;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:0.3rem;"
+                                <?= $ck_d_verified === 'rejected' ? 'style="opacity:0.5;" disabled' : '' ?>>
+                            <i class="bi bi-x-circle-fill"></i>Rejected — Evidence Invalid
+                        </button>
+                    </div>
+                    <input type="hidden" name="verification" id="asr-doc-decision" value="">
+                    <textarea name="verify_notes" id="asr-doc-notes"
+                              placeholder="Optional: note your reason (required when rejecting)"
+                              style="width:100%;border:1px solid #e2e8f0;border-radius:5px;padding:0.4rem 0.6rem;font-size:0.78rem;resize:vertical;min-height:52px;font-family:inherit;"
+                              ><?= htmlspecialchars($asr_row_ck['doctorate_verification_notes'] ?? '') ?></textarea>
+                </form>
+                <?php else: ?>
+                <div style="font-size:0.75rem;color:#94a3b8;font-style:italic;">
+                    <i class="bi bi-lock me-1"></i>Verification locked — application is not under active review.
+                </div>
+                <?php endif; ?>
+
+                <?php else: ?>
+                <div style="font-size:0.82rem;color:#64748b;display:flex;align-items:center;gap:0.5rem;">
+                    <i class="bi bi-dash-circle" style="color:#94a3b8;"></i>
+                    No doctorate found in this application's Professional Development entries. Nothing to verify.
+                </div>
+                <?php endif; ?>
+            </div>
+        </div>
+
+        <!-- ── Criterion 2: Award ───────────────────────────────────── -->
+        <div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;" id="asr-awd-panel">
+            <div style="background:#f8fafc;border-bottom:1px solid #e2e8f0;padding:0.5rem 0.9rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.4rem;">
+                <span style="font-size:0.72rem;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.05em;">
+                    <i class="bi bi-trophy me-1"></i>Criterion 2 — National / International Award
+                </span>
+                <div style="display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap;">
+                    <span style="background:<?= $ck_a_color ?>15;color:<?= $ck_a_color ?>;border:1px solid <?= $ck_a_color ?>40;padding:2px 8px;border-radius:20px;font-size:0.67rem;font-weight:700;">
+                        <?= htmlspecialchars($ck_a_label) ?>
+                    </span>
+                    <?php if ($asr_checker_res['has_award']): ?>
+                    <span id="asr-awd-status-badge"
+                          style="background:<?= $ck_av_color ?>12;color:<?= $ck_av_color ?>;border:1px solid <?= $ck_av_color ?>40;padding:2px 8px;border-radius:20px;font-size:0.67rem;font-weight:700;">
+                        <i class="bi bi-shield me-1"></i><?= ucfirst($ck_a_verified) ?>
+                    </span>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+            <div style="padding:0.8rem 0.9rem;">
+                <?php if ($asr_checker_res['has_award']): ?>
+
+                <div style="display:flex;gap:0.85rem;flex-wrap:wrap;margin-bottom:0.75rem;">
+                    <div style="flex:1;min-width:160px;">
+                        <div style="font-size:0.68rem;color:#94a3b8;font-weight:600;text-transform:uppercase;margin-bottom:0.2rem;">Award</div>
+                        <div style="font-size:0.82rem;color:#1e293b;"><?= htmlspecialchars($asr_checker_res['award_details'] ?: 'National/International Award') ?></div>
+                    </div>
+                    <div style="flex:1;min-width:200px;">
+                        <div style="font-size:0.68rem;color:#94a3b8;font-weight:600;text-transform:uppercase;margin-bottom:0.2rem;">System Reasoning</div>
+                        <div style="font-size:0.78rem;color:#475569;line-height:1.5;"><?= htmlspecialchars($asr_checker_res['award_reason']) ?></div>
+                    </div>
+                    <?php if (!empty($asr_row_ck['award_evidence'])): ?>
+                    <div style="width:100%;">
+                        <a href="../<?= htmlspecialchars($asr_row_ck['award_evidence']) ?>" target="_blank"
+                           style="font-size:0.78rem;color:#1e4d8c;text-decoration:none;display:inline-flex;align-items:center;gap:0.3rem;">
+                           <i class="bi bi-file-earmark-pdf"></i>View submitted evidence
+                        </a>
+                    </div>
+                    <?php endif; ?>
+                </div>
+
+                <?php if (!empty($asr_row_ck['award_verification_notes']) && $ck_a_verified !== 'pending'): ?>
+                <div style="background:<?= $ck_av_color ?>0d;border:1px solid <?= $ck_av_color ?>30;border-radius:6px;padding:0.45rem 0.7rem;font-size:0.75rem;color:<?= $ck_av_color ?>;margin-bottom:0.7rem;">
+                    <i class="bi bi-chat-left-text me-1"></i><strong>Verification note:</strong> <?= htmlspecialchars($asr_row_ck['award_verification_notes']) ?>
+                </div>
+                <?php endif; ?>
+
+                <?php if ($ck_can_verify): ?>
+                <form id="asr-awd-form" method="POST"
+                      style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:7px;padding:0.7rem 0.85rem;">
+                    <input type="hidden" name="action"     value="verify_asr_evidence">
+                    <input type="hidden" name="criterion"  value="award">
+                    <div style="font-size:0.72rem;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.5rem;">
+                        <i class="bi bi-shield-check me-1"></i>Your Verification
+                    </div>
+                    <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.5rem;">
+                        <button type="button"
+                                onclick="submitAsrVerify('asr-awd-form','verified','asr-awd-status-badge','#16a34a','Verified')"
+                                style="flex:1;min-width:100px;padding:0.45rem 0.7rem;border-radius:6px;border:1.5px solid #16a34a;background:#f0fdf4;color:#16a34a;font-size:0.78rem;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:0.3rem;"
+                                <?= $ck_a_verified === 'verified' ? 'disabled' : '' ?>>
+                            <i class="bi bi-check-circle-fill"></i>Verified — Evidence is Authentic
+                        </button>
+                        <button type="button"
+                                onclick="submitAsrVerify('asr-awd-form','rejected','asr-awd-status-badge','#dc2626','Rejected')"
+                                style="flex:1;min-width:100px;padding:0.45rem 0.7rem;border-radius:6px;border:1.5px solid #dc2626;background:#fef2f2;color:#dc2626;font-size:0.78rem;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:0.3rem;"
+                                <?= $ck_a_verified === 'rejected' ? 'disabled' : '' ?>>
+                            <i class="bi bi-x-circle-fill"></i>Rejected — Evidence Invalid
+                        </button>
+                    </div>
+                    <input type="hidden" name="verification" id="asr-awd-decision" value="">
+                    <textarea name="verify_notes" id="asr-awd-notes"
+                              placeholder="Optional: note your reason (required when rejecting)"
+                              style="width:100%;border:1px solid #e2e8f0;border-radius:5px;padding:0.4rem 0.6rem;font-size:0.78rem;resize:vertical;min-height:52px;font-family:inherit;"
+                              ><?= htmlspecialchars($asr_row_ck['award_verification_notes'] ?? '') ?></textarea>
+                </form>
+                <?php else: ?>
+                <div style="font-size:0.75rem;color:#94a3b8;font-style:italic;">
+                    <i class="bi bi-lock me-1"></i>Verification locked — application is not under active review.
+                </div>
+                <?php endif; ?>
+
+                <?php else: ?>
+                <div style="font-size:0.82rem;color:#64748b;display:flex;align-items:center;gap:0.5rem;">
+                    <i class="bi bi-dash-circle" style="color:#94a3b8;"></i>
+                    No national/international award found in this application. Nothing to verify.
+                </div>
+                <?php endif; ?>
+            </div>
+        </div>
+
+    </div><!-- /card body -->
+</div><!-- /asr neon-card -->
+
+<script>
+/**
+ * submitAsrVerify — submit a verify/reject form via AJAX,
+ * then update the status badge inline without full page reload.
+ */
+function submitAsrVerify(formId, decision, badgeId, color, label) {
+    const form  = document.getElementById(formId);
+    const badge = document.getElementById(badgeId);
+    if (!form) return;
+
+    // Inject the decision into the hidden input
+    const decInput = form.querySelector('input[name="verification"]');
+    if (decInput) decInput.value = decision;
+
+    // Require a note when rejecting
+    const notesEl = form.querySelector('textarea[name="verify_notes"]');
+    if (decision === 'rejected' && notesEl && notesEl.value.trim() === '') {
+        notesEl.style.borderColor = '#dc2626';
+        notesEl.focus();
+        notesEl.placeholder = 'Rejection reason is required.';
+        return;
+    }
+    if (notesEl) notesEl.style.borderColor = '#e2e8f0';
+
+    const fd = new FormData(form);
+    fetch(window.location.href, { method: 'POST', body: fd,
+        headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok && badge) {
+            badge.style.background  = color + '12';
+            badge.style.color       = color;
+            badge.style.borderColor = color + '40';
+            badge.innerHTML = '<i class="bi bi-shield me-1"></i>' + label;
+        }
+        // Disable both buttons in this form
+        form.querySelectorAll('button[type="button"]').forEach(b => { b.disabled = true; b.style.opacity = '0.55'; });
+    })
+    .catch(() => { form.submit(); });
+}
+</script>
+
 <!-- -- KRA Submissions --------------------------------------- -->
 <div id="kra-verification" style="scroll-margin-top:80px;"></div>
 <?php if (!empty($_GET['score_saved'])): ?>
@@ -905,7 +1278,7 @@ if ($has_flags):
         $my_v->execute([$my_checker_id]);
         $my_verified_sids = array_column($my_v->fetchAll(PDO::FETCH_ASSOC), 'submission_id');
     }
-    $total_active_checkers = max(1, (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role IN ('checker','checker_faculty') AND status='active'")->fetchColumn());
+    $total_active_checkers = max(1, (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role = 'checker' AND status='active'")->fetchColumn());
     $verify_counts = [];
     if ($subs) {
         $sub_ids_v = array_column($subs, 'submission_id');
@@ -1047,10 +1420,15 @@ if ($has_flags):
                 </td>
 
                 <!-- Action -->
+                <?php
+                $show_not_started = !isAdmin() && !$i_decided && !$i_started_review
+                                    && in_array($app['status'], ['submitted','under_review']);
+                ?>
                 <?php if ($can_act_revision): ?>
                 <td style="padding:0.7rem 0.75rem;text-align:center;vertical-align:middle;">
                     <div style="display:flex;flex-direction:column;gap:0.3rem;align-items:center;">
                     <?php if ($needs_rev): ?>
+                        <?php if ($app['status'] === 'under_review'): ?>
                         <form method="POST" action="index.php?page=<?= $return_page ?>&id=<?= $app_id ?>" id="clearRevForm_<?= $s['submission_id'] ?>">
                             <input type="hidden" name="action" value="clear_revision">
                             <input type="hidden" name="submission_id" value="<?= $s['submission_id'] ?>">
@@ -1060,8 +1438,18 @@ if ($has_flags):
                                 <i class="bi bi-check-circle"></i>Clear Flag
                             </button>
                         </form>
+                        <?php else: ?>
+                        <span style="font-size:0.65rem;color:#cbd5e1;display:inline-flex;align-items:center;gap:3px;"
+                              title="Waiting for faculty to resubmit">
+                            <i class="bi bi-hourglass-split" style="font-size:0.6rem;"></i>Awaiting resubmit
+                        </span>
+                        <?php endif; ?>
                     <?php else: ?>
                         <?php if (!$i_verified_this): ?>
+                        <textarea id="verifyNote_<?= $s['submission_id'] ?>"
+                                  placeholder="Optional note…"
+                                  rows="1"
+                                  style="width:120px;resize:vertical;border:1px solid #e2e8f0;border-radius:5px;padding:0.25rem 0.4rem;font-size:0.68rem;color:#334155;font-family:inherit;"></textarea>
                         <button type="button"
                                 onclick="quickVerify(<?= $s['submission_id'] ?>, this)"
                                 id="verifyBtn_<?= $s['submission_id'] ?>"
@@ -1084,6 +1472,14 @@ if ($has_flags):
                             <i class="bi bi-flag"></i>Flag
                         </button>
                     <?php endif; ?>
+                    </div>
+                </td>
+                <?php elseif ($show_not_started): ?>
+                <td style="padding:0.7rem 0.75rem;text-align:center;vertical-align:middle;">
+                    <div>
+                    <span style="font-size:0.65rem;color:#cbd5e1;display:inline-flex;align-items:center;gap:3px;" title="Start the review to enable verify and flag">
+                        <i class="bi bi-lock" style="font-size:0.6rem;"></i>Start review first
+                    </span>
                     </div>
                 </td>
                 <?php endif; ?>
@@ -1478,9 +1874,13 @@ function quickVerify(subId, btn) {
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" style="width:10px;height:10px;"></span>Verifying…';
 
+    const noteEl = document.getElementById('verifyNote_' + subId);
+    const note   = noteEl ? noteEl.value : '';
+
     const fd = new FormData();
-    fd.append('action',        'verify_kra');
+    fd.append('action',        'verify_submission');
     fd.append('submission_id', subId);
+    fd.append('note',          note);
 
     fetch('index.php?page=<?= $return_page ?>&id=<?= $app_id ?>', {
         method: 'POST',
@@ -1490,6 +1890,9 @@ function quickVerify(subId, btn) {
     .then(r => r.json())
     .then(data => {
         if (data.ok) {
+            // Remove the note textarea alongside the button
+            if (noteEl) noteEl.remove();
+
             // Replace the Verify button with a "Verified" badge in-place
             const row = btn.closest('tr');
             btn.outerHTML = '<span style="font-size:0.68rem;color:#16a34a;font-weight:600;display:inline-flex;align-items:center;gap:3px;">'

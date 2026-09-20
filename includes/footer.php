@@ -75,8 +75,8 @@
 
             <?php
             $role      = $_SESSION['role'] ?? '';
-            $is_faculty  = in_array($role, ['faculty','checker_faculty']);
-            $is_checker  = in_array($role, ['checker','checker_faculty','talisay_checker']);
+            $is_faculty  = $role === 'faculty';
+            $is_checker  = in_array($role, ['checker','talisay_checker']);
             $is_admin    = $role === 'admin';
 
             // ── Section label helper ─────────────────────────────
@@ -104,15 +104,14 @@
             <!-- General -->
             <?php echo $sectionLabel('General'); ?>
             <?php echo $item('index.php?page=help', 'bi-book', 'Help & Guide'); ?>
-            <?php echo $item('index.php?page=whats_new', 'bi-stars', "What's New"); ?>
 
             <?php if ($is_faculty || $is_checker): ?>
             <!-- Role-specific -->
             <div style="height:1px;background:#f3f4f6;margin:0.25rem 0;"></div>
             <?php if ($is_faculty): ?>
             <?php echo $sectionLabel('Faculty'); ?>
-            <?php echo $item('index.php?page=pre_evaluation', 'bi-calculator', 'Pre-Evaluation Tool'); ?>
-            <?php echo $item('index.php?page=apply&step=2', 'bi-pencil-square', 'My KRA Entries'); ?>
+            <?php echo $item('index.php?page=pre_evaluation', 'bi-calculator', 'Self-Assessment'); ?>
+            <?php echo $item('index.php?page=apply', 'bi-pencil-square', 'My KRA Entries'); ?>
             <?php endif; ?>
             <?php if ($is_checker): ?>
             <?php echo $sectionLabel('Checker'); ?>

@@ -27,7 +27,7 @@ foreach ($all_cycles as $cy) {
     if ($cy['cycle_id'] === $cycle_id) { $selected_cycle = $cy; break; }
 }
 
-$where  = "WHERE u.role IN ('faculty','checker_faculty')";
+$where  = "WHERE u.role = 'faculty'";
 $params = [];
 if ($cycle_id) { $where .= ' AND a.cycle_id=?'; $params[] = $cycle_id; }
 if ($status && in_array($status, ['submitted','under_review','approved','rejected','reclassified','admin_rejected'])) {
@@ -38,7 +38,7 @@ if ($campus) { $where .= ' AND u.campus_id=?'; $params[] = $campus; }
 $apps = $pdo->prepare("
     SELECT a.*, u.full_name, u.employee_id, u.rank,
            COALESCE(camp.campus_name,'N/A') as campus_name,
-           c.cycle_name, chk.full_name as checker_name
+           c.cycle_name, chk.checker_label as checker_name, chk.user_id as checker_uid
     FROM applications a
     JOIN users u ON a.user_id=u.user_id
     LEFT JOIN campuses camp ON u.campus_id=camp.campus_id
@@ -49,7 +49,7 @@ $apps = $pdo->prepare("
 $apps->execute($params);
 $apps = $apps->fetchAll();
 
-$total_faculty = $pdo->query("SELECT COUNT(*) FROM users WHERE role IN ('faculty','checker_faculty') AND status='active'")->fetchColumn();
+$total_faculty = $pdo->query("SELECT COUNT(*) FROM users WHERE role = 'faculty' AND status='active'")->fetchColumn();
 $status_counts = [];
 foreach ($apps as $a) $status_counts[$a['status']] = ($status_counts[$a['status']] ?? 0) + 1;
 
@@ -241,7 +241,7 @@ foreach ($apps as $a) {
     $pdf->SetTextColor(0,0,0);
     $pdf->SetFont('Times','',7);
     $pdf->Cell(22,5.5,ucwords(str_replace('_',' ',$a['status'])),1,0,'C',$fill);
-    $pdf->Cell(30,5.5,$a['checker_name']??'N/A',1,0,'L',$fill);
+    $pdf->Cell(30,5.5,!empty($a['checker_uid']) ? checkerDisplayLabel(['checker_label'=>$a['checker_name'],'user_id'=>$a['checker_uid']]) : 'N/A',1,0,'L',$fill);
     $pdf->Cell(20,5.5,$a['submitted_at']?date('M d, Y',strtotime($a['submitted_at'])):'N/A',1,1,'C',$fill);
 
     $row++;

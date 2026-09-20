@@ -1325,6 +1325,190 @@ body, html { overflow-x: hidden; max-width: 100vw; }
 body { padding-left: env(safe-area-inset-left); padding-right: env(safe-area-inset-right); padding-bottom: env(safe-area-inset-bottom); }
 #kraEntryModal .modal-body { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 #kraTable { min-width: 560px; }
+
+/* KRA entry modal: keep add/evidence/action controls reachable without horizontal scrolling. */
+#kraEntryModal .modal-dialog {
+    width: 96vw !important;
+    max-width: 96vw !important;
+}
+#kraEntryModal .modal-body,
+#kraEntryModal .table-responsive {
+    overflow-x: hidden !important;
+}
+#kraEntryModal #kraTable {
+    width: 100% !important;
+    min-width: 0 !important;
+    table-layout: fixed;
+}
+#kraEntryModal #kraTable th,
+#kraEntryModal #kraTable td {
+    min-width: 0 !important;
+    word-break: normal;
+    vertical-align: middle;
+}
+#kraEntryModal #kraTable input,
+#kraEntryModal #kraTable select,
+#kraEntryModal #kraTable textarea {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0 !important;
+    box-sizing: border-box;
+    border: 1px solid #cbd5e1;
+    border-radius: 4px;
+    background: #fff;
+    color: #1e293b;
+    font-size: .8rem;
+    line-height: 1.25;
+    padding: .38rem .5rem;
+}
+#kraEntryModal #kraTable input,
+#kraEntryModal #kraTable select {
+    height: 32px;
+}
+#kraEntryModal #kraTable textarea {
+    min-height: 44px;
+}
+#kraEntryModal #kraTableBody tr {
+    border-bottom: 1px solid #dbeafe;
+}
+#kraEntryModal #kraTableBody tr:nth-child(even) {
+    background: rgba(239, 246, 255, .45);
+}
+#kraEntryModal .kra-entry-spacer,
+#kraEntryModal .kra-entry-rownum,
+#kraEntryModal .kra-score-cell,
+#kraEntryModal .kra-evidence-cell,
+#kraEntryModal .kra-actions-cell,
+#kraEntryModal .kra-research-contrib {
+    padding: .7rem .45rem;
+    text-align: center;
+    vertical-align: middle;
+}
+#kraEntryModal .kra-entry-rownum {
+    color: #94a3b8;
+    font-size: .75rem;
+    font-weight: 600;
+}
+#kraEntryModal .kra-entry-table-research th:nth-child(1),
+#kraEntryModal .kra-entry-table-research td:nth-child(1) {
+    width: 56px;
+}
+#kraEntryModal .kra-entry-table-research th:nth-child(2),
+#kraEntryModal .kra-entry-table-research td:nth-child(2) {
+    width: 48px;
+}
+#kraEntryModal .kra-entry-table-research th:nth-child(4),
+#kraEntryModal .kra-entry-table-research td:nth-child(4) {
+    width: 118px;
+}
+#kraEntryModal .kra-entry-table-research th:nth-child(5),
+#kraEntryModal .kra-entry-table-research td:nth-child(5) {
+    width: 106px;
+    text-align: center;
+}
+#kraEntryModal .kra-entry-table-research th:nth-child(6),
+#kraEntryModal .kra-entry-table-research td:nth-child(6) {
+    width: 92px;
+    text-align: center;
+}
+#kraEntryModal .kra-entry-table-research th:nth-child(7),
+#kraEntryModal .kra-entry-table-research td:nth-child(7) {
+    width: 112px;
+    text-align: center;
+}
+#kraEntryModal .kra-entry-table-instruction th:nth-last-child(3),
+#kraEntryModal .kra-entry-table-professional-development th:nth-last-child(3),
+#kraEntryModal .kra-entry-table-extension th:nth-last-child(3),
+#kraEntryModal .kra-entry-table-instruction td:nth-last-child(3),
+#kraEntryModal .kra-entry-table-professional-development td:nth-last-child(3),
+#kraEntryModal .kra-entry-table-extension td:nth-last-child(3) {
+    width: 106px;
+    text-align: center;
+}
+#kraEntryModal .kra-entry-table-instruction th:nth-last-child(2),
+#kraEntryModal .kra-entry-table-professional-development th:nth-last-child(2),
+#kraEntryModal .kra-entry-table-extension th:nth-last-child(2),
+#kraEntryModal .kra-entry-table-instruction td:nth-last-child(2),
+#kraEntryModal .kra-entry-table-professional-development td:nth-last-child(2),
+#kraEntryModal .kra-entry-table-extension td:nth-last-child(2) {
+    width: 92px;
+    text-align: center;
+}
+#kraEntryModal .kra-entry-table-instruction th:last-child,
+#kraEntryModal .kra-entry-table-professional-development th:last-child,
+#kraEntryModal .kra-entry-table-extension th:last-child,
+#kraEntryModal .kra-entry-table-instruction td:last-child,
+#kraEntryModal .kra-entry-table-professional-development td:last-child,
+#kraEntryModal .kra-entry-table-extension td:last-child {
+    width: 112px;
+    text-align: center;
+}
+#kraEntryModal .kra-entry-table th {
+    white-space: nowrap;
+}
+#kraEntryModal .kra-research-main {
+    min-width: 0;
+    padding: .7rem .55rem;
+}
+#kraEntryModal .kra-research-detail-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(8rem, 1fr));
+    gap: .5rem;
+    margin-top: .5rem;
+}
+#kraEntryModal .kra-research-main .rspec {
+    display: block;
+    margin-top: .5rem;
+    resize: vertical;
+}
+#kraEntryModal .kra-research-contrib .rcontrib {
+    text-align: center;
+}
+#kraEntryModal .kra-row-actions {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: .4rem;
+}
+#kraEntryModal .kra-upload-btn,
+#kraEntryModal .kra-action-btn {
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 36px !important;
+    height: 36px !important;
+    padding: 0 !important;
+    border-radius: 6px !important;
+}
+@media (max-width: 991.98px) {
+    #kraEntryModal .modal-dialog {
+        width: 100vw !important;
+        max-width: 100vw !important;
+        margin: 0 !important;
+    }
+    #kraEntryModal .modal-content {
+        min-height: 100vh;
+        border-radius: 0 !important;
+    }
+}
+@media (max-width: 767.98px) {
+    #kraEntryModal .kra-research-detail-grid {
+        grid-template-columns: 1fr;
+    }
+}
+@media (max-width: 575.98px) {
+    #kraEntryModal .kra-research-detail-grid {
+        grid-template-columns: 1fr;
+    }
+    #kraEntryModal #kraTable {
+        font-size: .76rem;
+    }
+    #kraEntryModal #kraTable th,
+    #kraEntryModal #kraTable td {
+        padding: .4rem .3rem !important;
+    }
+}
 select.form-select {
     -webkit-appearance: none; appearance: none;
     background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%231e3a8a' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M2 5l6 6 6-6'/%3e%3c/svg%3e");
@@ -1432,7 +1616,7 @@ select.form-select {
     margin: 0 auto 0.75rem;
 }
 .checkmark-svg circle {
-    fill: none;
+    fill: #1a3a6b;
     stroke: #1a3a6b;
     stroke-width: 3;
 }
@@ -1503,4 +1687,97 @@ select.form-select {
 .kra-score-badge.has-score {
     background: #dbeafe;
     color: #1e4d8c;
+}
+
+/* ── KRA I · Criterion A semester grid ──────────────────────────────
+   Layout only. Colours are reused from the existing palette above.   */
+
+/* Evidence cell: button plus the semester it belongs to, so the two
+   upload targets in a row can never be mistaken for one another.     */
+.kra-a-evidence {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    min-width: 48px;
+}
+.kra-a-evidence-tag {
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #94a3b8;
+    line-height: 1;
+}
+.kra-a-evidence .kra-upload-btn.has-file + .kra-a-evidence-tag {
+    color: #1e4d8c;
+}
+
+/* Separate the two semester blocks with a hairline rule. */
+.kra-a-row .kra-a-scores.sem-2,
+.kra-a-row .kra-a-evidence.sem-1 {
+    position: relative;
+}
+.kra-a-row td:nth-child(6) {
+    border-left: 1px solid #e2e8f0;
+}
+.kra-a-row td:nth-child(4) {
+    border-left: 1px solid #e2e8f0;
+}
+.kra-a-row td:nth-child(4),
+.kra-a-row td:nth-child(6) {
+    min-width: 168px;
+}
+.kra-a-row td:nth-child(5),
+.kra-a-row td:nth-child(7) {
+    min-width: 96px;
+}
+
+/* SET sits above SEF; both share one compact stack. */
+.kra-a-row .kra-a-scores {
+    width: 120px;
+}
+.kra-a-row .kra-a-set,
+.kra-a-row .kra-a-sef {
+    border: 1px solid #e2e8f0;
+    border-radius: 5px;
+    padding: 0.18rem 0.35rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #1e293b;
+    background: #fff;
+}
+.kra-a-row .kra-a-set:focus,
+.kra-a-row .kra-a-sef:focus {
+    outline: none;
+    border-color: #1e4d8c;
+    box-shadow: 0 0 0 2px #dbeafe;
+}
+.kra-a-row .kra-a-set.over-cap,
+.kra-a-row .kra-a-sef.over-cap {
+    border-color: #dc2626;
+    background: #fef2f2;
+}
+.kra-a-row .kra-a-period {
+    border: 1px solid #e2e8f0;
+    border-radius: 5px;
+    padding: 0.28rem 0.5rem;
+    background: #fff;
+}
+.kra-a-row .kra-a-period:focus {
+    outline: none;
+    border-color: #1e4d8c;
+    box-shadow: 0 0 0 2px #dbeafe;
+}
+.kra-a-row td {
+    border-top: 1px solid #f1f5f9;
+    vertical-align: middle;
+}
+
+/* Narrow screens: let the grid scroll rather than crush the columns. */
+@media (max-width: 768px) {
+    .kra-a-row .kra-a-set,
+    .kra-a-row .kra-a-sef { width: 72px !important; }
+    .kra-a-row .kra-a-scores { width: 116px; }
+    .kra-a-row .kra-a-period { min-width: 120px !important; }
 }

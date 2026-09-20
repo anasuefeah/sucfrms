@@ -7,7 +7,7 @@ require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/functions.php';
 
 if (!isLoggedIn()) { header('Location: login.php'); exit; }
-if (!in_array($_SESSION['role'] ?? '', ['faculty','checker_faculty'])) {
+if (($_SESSION['role'] ?? '') !== 'faculty') {
     header('Location: ../index.php'); exit;
 }
 
@@ -76,11 +76,11 @@ function pStatus(string $s): array {
 if ($current_app) {
     [$slabel,$scolor,$sbg,$sbd] = pStatus($current_app['status'] ?? 'draft');
     $step_link = ($current_app['status']==='draft' && (float)($current_app['weighted_score']??0)==0)
-        ? '../index.php?page=apply&step=1'
-        : '../index.php?page=apply&step=2';
+        ? '../index.php?page=apply'
+        : '../index.php?page=apply';
 } else {
     [$slabel,$scolor,$sbg,$sbd] = ['Pending','#475569','#f8fafc','#e2e8f0'];
-    $step_link = '../index.php?page=apply&step=1';
+    $step_link = '../index.php?page=apply';
 }
 
 // Rank progress bar
@@ -207,30 +207,11 @@ body { font-family:'Segoe UI',Arial,sans-serif; background:#f0f3f8; min-height:1
 <!-- Body -->
 <div class="pg">
 
-    <!-- CHED Banner -->
-    <div class="ched">
-        <img src="../assets/images/logo.jpg" class="ched-logo" alt="Logo">
-        <div>
-            <p class="ched-sm">Carlos Hilado Memorial State University</p>
-            <p class="ched-sm">DBM-CHED Joint Circular No. 3, s. 2022</p>
-            <p class="ched-main">FACULTY RECLASSIFICATION MANAGEMENT SYSTEM</p>
-        </div>
-    </div>
-
     <!-- Section title -->
     <div class="sec-title">Applications for Evaluation</div>
 
     <!-- Application card — always visible -->
     <div class="card">
-
-        <!-- Status pill — only when cycle active -->
-        <?php if ($cycle): ?>
-        <div class="card-status">
-            <span class="status-pill" style="color:<?= $scolor ?>;background:<?= $sbg ?>;border-color:<?= $sbd ?>;">
-                <?= $slabel ?>
-            </span>
-        </div>
-        <?php endif; ?>
 
         <!-- Logo + cycle name -->
         <div class="card-logo-row">
@@ -272,7 +253,7 @@ body { font-family:'Segoe UI',Arial,sans-serif; background:#f0f3f8; min-height:1
             <!-- Pre-Evaluation: always active -->
             <a href="../pages/pre_evaluation.php" class="reclass-btn"
                style="background:#fff;color:#1a3a6b;border:1px solid #1a3a6b;flex:1;">
-                Pre-Evaluation
+                Self-Assessment
             </a>
 
             <!-- Reclassification: active only when cycle exists -->
@@ -301,7 +282,7 @@ body { font-family:'Segoe UI',Arial,sans-serif; background:#f0f3f8; min-height:1
         <p style="font-size:0.8rem;color:#64748b;margin-bottom:1.25rem;line-height:1.6;">
             There is currently no open reclassification cycle.<br>
             Please wait for the administrator to open one.<br>
-            You may use <strong>Pre-Evaluation</strong> in the meantime.
+            You may use <strong>Self-Assessment</strong> in the meantime.
         </p>
         <button onclick="document.getElementById('noCycleModal').style.display='none'"
                 style="background:#1a3a6b;color:#fff;border:none;padding:0.45rem 1.5rem;

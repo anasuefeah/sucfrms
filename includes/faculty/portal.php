@@ -129,8 +129,8 @@ function portalStatus(string $s): array {
         $score    = (float)($current_app['weighted_score'] ?? 0);
         $potential = $current_app['potential_rank'] ?? '';
         $step_link = ($current_app['status'] === 'draft' && $score == 0)
-            ? 'index.php?page=apply&step=1'
-            : 'index.php?page=apply&step=2';
+            ? 'index.php?page=apply'
+            : 'index.php?page=apply';
     ?>
     <div class="portal-card">
 

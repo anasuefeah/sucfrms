@@ -11,6 +11,7 @@ require_once __DIR__ . '/../includes/functions.php';
 requireLogin();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/kra_pdf_render.php';
+require_once __DIR__ . '/../includes/scoring/orchestrator.php';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // REQUEST HANDLING & DATA RETRIEVAL
@@ -89,8 +90,26 @@ foreach ($all_subs as $s) {
 // PDF GENERATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// Rank-weighted scoring / reclassification summary — only for the full,
+// all-KRA report, and always computed fresh (never cached) so it reflects
+// the latest scores, Auto Sub Rank status, and rank at the moment of export.
+$iss = null;
+if (count($kras_to_print) > 1) {
+    try {
+        $orch_result = \Scoring\Orchestrator::run($pdo, $app_id);
+        if (empty($orch_result['error'])) {
+            $iss = $orch_result['iss'];
+        }
+    } catch (\Throwable $e) {
+        // Don't let a scoring-pipeline issue block the rest of the PDF from
+        // generating — the per-KRA breakdown pages are still useful on their
+        // own even if the summary page can't be computed this time.
+        $iss = null;
+    }
+}
+
 try {
-    $pdf = renderKraPdf($faculty, $subs_by_cat, $kras_to_print, 'Carlos Hilado Memorial State University');
+    $pdf = renderKraPdf($faculty, $subs_by_cat, $kras_to_print, 'Carlos Hilado Memorial State University', $iss);
 
     ob_end_clean();
 

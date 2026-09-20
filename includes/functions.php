@@ -6,8 +6,8 @@
 // -- Authentication --------------------------------------------
 function isLoggedIn(): bool { return isset($_SESSION['user_id']); }
 function isAdmin():    bool { return ($_SESSION['role'] ?? '') === 'admin'; }
-function isChecker():  bool { return in_array($_SESSION['role'] ?? '', ['checker', 'checker_faculty']); }
-function isFaculty():  bool { return in_array($_SESSION['role'] ?? '', ['faculty', 'checker_faculty']); }
+function isChecker():  bool { return ($_SESSION['role'] ?? '') === 'checker'; }
+function isFaculty():  bool { return ($_SESSION['role'] ?? '') === 'faculty'; }
 function isTalisayChecker(): bool { return ($_SESSION['role'] ?? '') === 'talisay_checker'; }
 
 function requireLogin(): void {
@@ -34,6 +34,31 @@ function formatDisplayName(array $row, string $fallback_key = 'full_name'): stri
     return trim($first . $mi . ' ' . $last);
 }
 
+/**
+ * The anonymous display name for a checker/talisay_checker account.
+ * Pass a DB row (or partial row) containing checker_label and user_id.
+ * Falls back to "Checker #<user_id>" if a label wasn't stored (should
+ * only happen for rows created before the checker_label migration ran).
+ */
+function checkerDisplayLabel(array $row): string {
+    return $row['checker_label'] ?? ('Checker #' . ($row['user_id'] ?? '?'));
+}
+
+/**
+ * Next auto-incremented anonymous checker label ("Checker #1", "Checker #2", ...).
+ * Based on the highest existing numeric suffix so deleted accounts don't
+ * cause label reuse.
+ */
+function nextCheckerLabel($pdo): string {
+    $stmt = $pdo->query("SELECT checker_label FROM users WHERE checker_label REGEXP '^Checker #[0-9]+$'");
+    $max = 0;
+    foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $lbl) {
+        $n = (int) substr($lbl, 9);
+        if ($n > $max) $max = $n;
+    }
+    return 'Checker #' . ($max + 1);
+}
+
 // -- Audit logging ---------------------------------------------
 function logAudit($pdo, $user_id, string $action, string $details = ''): void {
     $pdo->prepare("INSERT INTO audit_logs (user_id, role_at_time, action_performed, details) VALUES (?,?,?,?)")
@@ -41,10 +66,19 @@ function logAudit($pdo, $user_id, string $action, string $details = ''): void {
 }
 
 // -- Notifications ---------------------------------------------
-function createNotif($pdo, int $user_id, string $type, string $message, int $application_id = 0): void {
+function kraCategoryToTabSlug(?string $category): string {
+    return match ($category) {
+        'Research'                 => 'research',
+        'Extension'                => 'extension',
+        'Professional Development' => 'profdev',
+        default                    => 'instruction',
+    };
+}
+
+function createNotif($pdo, int $user_id, string $type, string $message, int $application_id = 0, int $submission_id = 0): void {
     try {
-        $pdo->prepare("INSERT INTO notifications (user_id, type, message, application_id) VALUES (?,?,?,?)")
-            ->execute([$user_id, $type, $message, $application_id ?: null]);
+        $pdo->prepare("INSERT INTO notifications (user_id, type, message, application_id, submission_id) VALUES (?,?,?,?,?)")
+            ->execute([$user_id, $type, $message, $application_id ?: null, $submission_id ?: null]);
     } catch (\Exception $e) { /* table may not exist yet — silent fail */ }
 }
 
@@ -283,8 +317,8 @@ function getCriteria($pdo, string $key, ?int $cycle_id = null, ?string $position
  * Parse the |||â€‘delimited remarks string into a human-readable HTML snippet.
  * Format per KRA category:
  *   Instruction:              SET%  ||| SEF%  ||| notes
- *   Research:                 Type  ||| Title ||| Contribution%
- *   Extension:                Activity ||| Income ||| MOA count ||| Outreach count
+ *   Research:                 Type  ||| Developers ||| Affiliation ||| Area ||| Specific Contribution ||| Contribution%
+ *   Extension:                Subtype ||| Title ||| Val1 ||| Val2
  *   Professional Development: Credential ||| Degree value
  */
 function formatKraRemarks(string $category, string $remarks): string {
@@ -301,6 +335,17 @@ function formatKraRemarks(string $category, string $remarks): string {
                 if ($d1 !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">SET</span> <strong>' . htmlspecialchars($d1, ENT_QUOTES) . '%</strong>';
                 if ($d2 !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">SEF</span> <strong>' . htmlspecialchars($d2, ENT_QUOTES) . '%</strong>';
                 if ($notes !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">Notes:</span> ' . htmlspecialchars($notes, ENT_QUOTES);
+                return implode(' &nbsp;|&nbsp; ', $parts) ?: '&mdash;';
+            } elseif ($critType === 'A-set-sef-sem') {
+                $period = $d1;
+                $sem    = $d2 === '2' ? '2nd Semester' : '1st Semester';
+                $set    = $p[3] ?? '';
+                $sef    = $p[4] ?? '';
+                $parts = [];
+                if ($period !== '') $parts[] = '<strong>' . htmlspecialchars($period, ENT_QUOTES) . '</strong>';
+                $parts[] = '<span class="text-muted" style="font-size:0.75rem;">' . $sem . '</span>';
+                if ($set !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">SET</span> <strong>' . htmlspecialchars($set, ENT_QUOTES) . '%</strong>';
+                if ($sef !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">SEF</span> <strong>' . htmlspecialchars($sef, ENT_QUOTES) . '%</strong>';
                 return implode(' &nbsp;|&nbsp; ', $parts) ?: '&mdash;';
             } elseif ($critType === 'B-material') {
                 $out = '<div><span class="badge bg-info" style="font-size:0.7rem;">Crit. B</span> ' . htmlspecialchars($d1, ENT_QUOTES) . '</div>';
@@ -332,25 +377,31 @@ function formatKraRemarks(string $category, string $remarks): string {
 
         case 'Research':
             $type    = $p[0] ?? '';
-            $title   = $p[1] ?? '';
-            $contrib = $p[2] ?? '';
+            $dev     = $p[1] ?? '';
+            $aff     = $p[2] ?? '';
+            $area    = $p[3] ?? '';
+            $spec    = $p[4] ?? '';
+            $contrib = $p[5] ?? '';
             $out = '';
             if ($type  !== '') $out .= '<div><span class="badge bg-primary" style="font-size:0.72rem;">' . htmlspecialchars($type, ENT_QUOTES) . '</span></div>';
-            if ($title !== '') $out .= '<div class="text-muted" style="font-size:0.82rem;">' . htmlspecialchars($title, ENT_QUOTES) . '</div>';
+            if ($dev   !== '') $out .= '<div class="text-muted" style="font-size:0.82rem;"><span class="text-muted" style="font-size:0.72rem;">Developers:</span> ' . htmlspecialchars($dev, ENT_QUOTES) . '</div>';
+            if ($aff   !== '') $out .= '<div class="text-muted" style="font-size:0.78rem;"><span class="text-muted" style="font-size:0.72rem;">Affiliation:</span> ' . htmlspecialchars($aff, ENT_QUOTES) . '</div>';
+            if ($area  !== '') $out .= '<div class="text-muted" style="font-size:0.78rem;"><span class="text-muted" style="font-size:0.72rem;">Area:</span> ' . htmlspecialchars($area, ENT_QUOTES) . '</div>';
+            if ($spec  !== '') $out .= '<div class="text-muted" style="font-size:0.78rem;"><span class="text-muted" style="font-size:0.72rem;">Specific Contribution:</span> ' . htmlspecialchars($spec, ENT_QUOTES) . '</div>';
             if ($contrib !== '') $out .= '<div style="font-size:0.78rem;"><span class="text-muted">Contribution:</span> <strong>' . htmlspecialchars($contrib, ENT_QUOTES) . '%</strong></div>';
             return $out ?: '&mdash;';
 
         case 'Extension':
-            $activity = $p[0] ?? '';
-            $income   = $p[1] ?? '';
-            $moa      = $p[2] ?? '';
-            $outreach = $p[3] ?? '';
+            $subtype = $p[0] ?? '';
+            $title   = $p[1] ?? '';
+            $val1    = $p[2] ?? '';
+            $val2    = $p[3] ?? '';
             $out = '';
-            if ($activity !== '') $out .= '<div><strong>' . htmlspecialchars($activity, ENT_QUOTES) . '</strong></div>';
+            if ($subtype !== '') $out .= '<div><span class="badge bg-primary" style="font-size:0.72rem;">' . htmlspecialchars($subtype, ENT_QUOTES) . '</span></div>';
+            if ($title   !== '') $out .= '<div><strong>' . htmlspecialchars($title, ENT_QUOTES) . '</strong></div>';
             $meta = [];
-            if ($income   !== '' && $income   !== '0') $meta[] = '<span class="text-muted" style="font-size:0.78rem;">Income: &#8369;' . number_format((float)$income) . '</span>';
-            if ($moa      !== '' && $moa      !== '0') $meta[] = '<span class="text-muted" style="font-size:0.78rem;">MOA: ' . htmlspecialchars($moa, ENT_QUOTES) . '</span>';
-            if ($outreach !== '' && $outreach !== '0') $meta[] = '<span class="text-muted" style="font-size:0.78rem;">Outreach: ' . htmlspecialchars($outreach, ENT_QUOTES) . '</span>';
+            if ($val1 !== '') $meta[] = '<span class="text-muted" style="font-size:0.78rem;">' . htmlspecialchars($val1, ENT_QUOTES) . '</span>';
+            if ($val2 !== '') $meta[] = '<span class="text-muted" style="font-size:0.78rem;">' . htmlspecialchars($val2, ENT_QUOTES) . '</span>';
             if ($meta) $out .= '<div>' . implode(' &nbsp;&middot;&nbsp; ', $meta) . '</div>';
             return $out ?: '&mdash;';
 
@@ -604,8 +655,8 @@ function renderConfirmModal(): void { ?>
 </div>
 
 <script>
-const CONFIRM_GREEN_LABELS = ['approve','activate','save','update','add','generate','unlock','set','role','submit','join','send','verify','confirm','create','assign'];
-const CONFIRM_RED_LABELS   = ['delete','reject','deny','remove','logout','deactivate','revoke','clear'];
+const CONFIRM_GREEN_LABELS = ['approve','activate','save','update','add','generate','unlock','set','role','submit','join','send','verify','confirm','create','assign','start','reactivate','mark','review','flag','clear flag','proceed','enable','restore','upload','print','export','change'];
+const CONFIRM_RED_LABELS   = ['delete','reject','deny','remove','logout','deactivate','revoke','disable','discard','cancel application','permanently'];
 
 function _showConfirmModal(msg, btnLabel, btnIcon, isRed, onConfirm) {
     const modal = document.getElementById('confirmModal');
@@ -654,7 +705,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
 function confirmDelete(msg, formId, btnLabel = 'Delete', btnIcon = 'bi-trash') {
     const labelLower = btnLabel.toLowerCase();
-    const isRed = CONFIRM_RED_LABELS.some(w => labelLower.includes(w)) || !CONFIRM_GREEN_LABELS.some(w => labelLower.includes(w));
+    const isRed = CONFIRM_RED_LABELS.some(w => labelLower.includes(w));
     _showConfirmModal(msg, btnLabel, btnIcon, isRed, function() {
         document.getElementById(formId).submit();
     });
@@ -662,7 +713,7 @@ function confirmDelete(msg, formId, btnLabel = 'Delete', btnIcon = 'bi-trash') {
 
 function confirmAction(msg, callback, btnLabel = 'Confirm', btnIcon = 'bi-check-circle') {
     const labelLower = btnLabel.toLowerCase();
-    const isRed = CONFIRM_RED_LABELS.some(w => labelLower.includes(w)) || !CONFIRM_GREEN_LABELS.some(w => labelLower.includes(w));
+    const isRed = CONFIRM_RED_LABELS.some(w => labelLower.includes(w));
     _showConfirmModal(msg, btnLabel, btnIcon, isRed, callback);
 }
 </script>

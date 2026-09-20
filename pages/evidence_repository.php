@@ -8,7 +8,7 @@ require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/functions.php';
 
 if (!isLoggedIn()) { header('Location: login.php'); exit; }
-if (!in_array($_SESSION['role'] ?? '', ['faculty','checker_faculty'])) {
+if (($_SESSION['role'] ?? '') !== 'faculty') {
     header('Location: ../index.php'); exit;
 }
 
@@ -21,8 +21,15 @@ $uid = $_SESSION['user_id'];
 // Runtime migration
 try { $pdo->query("SELECT file_id FROM pre_eval_files LIMIT 1"); }
 catch (\Exception $e) {
-    $pdo->exec("CREATE TABLE IF NOT EXISTS pre_eval_files (file_id INT AUTO_INCREMENT PRIMARY KEY, user_id INT NOT NULL, entry_id INT DEFAULT NULL, kra_category ENUM('Instruction','Research','Extension','Professional Development') NOT NULL, file_path VARCHAR(255) NOT NULL, original_filename VARCHAR(255) NOT NULL, file_size_bytes INT DEFAULT 0, description VARCHAR(255) DEFAULT NULL, uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE)");
+    $pdo->exec("CREATE TABLE IF NOT EXISTS pre_eval_files (file_id INT AUTO_INCREMENT PRIMARY KEY, user_id INT NOT NULL, entry_id INT DEFAULT NULL, kra_category ENUM('Instruction','Research','Extension','Professional Development','Auto Sub Rank','Position Requirements') NOT NULL, file_path VARCHAR(255) NOT NULL, original_filename VARCHAR(255) NOT NULL, file_size_bytes INT DEFAULT 0, description VARCHAR(255) DEFAULT NULL, uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE)");
 }
+// Expand ENUM if table already exists without the new categories
+try {
+    $col = $pdo->query("SHOW COLUMNS FROM pre_eval_files LIKE 'kra_category'")->fetch();
+    if ($col && strpos($col['Type'], 'Auto Sub Rank') === false) {
+        $pdo->exec("ALTER TABLE pre_eval_files MODIFY kra_category ENUM('Instruction','Research','Extension','Professional Development','Auto Sub Rank','Position Requirements') NOT NULL");
+    }
+} catch (\Exception $e) {}
 
 // Faculty info
 $fac = $pdo->prepare("SELECT full_name, first_name, last_name, middle_name, profile_pic FROM users WHERE user_id=?");
@@ -33,7 +40,7 @@ $profile_pic = $fac['profile_pic'] ?? '';
 $init        = strtoupper(substr($fac['first_name']??'U',0,1).substr($fac['last_name']??'',0,1)) ?: 'FA';
 
 // File stats per KRA
-$cats = ['Instruction','Research','Extension','Professional Development'];
+$cats = ['Instruction','Research','Extension','Professional Development','Auto Sub Rank','Position Requirements'];
 $stats = [];
 foreach ($cats as $c) {
     $s = $pdo->prepare("SELECT COUNT(*) as cnt, COALESCE(SUM(file_size_bytes),0) as total_size FROM pre_eval_files WHERE user_id=? AND kra_category=?");
@@ -189,7 +196,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f3f8;min-height:100vh
             </div>
             <div class="pnav-dd-body">
                 <a href="../index.php?page=profile"><i class="bi bi-person-circle"></i>My Profile</a>
-                <a href="pre_evaluation.php"><i class="bi bi-clipboard2-check"></i>Pre-Evaluation</a>
+                <a href="pre_evaluation.php"><i class="bi bi-clipboard2-check"></i>Self-Assessment</a>
                 <a href="portal.php"><i class="bi bi-grid-1x2"></i>Portal</a>
                 <a href="logout.php" class="out"><i class="bi bi-box-arrow-right"></i>Sign Out</a>
             </div>
@@ -199,7 +206,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f3f8;min-height:100vh
 
 <div class="pg">
 
-    <a href="pre_evaluation.php" class="back-link"><i class="bi bi-arrow-left"></i> Back to Pre-Evaluation</a>
+    <a href="pre_evaluation.php" class="back-link"><i class="bi bi-arrow-left"></i> Back to Self-Assessment</a>
 
     <!-- Header -->
     <div class="page-hd">
@@ -222,6 +229,8 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f3f8;min-height:100vh
         'Research'                 => ['label'=>'KRA II — Research',           'color'=>'#1a3a6b', 'bg'=>'#f0f4fb'],
         'Extension'                => ['label'=>'KRA III — Extension',         'color'=>'#1e4d8c', 'bg'=>'#f0fdfa'],
         'Professional Development' => ['label'=>'KRA IV — Prof. Development',  'color'=>'#475569', 'bg'=>'#f8fafc'],
+        'Auto Sub Rank'            => ['label'=>'Auto Sub Rank',               'color'=>'#1a3a6b', 'bg'=>'#f0f4fb'],
+        'Position Requirements'    => ['label'=>'Position Requirements',       'color'=>'#475569', 'bg'=>'#f8fafc'],
     ];
     ?>
     <div class="stat-row">
@@ -314,15 +323,18 @@ let viewMode  = 'grid';
 
 const CAT_LABELS = {
     'Instruction':'KRA I','Research':'KRA II',
-    'Extension':'KRA III','Professional Development':'KRA IV'
+    'Extension':'KRA III','Professional Development':'KRA IV',
+    'Auto Sub Rank':'Auto Sub Rank','Position Requirements':'Pos. Requirements'
 };
 const CAT_COLORS = {
     'Instruction':'#1e4d8c','Research':'#1a3a6b',
-    'Extension':'#1e4d8c','Professional Development':'#475569'
+    'Extension':'#1e4d8c','Professional Development':'#475569',
+    'Auto Sub Rank':'#1a3a6b','Position Requirements':'#475569'
 };
 const CAT_BG = {
     'Instruction':'#eff6ff','Research':'#f0f4fb',
-    'Extension':'#f0fdfa','Professional Development':'#f8fafc'
+    'Extension':'#f0fdfa','Professional Development':'#f8fafc',
+    'Auto Sub Rank':'#f0f4fb','Position Requirements':'#f8fafc'
 };
 
 // Nav dropdown
@@ -484,7 +496,15 @@ function listRow(f){
 }
 
 function delFile(fid){
-    if(!confirm('Delete this file permanently?')) return;
+    confirmAction(
+        'Delete this file permanently? This cannot be undone.',
+        function(){ doDeleteFile(fid); },
+        'Delete',
+        'bi-trash'
+    );
+}
+
+function doDeleteFile(fid){
     const fd = new FormData();
     fd.append('action','delete_file');
     fd.append('file_id', fid);
@@ -509,5 +529,6 @@ function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').rep
 // Init
 loadFiles();
 </script>
+<?php renderConfirmModal(); ?>
 </body>
 </html>

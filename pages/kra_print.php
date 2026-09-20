@@ -46,10 +46,10 @@ $app_id = $app['application_id'];
 // Load checker info
 $checker = null;
 if (!empty($app['checker_id'])) {
-    $cs = $pdo->prepare("SELECT full_name, first_name, middle_name, last_name FROM users WHERE user_id=?");
+    $cs = $pdo->prepare("SELECT user_id, checker_label FROM users WHERE user_id=?");
     $cs->execute([$app['checker_id']]);
     $checker_row = $cs->fetch();
-    if ($checker_row) $checker = formatDisplayName($checker_row);
+    if ($checker_row) $checker = checkerDisplayLabel($checker_row);
 }
 
 // Load KRA submissions

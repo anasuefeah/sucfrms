@@ -86,8 +86,8 @@ class KRA2Scorer
         foreach ($submissions as $s) {
             $parts    = array_map('trim', explode('|||', $s['remarks'] ?? ''));
             $label    = $parts[0] ?? '';
-            $title    = $parts[1] ?? '';
-            $contrib  = min(100, max(1, (float)($parts[2] ?? 100)));
+            $developers = $parts[1] ?? '';
+            $contrib    = min(100, max(1, (float)($parts[5] ?? 100)));
             $pts      = 0.0;
 
             // ── Criterion A: Research Outputs ────────────────────────
@@ -101,7 +101,7 @@ class KRA2Scorer
                     if (self::isPolicyOutput($label)) {
                         $policy_count++;
                         if ($policy_count > 2) {
-                            $config_i[] = "KRA II Crit A: Policy/product output cap reached (max 2 instances = 70 pts). '{$title}' excluded.";
+                            $config_i[] = "KRA II Crit A: Policy/product output cap reached (max 2 instances = 70 pts). '{$developers}' excluded.";
                             $pts = 0.0;
                         }
                     }
@@ -109,7 +109,7 @@ class KRA2Scorer
                     if (self::isCitation($label)) {
                         $citation_count++;
                         if ($citation_count > 6) {
-                            $config_i[] = "KRA II Crit A: Citation cap reached (max 6 citations). '{$title}' excluded.";
+                            $config_i[] = "KRA II Crit A: Citation cap reached (max 6 citations). '{$developers}' excluded.";
                             $pts = 0.0;
                         }
                     }
@@ -117,12 +117,12 @@ class KRA2Scorer
                     // Indexing validation
                     if (self::requiresIndexing($label)) {
                         if (empty($s['evidence_names'])) {
-                            $pending[] = "KRA II Crit A: '{$title}' — missing research director certification of indexing status at time of publication (Scopus/WoS/ACI required).";
+                            $pending[] = "KRA II Crit A: '{$developers}' — missing research director certification of indexing status at time of publication (Scopus/WoS/ACI required).";
                         }
                     }
 
-                    if ($isCo && empty($parts[2])) {
-                        $pending[] = "KRA II Crit A: '{$title}' — co-author entry missing Annex D (Certificate of Contribution Form_Research Output).";
+                    if ($isCo && empty($parts[5])) {
+                        $pending[] = "KRA II Crit A: '{$developers}' — co-author entry missing Annex D (Certificate of Contribution Form_Research Output).";
                     }
                 }
                 $crit_a_raw += $pts;
@@ -133,11 +133,11 @@ class KRA2Scorer
                 if ($base !== null) {
                     $isCo = self::isCoInventor($label);
                     $pts  = round($isCo ? $base * ($contrib / 100) : (float)$base, 2);
-                    if ($isCo && empty($parts[2])) {
-                        $pending[] = "KRA II Crit B: '{$title}' — co-inventor missing Annex F/G/H (Certificate of Contribution Form_IP).";
+                    if ($isCo && empty($parts[5])) {
+                        $pending[] = "KRA II Crit B: '{$developers}' — co-inventor missing Annex F/G/H (Certificate of Contribution Form_IP).";
                     }
                     if (empty($s['evidence_names'])) {
-                        $pending[] = "KRA II Crit B: '{$title}' — missing IPOPHL certification / patent certificate.";
+                        $pending[] = "KRA II Crit B: '{$developers}' — missing IPOPHL certification / patent certificate.";
                     }
                 }
                 $crit_b_raw += $pts;
@@ -148,11 +148,11 @@ class KRA2Scorer
                 if ($base !== null) {
                     $isCo = self::isCoAuthor($label) || self::isCoCreator($label);
                     $pts  = round($isCo ? $base * ($contrib / 100) : (float)$base, 2);
-                    if ($isCo && empty($parts[2])) {
-                        $pending[] = "KRA II Crit C: '{$title}' — co-creator missing Annex I (Certificate of Contribution Form_Creative Works).";
+                    if ($isCo && empty($parts[5])) {
+                        $pending[] = "KRA II Crit C: '{$developers}' — co-creator missing Annex I (Certificate of Contribution Form_Creative Works).";
                     }
                     if (empty($s['evidence_names'])) {
-                        $pending[] = "KRA II Crit C: '{$title}' — missing copyright certificate / invitation letter / evidence of performance.";
+                        $pending[] = "KRA II Crit C: '{$developers}' — missing copyright certificate / invitation letter / evidence of performance.";
                     }
                 }
                 $crit_c_raw += $pts;
@@ -332,7 +332,7 @@ class KRA2Scorer
     {
         $parts   = array_map('trim', explode('|||', $remarks));
         $label   = $parts[0] ?? '';
-        $contrib = min(100, max(1, (float)($parts[2] ?? 100)));
+        $contrib = min(100, max(1, (float)($parts[5] ?? 100)));
         $dummy   = [];
 
         if (self::isInvention($label)) {

@@ -29,7 +29,7 @@ foreach ($all_cycles as $cy) {
 }
 
 // â”€â”€ Build query â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-$where  = "WHERE u.role IN ('faculty','checker_faculty')";
+$where  = "WHERE u.role = 'faculty'";
 $params = [];
 if ($cycle_id) { $where .= ' AND a.cycle_id = ?'; $params[] = $cycle_id; }
 if ($status && in_array($status, ['submitted','under_review','approved','rejected','reclassified','admin_rejected'])) {
@@ -41,7 +41,7 @@ $apps = $pdo->prepare("
     SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, u.employee_id, u.rank,
            COALESCE(camp.campus_name, '&mdash;') as campus_name,
            c.cycle_name,
-           chk.full_name as checker_name
+           chk.checker_label as checker_name, chk.user_id as checker_uid
     FROM applications a
     JOIN users u ON a.user_id = u.user_id
     LEFT JOIN campuses camp ON u.campus_id = camp.campus_id
@@ -54,7 +54,7 @@ $apps->execute($params);
 $apps = $apps->fetchAll();
 
 // â”€â”€ Summary stats â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-$total_faculty = $pdo->query("SELECT COUNT(*) FROM users WHERE role IN ('faculty','checker_faculty') AND status='active'")->fetchColumn();
+$total_faculty = $pdo->query("SELECT COUNT(*) FROM users WHERE role = 'faculty' AND status='active'")->fetchColumn();
 $status_counts = [];
 foreach ($apps as $a) {
     $status_counts[$a['status']] = ($status_counts[$a['status']] ?? 0) + 1;
@@ -251,7 +251,7 @@ $admin_name   = $_SESSION['full_name'] ?? 'Administrator';
                     <?= $inc > 0 ? "<span style='color:#1e4d8c;font-weight:700;'>+{$inc}</span>" : '<span style="color:#94a3b8;">&mdash;</span>' ?>
                 </td>
                 <td><span class="badge badge-<?= $a['status'] ?>"><?= ucwords(str_replace('_',' ',$a['status'])) ?></span></td>
-                <td><?= htmlspecialchars($a['checker_name'] ?? '&mdash;') ?></td>
+                <td><?= htmlspecialchars(!empty($a['checker_uid']) ? checkerDisplayLabel(['checker_label'=>$a['checker_name'],'user_id'=>$a['checker_uid']]) : '&mdash;') ?></td>
                 <td><?= $a['submitted_at'] ? date('M d, Y', strtotime($a['submitted_at'])) : '&mdash;' ?></td>
             </tr>
             <?php endforeach; ?>

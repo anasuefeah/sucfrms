@@ -173,11 +173,12 @@ $star_colors = ['','#1e293b','#475569','#475569','#3b82f6','#1e4d8c'];
                 </button>
             </form>
             <?php endif; ?>
-            <form method="POST" style="margin:0;margin-left:auto;"
-                  onsubmit="return confirm('Delete this feedback permanently?')">
+            <form method="POST" id="deleteFeedbackForm_<?= $fb['feedback_id'] ?>" style="margin:0;margin-left:auto;">
                 <input type="hidden" name="feedback_id" value="<?= $fb['feedback_id'] ?>">
                 <input type="hidden" name="action" value="delete">
-                <button type="submit" style="padding:0.3rem 0.75rem;border:1px solid #fecaca;border-radius:6px;background:#fef2f2;color:#dc2626;font-size:0.75rem;font-weight:600;cursor:pointer;">
+                <button type="button"
+                        onclick="confirmDelete('Delete this feedback permanently? This cannot be undone.','deleteFeedbackForm_<?= $fb['feedback_id'] ?>','Delete','bi-trash')"
+                        style="padding:0.3rem 0.75rem;border:1px solid #fecaca;border-radius:6px;background:#fef2f2;color:#dc2626;font-size:0.75rem;font-weight:600;cursor:pointer;">
                     <i class="bi bi-trash me-1"></i>Delete
                 </button>
             </form>

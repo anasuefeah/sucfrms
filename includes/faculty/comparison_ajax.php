@@ -41,6 +41,12 @@ catch (\Exception $e) {
             ADD COLUMN revision_at TIMESTAMP NULL");
     } catch (\Exception $e2) {}
 }
+try { $pdo->query("SELECT checker_note FROM kra_submissions LIMIT 1"); }
+catch (\Exception $e) {
+    try {
+        $pdo->exec("ALTER TABLE kra_submissions ADD COLUMN checker_note TEXT DEFAULT NULL");
+    } catch (\Exception $e2) {}
+}
 
 if (!isLoggedIn() || (!isFaculty() && !isAdmin())) {
     echo json_encode(['ok' => false, 'error' => 'Unauthorized']);
@@ -75,47 +81,53 @@ if (!$app) {
 }
 
 // Load all KRA submissions for this application
-$subs_stmt = $pdo->prepare("
-    SELECT submission_id, kra_category,
-           computed_points,
-           COALESCE(faculty_original_score, computed_points) AS faculty_original_score,
-           verified, verified_by, revision_status, revision_note,
-           remarks
-    FROM kra_submissions
-    WHERE application_id = ?
-    ORDER BY FIELD(kra_category,'Instruction','Research','Extension','Professional Development'),
-             submission_id ASC
-");
 try {
-    $subs_stmt->execute([$app_id]);
-    $subs = $subs_stmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (\Exception $e) {
-    // faculty_original_score column might not exist yet — fall back without it
-    $subs_stmt2 = $pdo->prepare("
+    $subs_stmt = $pdo->prepare("
         SELECT submission_id, kra_category,
                computed_points,
-               computed_points AS faculty_original_score,
-               verified, verified_by, revision_status, revision_note,
+               COALESCE(faculty_original_score, computed_points) AS faculty_original_score,
+               verified, verified_by, revision_status, revision_note, checker_note,
                remarks
         FROM kra_submissions
         WHERE application_id = ?
         ORDER BY FIELD(kra_category,'Instruction','Research','Extension','Professional Development'),
                  submission_id ASC
     ");
-    $subs_stmt2->execute([$app_id]);
-    $subs = $subs_stmt2->fetchAll(PDO::FETCH_ASSOC);
+    $subs_stmt->execute([$app_id]);
+    $subs = $subs_stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (\Exception $e) {
+    try {
+        // faculty_original_score or checker_note column might not exist yet
+        $subs_stmt2 = $pdo->prepare("
+            SELECT submission_id, kra_category,
+                   computed_points,
+                   computed_points AS faculty_original_score,
+                   verified, verified_by, revision_status, revision_note,
+                   NULL AS checker_note,
+                   remarks
+            FROM kra_submissions
+            WHERE application_id = ?
+            ORDER BY FIELD(kra_category,'Instruction','Research','Extension','Professional Development'),
+                     submission_id ASC
+        ");
+        $subs_stmt2->execute([$app_id]);
+        $subs = $subs_stmt2->fetchAll(PDO::FETCH_ASSOC);
+    } catch (\Exception $e2) {
+        echo json_encode(['ok' => false, 'error' => 'Could not load submissions: ' . $e2->getMessage()]);
+        exit;
+    }
 }
 
 // Build per-submission checker info — who verified and what the adjusted value is
-// verified_by → checker name
+// verified_by → anonymous checker label
 $checker_names = [];
 $vby_ids = array_filter(array_unique(array_column($subs, 'verified_by')));
 if (!empty($vby_ids)) {
     $ph = implode(',', array_fill(0, count($vby_ids), '?'));
-    $cn = $pdo->prepare("SELECT user_id, full_name, first_name, middle_name, last_name, role FROM users WHERE user_id IN ({$ph})");
+    $cn = $pdo->prepare("SELECT user_id, checker_label, role FROM users WHERE user_id IN ({$ph})");
     $cn->execute(array_values($vby_ids));
     foreach ($cn->fetchAll(PDO::FETCH_ASSOC) as $r) {
-        $checker_names[$r['user_id']] = ['name' => formatDisplayName($r), 'role' => $r['role']];
+        $checker_names[$r['user_id']] = ['name' => checkerDisplayLabel($r), 'role' => $r['role']];
     }
 }
 
@@ -123,7 +135,7 @@ if (!empty($vby_ids)) {
 $reviews = [];
 try {
     $reviews_stmt = $pdo->prepare("
-        SELECT r.checker_id, r.decision, r.remarks, r.decided_at, u.full_name, u.first_name, u.middle_name, u.last_name, u.role
+        SELECT r.checker_id, r.decision, r.remarks, r.decided_at, u.checker_label, u.role
         FROM application_checker_reviews r
         JOIN users u ON r.checker_id = u.user_id
         WHERE r.application_id = ?
@@ -136,7 +148,7 @@ try {
     $reviews = [];
 }
 
-$stage1_reviews = array_values(array_filter($reviews, fn($r) => in_array($r['role'], ['checker','checker_faculty'])));
+$stage1_reviews = array_values(array_filter($reviews, fn($r) => $r['role'] === 'checker'));
 $stage2_reviews = array_values(array_filter($reviews, fn($r) => $r['role'] === 'talisay_checker'));
 
 // For each submission, determine stage (stage1 = campus checker, stage2 = talisay)
@@ -160,6 +172,7 @@ foreach ($subs as $s) {
         'verified'               => (bool)$s['verified'],
         'revision_status'        => $s['revision_status'],
         'revision_note'          => $s['revision_note'],
+        'checker_note'           => $s['checker_note'] ?? null,
         'remarks'                => $s['remarks'],
     ];
 }
@@ -199,13 +212,13 @@ $has_stage1      = !empty($stage1_reviews);
 
 // Build checker summary for display
 $stage1_info = array_map(fn($r) => [
-    'name'     => formatDisplayName($r),
+    'name'     => checkerDisplayLabel($r),
     'decision' => $r['decision'],
     'remarks'  => $r['remarks'],
 ], $stage1_reviews);
 
 $stage2_info = array_map(fn($r) => [
-    'name'     => formatDisplayName($r),
+    'name'     => checkerDisplayLabel($r),
     'decision' => $r['decision'],
     'remarks'  => $r['remarks'],
 ], $stage2_reviews);

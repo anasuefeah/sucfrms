@@ -182,6 +182,7 @@ class KRA_PDF extends FPDF {
     public $faculty_department = '';
     public $suc_name = '';
     public $faculty_campus = '';
+    public $is_iss_page = false;
 
     const COL_CRITERIA  = 116;
     const COL_POINTS    = 37;
@@ -217,9 +218,15 @@ class KRA_PDF extends FPDF {
 
         $this->SetY(33);
         $this->SetFont('Times', 'B', 12);
-        $this->Cell(0, 6, 'SE KRA ' . $this->kra_number . ' - ' . $this->kra_label, 0, 1, 'C');
-        $this->SetFont('Times', 'B', 11);
-        $this->Cell(0, 6, 'SUMMARY OF POINTS', 0, 1, 'C');
+        if ($this->is_iss_page) {
+            $this->Cell(0, 6, 'INDIVIDUAL SUMMARY SHEET', 0, 1, 'C');
+            $this->SetFont('Times', 'B', 11);
+            $this->Cell(0, 6, 'RANK-WEIGHTED SCORING & RECLASSIFICATION', 0, 1, 'C');
+        } else {
+            $this->Cell(0, 6, 'SE KRA ' . $this->kra_number . ' - ' . $this->kra_label, 0, 1, 'C');
+            $this->SetFont('Times', 'B', 11);
+            $this->Cell(0, 6, 'SUMMARY OF POINTS', 0, 1, 'C');
+        }
         $this->Ln(1);
 
         // Faculty information table
@@ -459,6 +466,115 @@ class KRA_PDF extends FPDF {
         $this->Cell(0, 4, 'CHED FACULTY POSITION RECLASSIFICATION FOR SUCs', 0, 1, 'C');
         $this->SetTextColor(0, 0, 0);
     }
+
+    // ── Individual Summary Sheet: rank-weighted scoring & reclassification ──
+    // Renders as a final, standalone page: Table 1 (weight table with the
+    // applicant's current-rank tier highlighted), Table 2 (the static
+    // sub-rank bracket reference table), and the nine-line breakdown block.
+    // $iss is the array returned by Scoring\Orchestrator::run()['iss'] —
+    // this method draws only from that array and never recomputes anything.
+    function IssSummaryPage(array $iss) {
+        $this->is_iss_page = true;
+        $this->AddPage();
+        $this->SetFont('Arial', '', 9);
+        $this->Cell(0, 5, 'Generated for the current cycle - not cached from any prior computation', 0, 1, 'C');
+        $this->Ln(3);
+
+        // ── Table 1: Faculty Rank | KRA1 Pts | Weight | ... | Total Points ──
+        $tiers = [
+            'Instructor'                  => 'Instructor I',
+            'Asst. Professor'              => 'Assistant Professor I',
+            'Assoc. Professor'             => 'Associate Professor I',
+            'Professor'                    => 'Professor I',
+            'College/Univ. Professor'      => 'University Professor',
+        ];
+        $raw = $iss['kra_raw_points'];
+
+        // Which tier row is the applicant's own base rank, for highlighting.
+        $base_rank   = $iss['base_rank'];
+        $active_tier = null;
+        foreach ($tiers as $label => $sampleRank) {
+            $w = \Scoring\Orchestrator::getKraWeights($sampleRank);
+            $w_base = \Scoring\Orchestrator::getKraWeights($base_rank);
+            if ($w === $w_base) { $active_tier = $label; break; }
+        }
+
+        $this->SetFont('Arial', 'B', 8);
+        $this->SetFillColor(...self::GRAY_ITEM);
+        $headers = ['Faculty Rank', 'KRA 1 Pts', 'Weight', 'KRA 2 Pts', 'Weight', 'KRA 3 Pts', 'Weight', 'KRA 4 Pts', 'Weight', 'Total Points'];
+        $widths  = [40, 15, 13, 15, 13, 15, 13, 15, 13, 24];
+        foreach ($headers as $i => $h) {
+            $this->Cell($widths[$i], 8, $h, 1, 0, 'C', true);
+        }
+        $this->Ln();
+
+        $this->SetFont('Arial', '', 8);
+        foreach ($tiers as $label => $sampleRank) {
+            $w = \Scoring\Orchestrator::getKraWeights($sampleRank);
+            $total = round(
+                $raw['kra1'] * $w['Instruction'] +
+                $raw['kra2'] * $w['Research'] +
+                $raw['kra3'] * $w['Extension'] +
+                $raw['kra4'] * $w['Professional Development'],
+                2
+            );
+            $isActive = ($label === $active_tier);
+            if ($isActive) { $this->SetFillColor(...self::GRAY_BAND); $this->SetFont('Arial', 'B', 8); }
+            else           { $this->SetFillColor(255, 255, 255); }
+
+            $this->Cell($widths[0], 6, $label, 1, 0, 'L', $isActive);
+            $this->Cell($widths[1], 6, number_format($raw['kra1'], 2), 1, 0, 'C', $isActive);
+            $this->Cell($widths[2], 6, round($w['Instruction'] * 100) . '%', 1, 0, 'C', $isActive);
+            $this->Cell($widths[3], 6, number_format($raw['kra2'], 2), 1, 0, 'C', $isActive);
+            $this->Cell($widths[4], 6, round($w['Research'] * 100) . '%', 1, 0, 'C', $isActive);
+            $this->Cell($widths[5], 6, number_format($raw['kra3'], 2), 1, 0, 'C', $isActive);
+            $this->Cell($widths[6], 6, round($w['Extension'] * 100) . '%', 1, 0, 'C', $isActive);
+            $this->Cell($widths[7], 6, number_format($raw['kra4'], 2), 1, 0, 'C', $isActive);
+            $this->Cell($widths[8], 6, round($w['Professional Development'] * 100) . '%', 1, 0, 'C', $isActive);
+            $this->Cell($widths[9], 6, number_format($total, 2), 1, 1, 'C', $isActive);
+
+            if ($isActive) $this->SetFont('Arial', '', 8);
+        }
+        $this->Ln(6);
+
+        // ── Table 2: static Score Bracket reference table ──────────────────
+        $this->SetFont('Arial', 'B', 8);
+        $this->SetFillColor(...self::GRAY_ITEM);
+        $this->Cell(60, 7, 'Score Bracket', 1, 0, 'C', true);
+        $this->Cell(60, 7, 'No. of Sub-rank Increment', 1, 1, 'C', true);
+        $this->SetFont('Arial', '', 8);
+        $brackets = [
+            '41-50' => '1 sub-rank', '51-60' => '2 sub-ranks', '61-70' => '3 sub-ranks',
+            '71-80' => '4 sub-ranks', '81-90' => '5 sub-ranks', '91-100' => '6 sub-ranks',
+        ];
+        foreach ($brackets as $range => $label) {
+            $this->Cell(60, 6, $range, 1, 0, 'C');
+            $this->Cell(60, 6, $label, 1, 1, 'C');
+        }
+        $this->Ln(6);
+
+        // ── Breakdown block ──────────────────────────────────────────────
+        $rows = [
+            ['Current Faculty Rank', $iss['base_rank']],
+            ['Qualified for Auto. 1-Sub Rank (for PhD)?', $iss['qualified_auto_subrank_phd'] ? 'YES' : 'NO'],
+            ['Base Rank', $iss['base_rank']],
+            ['No. of Sub-Rank Increment based on Score', (string)$iss['sub_rank_increment_pass1']],
+            ['Initial Reclassified Rank', $iss['initial_reclassified_rank']],
+            ['No. of Sub-Rank Increment based on Recomputed Score', (string)$iss['sub_rank_increment_pass2']],
+            ['Reclassified Rank', $iss['reclassified_rank']],
+            ['Qualified for Auto. 1-Sub Rank (for Awards)?', $iss['qualified_auto_subrank_award'] ? 'YES' : 'NO'],
+            ['Final Rank (Score-Based Increment + Auto Sub Rank combined)', $iss['final_rank']],
+        ];
+        $this->SetFont('Arial', '', 8);
+        foreach ($rows as [$label, $value]) {
+            $this->CheckPageBreak(7);
+            $this->SetFillColor(...self::GRAY_LABELCOL);
+            $this->Cell(120, 6, $label, 1, 0, 'R', true);
+            $this->SetFont('Arial', 'B', 8);
+            $this->Cell(64, 6, $value, 1, 1, 'C');
+            $this->SetFont('Arial', '', 8);
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -472,7 +588,7 @@ class KRA_PDF extends FPDF {
  * @param string   $suc_name       University name for the "Name of SUC" row
  * @return KRA_PDF  (caller decides Output mode/filename)
  */
-function renderKraPdf(array $faculty, array $subs_by_cat, array $kras_to_print, string $suc_name = 'Carlos Hilado Memorial State University'): KRA_PDF {
+function renderKraPdf(array $faculty, array $subs_by_cat, array $kras_to_print, string $suc_name = 'Carlos Hilado Memorial State University', ?array $iss = null): KRA_PDF {
     $definitions = kraDefinitions();
 
     $pdf = new KRA_PDF('P', 'mm', 'A4');
@@ -540,6 +656,13 @@ function renderKraPdf(array $faculty, array $subs_by_cat, array $kras_to_print, 
         $pdf->GrandTotalRow($def['number'], $grand_total_capped, $def['max_points']);
 
         $pdf->SignatureBlock($pdf->faculty_name);
+    }
+
+    // Rank-weighted scoring / reclassification summary — only when the caller
+    // supplied fresh ISS data (the full multi-KRA report), never for a
+    // single-KRA-only print.
+    if ($iss !== null) {
+        $pdf->IssSummaryPage($iss);
     }
 
     return $pdf;

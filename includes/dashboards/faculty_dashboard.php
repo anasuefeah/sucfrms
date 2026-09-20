@@ -52,12 +52,12 @@ $has_national_award = (int)$award_check->fetchColumn() > 0;
 // â”€â”€ Checker approval progress (for under_review status display) â”€â”€
 $chk_approved = 0;
 $chk_slots    = 0;
-$chk_total    = max(1, (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role IN ('checker','checker_faculty') AND status='active'")->fetchColumn());
+$chk_total    = max(1, (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role = 'checker' AND status='active'")->fetchColumn());
 try {
     $chk_q = $pdo->prepare("
         SELECT r.decision FROM application_checker_reviews r
         JOIN users u ON r.checker_id = u.user_id
-        WHERE r.application_id = ? AND u.role IN ('checker','checker_faculty')
+        WHERE r.application_id = ? AND u.role = 'checker'
     ");
     $chk_q->execute([$app_id]);
     foreach ($chk_q->fetchAll() as $cr) {
@@ -94,7 +94,7 @@ if ($my_campus_id) {
             ON a.user_id = u.user_id AND a.cycle_id = ?
         WHERE u.campus_id = ?
           AND u.status    = 'active'
-          AND u.role      IN ('faculty','checker_faculty')
+          AND u.role      = 'faculty'
           AND u.user_id  != ?
         ORDER BY u.full_name ASC
         LIMIT 20
@@ -166,7 +166,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pdo->prepare("UPDATE applications SET status=?, submitted_at=NOW() WHERE application_id=?")->execute([$new_status, $app_id]);
         logAudit($pdo, $uid, 'Application Submitted', "Application #{$app_id} submitted for {$cycle['cycle_name']}.");
         // Notify all active campus checkers of new submission
-        $campus_checkers = $pdo->query("SELECT user_id FROM users WHERE role IN ('checker','checker_faculty') AND status='active'")->fetchAll(PDO::FETCH_COLUMN);
+        $campus_checkers = $pdo->query("SELECT user_id FROM users WHERE role = 'checker' AND status='active'")->fetchAll(PDO::FETCH_COLUMN);
         foreach ($campus_checkers as $cid) {
             createNotif($pdo, (int)$cid, 'new_submission',
                 "New application submitted by " . ($_SESSION['full_name'] ?? 'A faculty member') . " — awaiting your review.",
@@ -181,7 +181,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pdo->prepare("UPDATE applications SET status='under_review', checker_remarks=NULL WHERE application_id=?")->execute([$app_id]);
         logAudit($pdo, $uid, 'Revision Resubmitted', "Faculty resubmitted revised entries for Application #{$app_id}");
         // Notify campus checkers of revision compliance
-        $campus_checkers = $pdo->query("SELECT user_id FROM users WHERE role IN ('checker','checker_faculty') AND status='active'")->fetchAll(PDO::FETCH_COLUMN);
+        $campus_checkers = $pdo->query("SELECT user_id FROM users WHERE role = 'checker' AND status='active'")->fetchAll(PDO::FETCH_COLUMN);
         foreach ($campus_checkers as $cid) {
             createNotif($pdo, (int)$cid, 'revision_resubmitted',
                 ($_SESSION['full_name'] ?? 'A faculty member') . " has resubmitted the revised KRA entries for your review.",
@@ -200,7 +200,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // ── Application progress steps ──
 $steps = [
     ['label'=>'Profile Complete',       'sublabel'=>'Name, rank, campus set',     'icon'=>'bi-person-check', 'done'=>!empty($_SESSION['full_name']) && !empty($faculty_rank),                                                            'link'=>null],
-    ['label'=>'KRA Entries Added',      'sublabel'=>($total > 0 ? number_format($total,1).' pts total' : 'No entries yet'), 'icon'=>'bi-list-check', 'done'=>(isset($total) && $total > 0), 'link'=>'?page=apply&step=2'],
+    ['label'=>'KRA Entries Added',      'sublabel'=>($total > 0 ? number_format($total,1).' pts total' : 'No entries yet'), 'icon'=>'bi-list-check', 'done'=>(isset($total) && $total > 0), 'link'=>'?page=apply'],
     ['label'=>'Submitted',              'sublabel'=>'Not yet submitted',          'icon'=>'bi-send',         'done'=>in_array($app['status'],['submitted','under_review','talisay_review','approved','reclassified','admin_rejected']),  'link'=>null],
     ['label'=>'Campus Review',          'sublabel'=>'Awaiting campus checkers',   'icon'=>'bi-search',       'done'=>in_array($app['status'],['talisay_review','approved','reclassified']),                                            'link'=>null],
     ['label'=>'Under Review by Talisay','sublabel'=>'Awaiting Talisay checkers',  'icon'=>'bi-building',     'done'=>in_array($app['status'],['approved','reclassified']),                                                              'link'=>null],
@@ -251,22 +251,7 @@ foreach ($steps as $i => $s) { if ($s['done']) $current_step = $i + 1; }
             </div>
         </div>
 
-        <!-- Right: cycle status pill -->
-        <?php if (!$deadline_passed): ?>
-        <div style="display:flex;align-items:center;gap:0.5rem;
-                    background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.15);
-                    border-radius:20px;padding:0.35rem 0.85rem;">
-            <i class="bi bi-circle-fill" style="color:#4ade80;font-size:0.55rem;"></i>
-            <span style="font-size:0.78rem;color:rgba(255,255,255,0.9);font-weight:600;">Accepting submissions</span>
-        </div>
-        <?php else: ?>
-        <div style="display:flex;align-items:center;gap:0.4rem;
-                    background:rgba(30,77,140,0.25);border:1px solid rgba(255,255,255,0.2);
-                    border-radius:20px;padding:0.35rem 0.85rem;">
-            <i class="bi bi-pause-circle" style="color:rgba(255,255,255,0.7);font-size:0.85rem;"></i>
-            <span style="font-size:0.78rem;color:rgba(255,255,255,0.7);font-weight:600;">Cycle closed</span>
-        </div>
-        <?php endif; ?>
+
     </div>
 
     <!-- Bottom: progress stepper -->
@@ -507,7 +492,7 @@ foreach ($steps as $i => $s) { if ($s['done']) $current_step = $i + 1; }
                     </button>
                 </form>
                 <?php elseif ($total === 0): ?>
-                <a href="?page=apply&step=2" class="btn btn-sm btn-outline-primary w-100">
+                <a href="?page=apply" class="btn btn-sm btn-outline-primary w-100">
                     <i class="bi bi-pencil me-1"></i>Enter KRA Scores First
                 </a>
                 <?php else: ?>
@@ -563,7 +548,7 @@ foreach ($steps as $i => $s) { if ($s['done']) $current_step = $i + 1; }
             <small class="text-muted">Your points per area vs maximum</small>
         </div>
         <?php if ($can_edit): ?>
-        <a href="?page=apply&step=2" class="btn btn-xs btn-outline-primary">
+        <a href="?page=apply" class="btn btn-xs btn-outline-primary">
             <i class="bi bi-pencil me-1"></i>Edit KRA Entries
         </a>
         <?php endif; ?>
@@ -599,7 +584,7 @@ foreach ($steps as $i => $s) { if ($s['done']) $current_step = $i + 1; }
                         <span style="font-weight:400;color:#94a3b8;font-size:0.72rem;">/ <?= $info['max'] ?></span>
                     </span>
                     <?php if ($can_edit): ?>
-                    <a href="?page=apply&step=2&tab=<?= $info['tab'] ?>"
+                    <a href="?page=apply&tab=<?= $info['tab'] ?>"
                        style="font-size:0.68rem;color:<?= $info['color'] ?>;text-decoration:none;white-space:nowrap;">
                         <?= $empty ? '+ Add' : 'Edit' ?>
                     </a>

@@ -26,6 +26,15 @@ class KRA4Scorer
     const CAP_C = 20;
     const CAP_D = 20;
 
+    private static function professionalOrgYears($raw): float
+    {
+        $years = max(1.0, (float)($raw ?? 1));
+
+        // Earlier entry forms stored the fixed point value (5) instead of the
+        // unit count. Treat that legacy value as one qualifying membership.
+        return $years === 5.0 ? 1.0 : $years;
+    }
+
     public static function score(array $submissions): array
     {
         $crit_a         = 0.0;
@@ -58,7 +67,7 @@ class KRA4Scorer
                 // ── Criterion A: Professional Organizations ──────────
                 case 'A-org':
                     // 5 pts per year of current active membership
-                    $years = max(1, (float)($parts[2] ?? 1));
+                    $years = self::professionalOrgYears($parts[2] ?? 1);
                     $pts   = min(self::CAP_A, 5.0 * $years);
                     if (empty($s['evidence_names'])) {
                         $pending[] = "KRA IV Crit A: '{$desc}' — missing membership certificate/ID and engagement certification from org head.";
@@ -205,21 +214,42 @@ class KRA4Scorer
         $crit_c = min(self::CAP_C, $crit_c);
         $crit_d = min(self::CAP_D, $crit_d);
 
-        // Handle doctorate logic: if doctorate exists but is NOT triggered for sub-rank, award 40 points
+        // ── Doctorate auto sub-rank points ───────────────────────────────────
+        // AutoSubRankCalculator determines mode automatically:
+        //   triggered       → 0 pts (doctorate used for +1 rank instead)
+        //   points_only     → 40 pts added to education score
+        //   blocked_historical → 40 pts (historical trigger, reverts to points)
+        //   not_eligible    → 0 pts (no doctorate present or rank ineligible)
         if ($has_doctorate) {
-            // Check Auto Sub Rank status - if doctorate not triggered, add 40 points to education
             global $pdo;
-            if (isset($pdo) && !empty($_GET['app_id'])) {
-                $app_id = (int)$_GET['app_id'];
-                $auto_check = $pdo->prepare("SELECT doctorate_status FROM auto_sub_rank WHERE application_id = ?");
-                $auto_check->execute([$app_id]);
-                $auto_data = $auto_check->fetch();
-                
-                if (!$auto_data || $auto_data['doctorate_status'] !== 'Triggered') {
-                    // Doctorate not triggered for sub-rank, so award 40 points instead
-                    $crit_b_edu += 40.0;
-                    $crit_b = min(self::CAP_B, $crit_b_edu + $crit_b_train + $crit_b_paper);
+            $doctorate_pts = 0.0;
+
+            if (isset($pdo)) {
+                // Load the AutoSubRankCalculator if not already loaded
+                $asr_file = __DIR__ . '/autosubrank.php';
+                if (file_exists($asr_file) && !class_exists('\Scoring\AutoSubRankCalculator')) {
+                    require_once $asr_file;
                 }
+
+                // Resolve application_id: prefer passed parameter, then GET, then skip
+                $asr_app_id = 0;
+                if (!empty($_GET['app_id'])) {
+                    $asr_app_id = (int)$_GET['app_id'];
+                } elseif (!empty($_POST['app_id'])) {
+                    $asr_app_id = (int)$_POST['app_id'];
+                }
+
+                if ($asr_app_id > 0 && class_exists('\Scoring\AutoSubRankCalculator')) {
+                    $doctorate_pts = \Scoring\AutoSubRankCalculator::getDoctoratePoints($pdo, $asr_app_id);
+                } else {
+                    // Fallback: no app context — default to points_only (safe)
+                    $doctorate_pts = \Scoring\AutoSubRankCalculator::DOCTORATE_POINTS;
+                }
+            }
+
+            if ($doctorate_pts > 0) {
+                $crit_b_edu += $doctorate_pts;
+                $crit_b      = min(self::CAP_B, $crit_b_edu + $crit_b_train + $crit_b_paper);
             }
         }
 
@@ -255,7 +285,7 @@ class KRA4Scorer
 
         switch ($critType) {
             case 'A-org':
-                $years = max(1, (float)($parts[2] ?? 1));
+                $years = self::professionalOrgYears($parts[2] ?? 1);
                 return min(self::CAP_A, 5.0 * $years);
             case 'B-degree':
                 if ($subVal >= 40)  return 40.0;

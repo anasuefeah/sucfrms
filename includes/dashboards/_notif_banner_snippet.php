@@ -2,17 +2,27 @@
 // ── Faculty unread notification banner ────────────────────────────────────
 try {
     $fac_notifs_stmt = $pdo->prepare("
-        SELECT notif_id, type, message, created_at
-        FROM notifications
-        WHERE user_id = ? AND is_read = 0
-          AND type IN ('score_adjusted','needs_revision','under_review','approved','rejected','talisay_review')
-        ORDER BY created_at DESC
-        LIMIT 5
+        SELECT n.notif_id, n.type, n.message, n.created_at, n.submission_id, ks.kra_category
+        FROM notifications n
+        LEFT JOIN kra_submissions ks ON ks.submission_id = n.submission_id
+        WHERE n.user_id = ? AND n.is_read = 0
+          AND n.type IN ('score_adjusted','needs_revision','under_review','approved','rejected','talisay_review')
+        ORDER BY n.created_at DESC
+        LIMIT 2
     ");
     $fac_notifs_stmt->execute([$uid]);
     $fac_unread_notifs = $fac_notifs_stmt->fetchAll();
+
+    $fac_total_stmt = $pdo->prepare("
+        SELECT COUNT(*) FROM notifications
+        WHERE user_id = ? AND is_read = 0
+          AND type IN ('score_adjusted','needs_revision','under_review','approved','rejected','talisay_review')
+    ");
+    $fac_total_stmt->execute([$uid]);
+    $fac_total_unread = (int)$fac_total_stmt->fetchColumn();
 } catch (\Exception $e) {
     $fac_unread_notifs = [];
+    $fac_total_unread  = 0;
 }
 
 if (!empty($fac_unread_notifs)):
@@ -24,7 +34,8 @@ if (!empty($fac_unread_notifs)):
         'approved'       => ['icon'=>'bi-check-circle-fill',         'color'=>'#1e4d8c','bg'=>'#f0f4fb','border'=>'#1e4d8c','label'=>'Approved'],
         'rejected'       => ['icon'=>'bi-arrow-counterclockwise',    'color'=>'#475569','bg'=>'#f8fafc','border'=>'#475569','label'=>'Returned'],
     ];
-    $fac_notif_count = count($fac_unread_notifs);
+    $fac_notif_count  = count($fac_unread_notifs);
+    $fac_extra_count  = max(0, $fac_total_unread - $fac_notif_count);
 ?>
 <div id="facultyNotifBanner" class="mb-3" style="border-radius:12px;overflow:hidden;box-shadow:0 2px 16px rgba(0,0,0,0.12);">
     <div style="background:linear-gradient(135deg,#1e4d8c,#1a3a6b);padding:0.75rem 1.1rem;
@@ -35,7 +46,7 @@ if (!empty($fac_unread_notifs)):
                 <i class="bi bi-bell-fill" style="color:#475569;font-size:0.9rem;animation:bellRing 1.2s ease 3;"></i>
             </span>
             <span style="color:#fff;font-weight:700;font-size:0.9rem;">
-                <?= $fac_notif_count ?> Unread Notification<?= $fac_notif_count > 1 ? 's' : '' ?> — Application Update
+                <?= $fac_total_unread ?> Unread Notification<?= $fac_total_unread > 1 ? 's' : '' ?> — Application Update
             </span>
             <span style="background:#334155;color:#fff;font-size:0.62rem;font-weight:700;
                          border-radius:20px;padding:1px 8px;letter-spacing:0.03em;">NEW</span>
@@ -57,7 +68,9 @@ if (!empty($fac_unread_notifs)):
         $st = $notif_styles[$fn['type']] ?? ['icon'=>'bi-bell','color'=>'#64748b','bg'=>'#f8fafc','border'=>'#e2e8f0','label'=>'Update'];
         $fn_link = match($fn['type']) {
             'score_adjusted' => 'index.php?page=my_application#score-comparison',
-            'needs_revision' => 'index.php?page=my_application#app-status',
+            'needs_revision' => !empty($fn['submission_id'])
+                ? 'index.php?page=apply&tab=' . kraCategoryToTabSlug($fn['kra_category']) . '&edit_sid=' . (int)$fn['submission_id']
+                : 'index.php?page=my_application#app-status',
             default          => 'index.php?page=my_application#app-status',
         };
         $diff_s = time() - strtotime($fn['created_at']);
@@ -94,6 +107,15 @@ if (!empty($fac_unread_notifs)):
         </a>
     </div>
     <?php endforeach; ?>
+    <?php if ($fac_extra_count > 0): ?>
+    <div style="padding:0.55rem 1.1rem;background:#f0f4fb;border-top:1px solid #e2e8f0;
+                font-size:0.72rem;color:#64748b;text-align:center;">
+        <i class="bi bi-three-dots me-1"></i>+<?= $fac_extra_count ?> more unread &mdash;
+        <button onclick="dismissFacultyBanner()"
+                style="background:none;border:none;color:#1e4d8c;font-size:0.72rem;font-weight:600;
+                       cursor:pointer;padding:0;text-decoration:underline;">Mark all read</button>
+    </div>
+    <?php endif; ?>
 </div>
 <script>
 function dismissFacultyBanner() {

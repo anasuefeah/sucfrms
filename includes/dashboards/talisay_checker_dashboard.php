@@ -119,7 +119,14 @@ $kpi = [
                 </div>
                 <i class="bi bi-arrow-right-short" style="color:<?= $tc ?>;opacity:0.4;font-size:1rem;"></i>
             </div>
-            <div style="font-size:1.9rem;font-weight:800;color:<?= $tc ?>;line-height:1;letter-spacing:-1px;"><?= $val ?></div>
+            <?php
+            $talisay_poll_keys = ['talisay_pending','talisay_total','talisay_approved','talisay_reviewed'];
+            static $talisay_kpi_idx = 0;
+            $tpk = $talisay_poll_keys[$talisay_kpi_idx] ?? '';
+            $talisay_kpi_idx++;
+            ?>
+            <div style="font-size:1.9rem;font-weight:800;color:<?= $tc ?>;line-height:1;letter-spacing:-1px;"
+                 data-poll-key="<?= $tpk ?>"><?= $val ?></div>
             <div style="font-size:0.7rem;font-weight:600;color:#64748b;margin-top:4px;text-transform:uppercase;letter-spacing:0.04em;"><?= $label ?></div>
         </div>
     </a>

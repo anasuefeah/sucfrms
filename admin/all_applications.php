@@ -60,7 +60,7 @@ try {
                (SELECT COUNT(*) FROM application_checker_reviews r
                 WHERE r.application_id = a.application_id AND r.decision = 'approved') AS approvals_count
         FROM applications a
-        JOIN users u ON a.user_id = u.user_id AND u.role IN ('faculty','checker_faculty')
+        JOIN users u ON a.user_id = u.user_id AND u.role = 'faculty'
         LEFT JOIN campuses camp ON u.campus_id = camp.campus_id
         LEFT JOIN cycles c ON a.cycle_id = c.cycle_id
         $where ORDER BY a.updated_at DESC
@@ -69,7 +69,7 @@ try {
     $stmt = $pdo->prepare("
         SELECT a.*, u.full_name, u.employee_id, u.rank, camp.campus_name, c.cycle_name, 0 AS approvals_count
         FROM applications a
-        JOIN users u ON a.user_id = u.user_id AND u.role IN ('faculty','checker_faculty')
+        JOIN users u ON a.user_id = u.user_id AND u.role = 'faculty'
         LEFT JOIN campuses camp ON u.campus_id = camp.campus_id
         LEFT JOIN cycles c ON a.cycle_id = c.cycle_id
         $where ORDER BY a.updated_at DESC
@@ -78,7 +78,7 @@ try {
 $stmt->execute($params);
 $apps = $stmt->fetchAll();
 
-$counts = $pdo->query("SELECT a.status, COUNT(*) as cnt FROM applications a JOIN users u ON a.user_id = u.user_id AND u.role IN ('faculty','checker_faculty') GROUP BY a.status")->fetchAll(PDO::FETCH_KEY_PAIR);
+$counts = $pdo->query("SELECT a.status, COUNT(*) as cnt FROM applications a JOIN users u ON a.user_id = u.user_id AND u.role = 'faculty' GROUP BY a.status")->fetchAll(PDO::FETCH_KEY_PAIR);
 $total  = array_sum($counts);
 
 // Status tab config

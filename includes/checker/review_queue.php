@@ -80,11 +80,11 @@ $apps = $pdo->prepare("
         (SELECT COUNT(*) FROM application_checker_reviews r
          JOIN users uc ON r.checker_id = uc.user_id
          WHERE r.application_id = a.application_id AND r.decision = 'approved'
-           AND uc.role IN ('checker','checker_faculty')) AS approvals_count,
+           AND uc.role IN ('checker')) AS approvals_count,
         (SELECT COUNT(*) FROM application_checker_reviews r
          JOIN users uc ON r.checker_id = uc.user_id
          WHERE r.application_id = a.application_id
-           AND uc.role IN ('checker','checker_faculty')) AS slots_taken,
+           AND uc.role IN ('checker')) AS slots_taken,
         (SELECT r2.decision FROM application_checker_reviews r2
          WHERE r2.application_id = a.application_id AND r2.checker_id = ?) AS my_decision,
         (SELECT r2.decided_at FROM application_checker_reviews r2
@@ -139,7 +139,7 @@ $my_reviewed_count = (int)$my_reviewed_stmt->fetchColumn();
 
 $total_checkers_count = $is_talisay
     ? max(1, (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role='talisay_checker' AND status='active'")->fetchColumn())
-    : max(1, (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role IN ('checker','checker_faculty') AND status='active'")->fetchColumn());
+    : max(1, (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role = 'checker' AND status='active'")->fetchColumn());
 
 // Pre-load all slot decisions for displayed apps to avoid N+1
 $all_app_ids = array_column($apps, 'application_id');

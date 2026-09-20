@@ -295,7 +295,7 @@ function peAggregateScores(\PDO $pdo, int $uid, string $rank): array
 function peUploadFile(array $file, string $cat, int $kra_num): array|false {
     if ($file['error'] !== 0) return false;
     $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
-    if (!in_array($ext, ['pdf','jpg','jpeg','png','doc','docx'])) return false;
+    if (!in_array($ext, ['pdf','jpg','jpeg','png'])) return false;
     if ($file['size'] > 50*1024*1024) return false;
     $folder = __DIR__ . '/../uploads/pre_eval/kra' . $kra_num . '/';
     if (!is_dir($folder)) mkdir($folder, 0755, true);
@@ -332,14 +332,43 @@ function checkPreEvalEligibility(\PDO $pdo, int $uid): array {
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && $action === 'get_entries') {
     $cat = $_GET['cat'] ?? '';
     if (!in_array($cat, $valid_cats)) { echo json_encode(['ok'=>false,'error'=>'Invalid category']); exit; }
-    $stmt = $pdo->prepare("SELECT entry_id, remarks, computed_points, notes, created_at FROM pre_eval_entries WHERE user_id=? AND kra_category=? ORDER BY created_at ASC");
+
+    // Single JOIN + GROUP_CONCAT replaces the N+1 per-entry file query
+    $stmt = $pdo->prepare("
+        SELECT pe.entry_id, pe.remarks, pe.computed_points, pe.notes, pe.created_at,
+               GROUP_CONCAT(pf.file_id       ORDER BY pf.uploaded_at ASC SEPARATOR '||') AS file_ids,
+               GROUP_CONCAT(pf.original_filename ORDER BY pf.uploaded_at ASC SEPARATOR '||') AS file_names,
+               GROUP_CONCAT(pf.file_path     ORDER BY pf.uploaded_at ASC SEPARATOR '||') AS file_paths,
+               GROUP_CONCAT(pf.file_size_bytes ORDER BY pf.uploaded_at ASC SEPARATOR '||') AS file_sizes
+        FROM pre_eval_entries pe
+        LEFT JOIN pre_eval_files pf ON pf.entry_id = pe.entry_id
+        WHERE pe.user_id = ? AND pe.kra_category = ?
+        GROUP BY pe.entry_id
+        ORDER BY pe.created_at ASC
+    ");
     $stmt->execute([$uid, $cat]);
     $entries = $stmt->fetchAll();
+
+    // Expand the GROUP_CONCAT columns back into a files array
     foreach ($entries as &$e) {
-        $fs = $pdo->prepare("SELECT file_id, original_filename, file_path, file_size_bytes FROM pre_eval_files WHERE entry_id=? ORDER BY uploaded_at ASC");
-        $fs->execute([$e['entry_id']]);
-        $e['files'] = $fs->fetchAll();
+        $ids   = $e['file_ids']   ? explode('||', $e['file_ids'])   : [];
+        $names = $e['file_names'] ? explode('||', $e['file_names']) : [];
+        $paths = $e['file_paths'] ? explode('||', $e['file_paths']) : [];
+        $sizes = $e['file_sizes'] ? explode('||', $e['file_sizes']) : [];
+        $files = [];
+        foreach ($ids as $i => $fid) {
+            $files[] = [
+                'file_id'          => (int)$fid,
+                'original_filename'=> $names[$i] ?? '',
+                'file_path'        => $paths[$i] ?? '',
+                'file_size_bytes'  => (int)($sizes[$i] ?? 0),
+            ];
+        }
+        $e['files'] = $files;
+        unset($e['file_ids'], $e['file_names'], $e['file_paths'], $e['file_sizes']);
     }
+    unset($e);
+
     echo json_encode(['ok'=>true, 'entries'=>$entries]);
     exit;
 }
@@ -475,7 +504,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'save_entry') {
     $file_data = null;
     if (!empty($_FILES['evidence']['name']) && $_FILES['evidence']['error'] === 0) {
         $file_data = peUploadFile($_FILES['evidence'], $cat, $kra_num);
-        if (!$file_data) { echo json_encode(['ok'=>false,'error'=>'Invalid file. Use PDF, JPG, PNG (max 50MB).']); exit; }
+        if (!$file_data) { echo json_encode(['ok'=>false,'error'=>'Invalid file. Use PDF, JPG, or PNG (max 50 MB).']); exit; }
     }
 
     if ($edit_id > 0) {
@@ -485,10 +514,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'save_entry') {
         $pdo->prepare("UPDATE pre_eval_entries SET remarks=?, computed_points=?, notes=?, updated_at=NOW() WHERE entry_id=?")
             ->execute([$remarks, $points, $notes, $edit_id]);
         $saved_id = $edit_id;
+        logAudit($pdo, $uid, 'Pre-Eval Entry Updated', "{$cat}: entry #{$edit_id} updated ({$points} pts).");
     } else {
         $pdo->prepare("INSERT INTO pre_eval_entries (user_id, kra_category, remarks, computed_points, notes) VALUES (?,?,?,?,?)")
             ->execute([$uid, $cat, $remarks, $points, $notes]);
         $saved_id = (int)$pdo->lastInsertId();
+        logAudit($pdo, $uid, 'Pre-Eval Entry Added', "{$cat}: new entry #{$saved_id} ({$points} pts).");
     }
 
     if ($file_data) {
@@ -518,7 +549,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'attach_file') {
     }
     $kra_num = array_search($cat, $valid_cats) + 1;
     $fd = peUploadFile($_FILES['evidence'], $cat, $kra_num);
-    if (!$fd) { echo json_encode(['ok'=>false,'error'=>'Invalid file type or too large (max 50MB)']); exit; }
+    if (!$fd) { echo json_encode(['ok'=>false,'error'=>'Invalid file type or too large. Use PDF, JPG, or PNG (max 50 MB).']); exit; }
 
     $pdo->prepare("INSERT INTO pre_eval_files (user_id, entry_id, kra_category, file_path, original_filename, file_size_bytes) VALUES (?,?,?,?,?,?)")
         ->execute([$uid, $entry_id, $cat, $fd['path'], $fd['name'], $fd['size']]);
@@ -540,6 +571,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'delete_entry') {
         if (file_exists($abs)) @unlink($abs);
     }
     $pdo->prepare("DELETE FROM pre_eval_entries WHERE entry_id=?")->execute([$eid]);
+    logAudit($pdo, $uid, 'Pre-Eval Entry Deleted', "Entry #{$eid} deleted.");
+    echo json_encode(['ok'=>true]);
+    exit;
+}
+
+// ── POST: delete ALL entries for one category (Reset tab) ──────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'delete_all_entries') {
+    $cat = $_POST['cat'] ?? '';
+    $valid_cats_del = ['Instruction','Research','Extension','Professional Development'];
+    if (!in_array($cat, $valid_cats_del)) { echo json_encode(['ok'=>false,'error'=>'Invalid category']); exit; }
+
+    // Delete all evidence files for this user + category
+    $fs = $pdo->prepare("
+        SELECT pf.file_path
+        FROM pre_eval_files pf
+        JOIN pre_eval_entries pe ON pf.entry_id = pe.entry_id
+        WHERE pe.user_id = ? AND pe.kra_category = ?
+    ");
+    $fs->execute([$uid, $cat]);
+    foreach ($fs->fetchAll(PDO::FETCH_COLUMN) as $fp) {
+        $abs = realpath(__DIR__.'/../').DIRECTORY_SEPARATOR.str_replace('/', DIRECTORY_SEPARATOR, $fp);
+        if (file_exists($abs)) @unlink($abs);
+    }
+
+    // Delete all entries
+    $pdo->prepare("DELETE FROM pre_eval_entries WHERE user_id = ? AND kra_category = ?")
+        ->execute([$uid, $cat]);
+    logAudit($pdo, $uid, 'Pre-Eval Reset Tab', "All entries in {$cat} deleted (Reset All).");
     echo json_encode(['ok'=>true]);
     exit;
 }
@@ -554,6 +613,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'delete_file') {
     $abs = realpath(__DIR__.'/../').DIRECTORY_SEPARATOR.str_replace('/', DIRECTORY_SEPARATOR, $row['file_path']);
     if (file_exists($abs)) @unlink($abs);
     $pdo->prepare("DELETE FROM pre_eval_files WHERE file_id=?")->execute([$fid]);
+    logAudit($pdo, $uid, 'Pre-Eval File Deleted', "Evidence file #{$fid} deleted.");
     echo json_encode(['ok'=>true]);
     exit;
 }

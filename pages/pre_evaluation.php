@@ -7,7 +7,7 @@ require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/functions.php';
 
 if (!isLoggedIn()) { header('Location: login.php'); exit; }
-if (!in_array($_SESSION['role'] ?? '', ['faculty','checker_faculty'])) {
+if (($_SESSION['role'] ?? '') !== 'faculty') {
     header('Location: ../index.php'); exit;
 }
 if (!empty($_SESSION['force_pw_change'])) {
@@ -22,6 +22,24 @@ catch (\Exception $e) {
     $pdo->exec("CREATE TABLE IF NOT EXISTS pre_eval_entries (entry_id INT AUTO_INCREMENT PRIMARY KEY, user_id INT NOT NULL, kra_category ENUM('Instruction','Research','Extension','Professional Development') NOT NULL, remarks TEXT NOT NULL, computed_points DECIMAL(6,2) DEFAULT 0, notes TEXT DEFAULT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE)");
     $pdo->exec("CREATE TABLE IF NOT EXISTS pre_eval_files (file_id INT AUTO_INCREMENT PRIMARY KEY, user_id INT NOT NULL, entry_id INT DEFAULT NULL, kra_category ENUM('Instruction','Research','Extension','Professional Development') NOT NULL, file_path VARCHAR(255) NOT NULL, original_filename VARCHAR(255) NOT NULL, file_size_bytes INT DEFAULT 0, description VARCHAR(255) DEFAULT NULL, uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE, FOREIGN KEY (entry_id) REFERENCES pre_eval_entries(entry_id) ON DELETE SET NULL)");
 }
+// Migration: pre_eval_auto_sub_rank table
+try { $pdo->query("SELECT pea_id FROM pre_eval_auto_sub_rank LIMIT 1"); }
+catch (\Exception $e) {
+    $pdo->exec("CREATE TABLE IF NOT EXISTS pre_eval_auto_sub_rank (
+        pea_id            INT AUTO_INCREMENT PRIMARY KEY,
+        user_id           INT NOT NULL UNIQUE,
+        doctorate_status  ENUM('Triggered','Not Triggered','Needs Review') DEFAULT 'Needs Review',
+        award_status      ENUM('Triggered','Not Triggered','Needs Review') DEFAULT 'Needs Review',
+        doctorate_details TEXT DEFAULT NULL,
+        award_details     TEXT DEFAULT NULL,
+        award_evidence    VARCHAR(255) DEFAULT NULL,
+        updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+    )");
+}
+
+// -- Auto Sub Rank is fully automatic — no POST handler needed here.
+// The tab recalculates on every page view via AutoSubRankCalculator.
 
 // Faculty info
 $fac = $pdo->prepare("SELECT full_name, first_name, last_name, middle_name, rank, profile_pic FROM users WHERE user_id=?");
@@ -68,7 +86,6 @@ if ($active_cycle) {
 }
 
 // Document completeness check — presence only, not authenticity
-$entry_count_total  = (int)$pdo->prepare("SELECT COUNT(*) FROM pre_eval_entries WHERE user_id=?")->execute([$uid]) ? (int)$pdo->query("SELECT COUNT(*) FROM pre_eval_entries WHERE user_id={$uid}")->fetchColumn() : 0;
 // Count entries that have at least one attached file (evidence presence only)
 $entries_with_files_q = $pdo->prepare("
     SELECT COUNT(DISTINCT pe.entry_id)
@@ -101,10 +118,12 @@ $pot_rank     = $potential['potential_rank'];
 
 $kra_cats = ['Instruction','Research','Extension','Professional Development'];
 $kra_tabs = [
-    'instruction' => ['label'=>'Instruction',        'cat'=>'Instruction',              'icon'=>'bi-book-half',    'max'=>100, 'color'=>'#1e4d8c', 'num'=>1],
-    'research'    => ['label'=>'Research',            'cat'=>'Research',                 'icon'=>'bi-journal-text', 'max'=>100, 'color'=>'#1a3a6b', 'num'=>2],
-    'extension'   => ['label'=>'Extension',           'cat'=>'Extension',                'icon'=>'bi-people-fill',  'max'=>100, 'color'=>'#1e4d8c', 'num'=>3],
-    'profdev'     => ['label'=>'Prof. Development',   'cat'=>'Professional Development', 'icon'=>'bi-award-fill',   'max'=>100, 'color'=>'#475569', 'num'=>4],
+    'instruction' => ['label'=>'Instruction',         'cat'=>'Instruction',              'icon'=>'bi-book-half',        'max'=>100, 'color'=>'#1e4d8c', 'num'=>1],
+    'research'    => ['label'=>'Research',             'cat'=>'Research',                 'icon'=>'bi-journal-text',     'max'=>100, 'color'=>'#1a3a6b', 'num'=>2],
+    'extension'   => ['label'=>'Extension',            'cat'=>'Extension',                'icon'=>'bi-people-fill',      'max'=>100, 'color'=>'#1e4d8c', 'num'=>3],
+    'profdev'     => ['label'=>'Prof. Development',    'cat'=>'Professional Development', 'icon'=>'bi-award-fill',       'max'=>100, 'color'=>'#475569', 'num'=>4],
+    'autosubrank' => ['label'=>'Auto Sub Rank',         'cat'=>'Auto Sub Rank',            'icon'=>'bi-arrow-up-circle',  'max'=>0,   'color'=>'#1a3a6b', 'num'=>5],
+    'posreq'      => ['label'=>'Position Requirements','cat'=>'Position Requirements',    'icon'=>'bi-file-earmark-check','max'=>0,   'color'=>'#475569', 'num'=>6],
 ];
 
 $active_tab = $_GET['tab'] ?? 'instruction';
@@ -113,12 +132,17 @@ $cur     = $kra_tabs[$active_tab];
 $cur_cat = $cur['cat'];
 $kra_num = $cur['num'];
 
-// Tab entry counts (correct query)
+// Tab entry counts — only for KRA tabs
 $counts = [];
+$kra_slugs = ['instruction','research','extension','profdev'];
 foreach ($kra_tabs as $slug => $t) {
-    $s = $pdo->prepare("SELECT COUNT(*) FROM pre_eval_entries WHERE user_id=? AND kra_category=?");
-    $s->execute([$uid, $t['cat']]);
-    $counts[$slug] = (int)$s->fetchColumn();
+    if (in_array($slug, $kra_slugs)) {
+        $s = $pdo->prepare("SELECT COUNT(*) FROM pre_eval_entries WHERE user_id=? AND kra_category=?");
+        $s->execute([$uid, $t['cat']]);
+        $counts[$slug] = (int)$s->fetchColumn();
+    } else {
+        $counts[$slug] = 0;
+    }
 }
 
 // Evidence guide — load ALL criteria for all KRA categories
@@ -128,7 +152,7 @@ try {
         SELECT kra_category, criterion_label, max_points, description
         FROM scoring_criteria
         WHERE cycle_id IS NULL AND position_rank IS NULL AND is_active = 1
-        ORDER BY kra_category, max_points DESC, criterion_label ASC
+        ORDER BY kra_category, CASE WHEN criterion_label LIKE 'Criterion A%' THEN 1 WHEN criterion_label LIKE 'Criterion B%' THEN 2 WHEN criterion_label LIKE 'Criterion C%' THEN 3 WHEN criterion_label LIKE 'Criterion D%' THEN 4 ELSE 5 END ASC, max_points DESC, criterion_label ASC
     ");
     foreach ($cg->fetchAll() as $row) {
         $all_criteria[$row['kra_category']][] = $row;
@@ -140,7 +164,7 @@ try {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>SUCFRMS — Pre-Evaluation</title>
+<title>SUCFRMS — Self-Assessment</title>
 <link href="../assets/vendor/bootstrap-icons/bootstrap-icons.min.css" rel="stylesheet">
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
@@ -149,9 +173,9 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f3f8;min-height:100vh
 /* Navbar */
 .pnav{background:#1a3a6b;height:48px;display:flex;align-items:center;padding:0 24px;gap:10px;position:sticky;top:0;z-index:200;}
 .pnav-logo{width:28px;height:28px;border-radius:50%;object-fit:cover;border:1.5px solid rgba(201,168,76,.6);flex-shrink:0;}
-.pnav-title{color:#fff;font-size:.85rem;font-weight:600;flex:1;}
+.pnav-title{color:#fff;font-size:.85rem;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;}
 .pnav-user{display:flex;align-items:center;gap:8px;cursor:pointer;position:relative;}
-.pnav-name{color:rgba(255,255,255,.9);font-size:.8rem;}
+.pnav-name{color:rgba(255,255,255,.9);font-size:.8rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px;}
 .pnav-avatar{width:28px;height:28px;border-radius:50%;object-fit:cover;border:1.5px solid rgba(201,168,76,.5);}
 .pnav-avatar-ph{width:28px;height:28px;border-radius:50%;background:rgba(255,255,255,.15);border:1.5px solid rgba(201,168,76,.4);display:flex;align-items:center;justify-content:center;color:#fff;font-size:.65rem;font-weight:700;}
 .pnav-dd{display:none;position:absolute;top:calc(100% + 6px);right:0;background:#fff;border:1px solid #e2e8f0;min-width:172px;box-shadow:0 4px 16px rgba(0,0,0,.1);z-index:500;}
@@ -193,10 +217,11 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f3f8;min-height:100vh
 .back-link:hover{color:#1a3a6b;}
 
 /* Tabs */
-.tabs{display:flex;gap:0;border-bottom:2px solid #e2e8f0;margin-bottom:1rem;}
-.tab-btn{display:flex;align-items:center;gap:5px;padding:.55rem .9rem;font-size:.75rem;font-weight:600;color:#64748b;border:none;background:none;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px;white-space:nowrap;text-decoration:none;}
-.tab-btn:hover{color:#1a3a6b;}
-.tab-btn.active{color:#1a3a6b;border-bottom-color:#1a3a6b;}
+.tabs{display:flex;gap:0;border-bottom:2px solid #e2e8f0;margin-bottom:1rem;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;}
+.tabs::-webkit-scrollbar{display:none;}
+.tab-btn{display:flex;align-items:center;gap:5px;padding:.55rem .9rem;font-size:.75rem;font-weight:600;color:#64748b;border:none;background:none;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px;white-space:nowrap;text-decoration:none;border-radius:6px 6px 0 0;transition:color .15s,background .15s;}
+.tab-btn:hover{color:#1a3a6b;background:#f0f4fb;}
+.tab-btn.active{color:#1a3a6b;border-bottom-color:#1a3a6b;background:#fff;}
 .tab-badge{background:#f1f5f9;color:#64748b;font-size:.6rem;font-weight:700;padding:1px 5px;border-radius:20px;}
 .tab-btn.active .tab-badge{background:#1a3a6b;color:#fff;}
 
@@ -211,6 +236,10 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f3f8;min-height:100vh
 .add-form{background:#f8fafc;border:1px solid #e2e8f0;padding:.85rem;margin-bottom:.85rem;}
 .fl{font-size:.68rem;font-weight:600;color:#475569;display:block;margin-bottom:3px;}
 .fi{width:100%;padding:.4rem .6rem;border:1px solid #e2e8f0;font-size:.78rem;color:#1e293b;background:#fff;font-family:inherit;}
+/* Hide number input spinners */
+input[type=number].fi::-webkit-inner-spin-button,
+input[type=number].fi::-webkit-outer-spin-button{-webkit-appearance:none;margin:0;}
+input[type=number].fi{-moz-appearance:textfield;}
 .fi:focus{outline:none;border-color:#1a3a6b;}
 textarea.fi{resize:vertical;min-height:52px;}
 .fg{margin-bottom:.6rem;}
@@ -290,6 +319,45 @@ textarea.fi{resize:vertical;min-height:52px;}
     .sidebar{width:100%;height:auto;position:static;border-right:none;border-bottom:1px solid #e2e8f0;}
     .pg{flex-direction:column;}
 }
+@media(max-width:600px){
+    /* Navbar — show short name only */
+    .pnav{padding:0 12px;gap:8px;}
+    .pnav-title{font-size:.75rem;}
+    .pnav-name{max-width:72px;font-size:.72rem;}
+
+    /* Main area padding */
+    .main{padding:.7rem .75rem 2.5rem;}
+
+    /* Page title row — stack buttons */
+    .main > div:first-of-type{flex-direction:column;align-items:flex-start !important;}
+
+    /* Tabs — smaller font, always scrollable */
+    .tab-btn{font-size:.68rem;padding:.45rem .65rem;}
+
+    /* 2-column form grid → 1 column on mobile */
+    .fg2{grid-template-columns:1fr !important;}
+
+    /* Sidebar score compact */
+    .sidebar{padding:.65rem .75rem;}
+    .score-num{font-size:1.5rem;}
+    .rank-box{padding:.5rem;}
+    .rank-cur,.rank-pot{font-size:.68rem;}
+
+    /* Panel body padding */
+    .panel-body{padding:.65rem .75rem;}
+    .add-form{padding:.65rem .75rem;}
+
+    /* Entry cards compact */
+    .entry-card-top{padding:.5rem .65rem .3rem;}
+    .entry-files{padding:0 .65rem .35rem;}
+    .entry-actions{padding:0 .65rem .5rem;}
+
+    /* Buttons row in page header */
+    .main > div[style*="space-between"] > div:last-child{
+        width:100%;
+        justify-content:flex-start;
+    }
+}
 </style>
 </head>
 <body>
@@ -334,9 +402,10 @@ textarea.fi{resize:vertical;min-height:52px;}
 
     <div>
     <?php foreach ($kra_tabs as $slug => $t):
+        if (!in_array($slug, ['instruction','research','extension','profdev'])) continue;
         $rpts  = min($t['max'], $raw[$t['cat']] ?? 0);
         $pct   = $t['max'] > 0 ? min(100, round(($rpts/$t['max'])*100)) : 0;
-        $wpts  = round($rpts * $weights[$t['cat']], 2);
+        $wpts  = round($rpts * ($weights[$t['cat']] ?? 0), 2);
     ?>
     <div class="kra-row" id="sb-kra-<?= $slug ?>">
         <div class="kra-row-head">
@@ -361,9 +430,14 @@ textarea.fi{resize:vertical;min-height:52px;}
             <?php endif; ?>
         </div>
         <?php if ($sub_rank > 0): ?>
-        <div class="increment-badge">+<?= $sub_rank ?> sub-rank<?= $sub_rank>1?'s':'' ?></div>
+        <div class="increment-badge"
+             title="Sub-rank = the number of steps forward in the rank scale your weighted score earns (e.g. +2 means you move up 2 positions from your current rank)."
+             style="cursor:help;">
+            +<?= $sub_rank ?> sub-rank<?= $sub_rank>1?'s':'' ?>
+            <i class="bi bi-question-circle" style="font-size:.58rem;opacity:.65;margin-left:2px;"></i>
+        </div>
         <?php elseif ($weighted > 0): ?>
-        <div style="font-size:.6rem;color:#475569;margin-top:.3rem;font-weight:600;">Score below 41</div>
+        <div class="below-note" style="font-size:.6rem;color:#475569;margin-top:.3rem;font-weight:600;">Score below 41</div>
         <?php endif; ?>
     </div>
 
@@ -380,7 +454,7 @@ textarea.fi{resize:vertical;min-height:52px;}
     <?php if (!$eligible): ?>
     <!-- ── Eligibility gate banner ── -->
     <div style="padding:.75rem 1rem;background:#fef2f2;border:1px solid #fecaca;border-left:4px solid #dc2626;border-radius:6px;margin-bottom:1rem;font-size:.8rem;color:#b91c1c;">
-        <div style="font-weight:700;margin-bottom:.3rem;"><i class="bi bi-shield-x me-1"></i>Not eligible for pre-evaluation</div>
+        <div style="font-weight:700;margin-bottom:.3rem;"><i class="bi bi-shield-x me-1"></i>Not eligible for self-assessment</div>
         <?php foreach ($eligibility_notes as $en): ?>
         <div style="margin-top:.2rem;">• <?= htmlspecialchars($en) ?></div>
         <?php endforeach; ?>
@@ -391,7 +465,7 @@ textarea.fi{resize:vertical;min-height:52px;}
 
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.6rem;margin-bottom:1rem;">
         <div>
-            <div style="font-size:.9rem;font-weight:700;color:#1a3a6b;">Pre-Evaluation</div>
+            <div style="font-size:.9rem;font-weight:700;color:#1a3a6b;">Self-Assessment</div>
             <div style="font-size:.68rem;color:#94a3b8;margin-top:2px;">Self-assess your KRA scores before a cycle opens.</div>
         </div>
         <div style="display:flex;gap:.4rem;flex-wrap:wrap;">
@@ -400,6 +474,9 @@ textarea.fi{resize:vertical;min-height:52px;}
             </button>
             <a href="evidence_repository.php" class="btn-s" style="text-decoration:none;font-size:.75rem;">
                 Evidence Repository
+            </a>
+            <a href="pre_eval_pdf.php" target="_blank" class="btn-s" style="font-size:.75rem;text-decoration:none;" title="Download self-assessment PDF">
+                Print Summary
             </a>
         </div>
     </div>
@@ -418,14 +495,284 @@ textarea.fi{resize:vertical;min-height:52px;}
 
     <div class="panels">
 
-        <!-- LEFT: entries -->
+    <?php if ($cur_cat === 'Auto Sub Rank'): ?>
+    <!-- AUTO SUB RANK PANEL -->
+    <?php
+    // Load saved data — kept for backward compat; new UI uses AutoSubRankCalculator directly
+    $pea_stmt = $pdo->prepare("SELECT * FROM pre_eval_auto_sub_rank WHERE user_id=?");
+    $pea_stmt->execute([$uid]);
+    $pea_data = $pea_stmt->fetch() ?: [];
+
+    // Check doctorate from prof dev entries
+    $doc_stmt2 = $pdo->prepare("SELECT remarks FROM pre_eval_entries WHERE user_id=? AND kra_category='Professional Development' AND (remarks LIKE '%doctorate%' OR remarks LIKE '%B-degree%') LIMIT 1");
+    $doc_stmt2->execute([$uid]);
+    $doc_rec2 = $doc_stmt2->fetch();
+    $asr_doctorate_info = $doc_rec2 ? sanitize($doc_rec2['remarks']) : 'No doctorate entry found in Prof. Development tab.';
+
+    $rank_eligible_asr = !preg_match('/Professor VI$|University Professor/', $rank);
+    ?>
+    <?php if (!empty($_GET['saved'])): ?>
+    <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:.6rem .9rem;margin-bottom:.75rem;font-size:.75rem;color:#15803d;">
+        <i class="bi bi-check-circle me-1"></i>Auto Sub Rank status saved.
+    </div>
+    <?php endif; ?>
+    <div class="panel">
+        <div class="panel-hd">
+            <div class="panel-hd-title">Auto Sub Rank</div>
+        </div>
+        <div class="panel-body">
+        <?php
+        // ── Load AutoSubRankCalculator ─────────────────────────────────────
+        if (!class_exists('\Scoring\AutoSubRankCalculator')) {
+            require_once __DIR__ . '/../includes/scoring/autosubrank.php';
+        }
+
+        // Detect doctorate and award from pre_eval_entries
+        $pe_doc_stmt = $pdo->prepare(
+            "SELECT remarks FROM pre_eval_entries
+             WHERE user_id=? AND kra_category='Professional Development'
+             ORDER BY entry_id ASC"
+        );
+        $pe_doc_stmt->execute([$uid]);
+        $pe_has_doctorate = false; $pe_doc_details = '';
+        $pe_has_award     = false; $pe_awd_details = '';
+        foreach ($pe_doc_stmt->fetchAll(\PDO::FETCH_COLUMN) as $pe_rem) {
+            $pp  = array_map('trim', explode('|||', $pe_rem));
+            $pct = $pp[0] ?? '';
+            $psv = (float)($pp[2] ?? 0);
+            if ($pct === 'B-degree' && $psv >= 40.0 && !$pe_has_doctorate) {
+                $pe_has_doctorate = true;
+                $pe_doc_details   = $pp[1] ?? 'Doctorate degree';
+            }
+            if ($pct === 'C-award' && $psv === 0.0 && !$pe_has_award) {
+                $pe_has_award   = true;
+                $pe_awd_details = $pp[1] ?? 'National/International Award';
+            }
+        }
+
+        // Always recalculate on page load
+        $pe_calc   = new \Scoring\AutoSubRankCalculator($pdo, 0, $uid);
+        $pe_result = $pe_calc->calculateForPreEval(
+            (float)($score_result['weighted_score'] ?? 0),
+            $rank,
+            $pe_has_doctorate, $pe_doc_details,
+            $pe_has_award,     $pe_awd_details
+        );
+        $pe_calc->persistPreEval($pe_result);
+
+        $pe_d_mode  = $pe_result['doctorate_mode'];
+        $pe_a_mode  = $pe_result['award_mode'];
+        $pe_d_color = \Scoring\AutoSubRankCalculator::modeColor($pe_d_mode);
+        $pe_a_color = \Scoring\AutoSubRankCalculator::modeColor($pe_a_mode);
+        $pe_d_label = \Scoring\AutoSubRankCalculator::modeLabel($pe_d_mode);
+        $pe_a_label = \Scoring\AutoSubRankCalculator::modeLabel($pe_a_mode);
+        $pe_ri      = $pe_result['total_rank_increase'];
+        ?>
+
+        <?php if (!empty($_GET['saved'])): ?>
+        <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:.5rem .85rem;margin-bottom:.75rem;font-size:.75rem;color:#15803d;">
+            <i class="bi bi-check-circle me-1"></i>Auto Sub Rank recalculated.
+        </div>
+        <?php endif; ?>
+
+        <!-- Result banner -->
+        <div style="background:<?= $pe_ri > 0 ? '#f0fdf4' : '#f8fafc' ?>;border:1.5px solid <?= $pe_ri > 0 ? '#bbf7d0' : '#e2e8f0' ?>;border-radius:8px;padding:.75rem 1rem;margin-bottom:.85rem;display:flex;align-items:center;gap:.6rem;">
+            <?php if ($pe_ri > 0): ?>
+            <i class="bi bi-arrow-up-circle-fill" style="color:#16a34a;font-size:1.1rem;flex-shrink:0;"></i>
+            <div>
+                <div style="font-weight:700;color:#16a34a;font-size:.88rem;">+<?= $pe_ri ?> automatic sub-rank<?= $pe_ri > 1 ? 's' : '' ?></div>
+                <div style="font-size:.72rem;color:#64748b;margin-top:2px;">System-calculated — no manual choice required</div>
+            </div>
+            <?php else: ?>
+            <i class="bi bi-dash-circle" style="color:#64748b;font-size:1.1rem;flex-shrink:0;"></i>
+            <div>
+                <div style="font-weight:600;color:#64748b;font-size:.88rem;">No automatic sub-rank increase</div>
+                <div style="font-size:.72rem;color:#94a3b8;margin-top:2px;">Add a doctorate or award entry in Prof. Development to qualify</div>
+            </div>
+            <?php endif; ?>
+        </div>
+
+        <!-- Criterion 1: Doctorate -->
+        <div class="add-form" style="margin-bottom:.75rem;">
+            <div style="font-size:.72rem;font-weight:700;color:#1a3a6b;text-transform:uppercase;letter-spacing:.06em;margin-bottom:.5rem;display:flex;align-items:center;gap:.5rem;">
+                <i class="bi bi-mortarboard"></i>1 — Doctorate Degree
+                <span style="background:<?= $pe_d_color ?>18;color:<?= $pe_d_color ?>;border:1px solid <?= $pe_d_color ?>40;padding:1px 8px;border-radius:20px;font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;margin-left:auto;">
+                    <?= htmlspecialchars($pe_d_label) ?>
+                </span>
+            </div>
+            <?php if ($pe_has_doctorate): ?>
+            <div class="fg">
+                <label class="fl">Detected From</label>
+                <div style="padding:.4rem .6rem;background:#f8fafc;border:1px solid #e2e8f0;font-size:.75rem;color:#475569;border-radius:0;">
+                    <?= htmlspecialchars($pe_doc_details) ?>
+                </div>
+            </div>
+            <div class="fg">
+                <label class="fl">Why This Decision</label>
+                <div style="padding:.4rem .6rem;background:#f8fafc;border:1px solid #e2e8f0;font-size:.75rem;color:#475569;border-radius:0;line-height:1.5;">
+                    <?= htmlspecialchars($pe_result['doctorate_reason']) ?>
+                </div>
+            </div>
+            <?php else: ?>
+            <div style="font-size:.78rem;color:#64748b;padding:.4rem 0;">
+                <i class="bi bi-exclamation-circle me-1" style="color:#94a3b8;"></i>
+                No doctorate entry found.
+                <a href="?tab=profdev" style="color:#1e4d8c;font-weight:600;">Add a doctorate in Prof. Development (B-degree ≥ 40)</a>
+            </div>
+            <?php endif; ?>
+        </div>
+
+        <!-- Criterion 2: Award -->
+        <div class="add-form" style="margin-bottom:.75rem;">
+            <div style="font-size:.72rem;font-weight:700;color:#1a3a6b;text-transform:uppercase;letter-spacing:.06em;margin-bottom:.5rem;display:flex;align-items:center;gap:.5rem;">
+                <i class="bi bi-trophy"></i>2 — National / International Award
+                <span style="background:<?= $pe_a_color ?>18;color:<?= $pe_a_color ?>;border:1px solid <?= $pe_a_color ?>40;padding:1px 8px;border-radius:20px;font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;margin-left:auto;">
+                    <?= htmlspecialchars($pe_a_label) ?>
+                </span>
+            </div>
+            <?php if ($pe_has_award): ?>
+            <div class="fg">
+                <label class="fl">Award</label>
+                <div style="padding:.4rem .6rem;background:#f8fafc;border:1px solid #e2e8f0;font-size:.75rem;color:#475569;border-radius:0;">
+                    <?= htmlspecialchars($pe_awd_details) ?>
+                </div>
+            </div>
+            <div class="fg">
+                <label class="fl">Why This Decision</label>
+                <div style="padding:.4rem .6rem;background:#f8fafc;border:1px solid #e2e8f0;font-size:.75rem;color:#475569;border-radius:0;line-height:1.5;">
+                    <?= htmlspecialchars($pe_result['award_reason']) ?>
+                </div>
+            </div>
+            <?php else: ?>
+            <div style="font-size:.78rem;color:#64748b;padding:.4rem 0;">
+                <i class="bi bi-exclamation-circle me-1" style="color:#94a3b8;"></i>
+                No national/international award found.
+                <a href="?tab=profdev" style="color:#1e4d8c;font-weight:600;">Add award in Prof. Development (C-award, national/intl)</a>
+            </div>
+            <?php endif; ?>
+        </div>
+
+        <div style="font-size:.7rem;color:#94a3b8;margin-top:.5rem;">
+            <i class="bi bi-arrow-repeat me-1"></i>Recalculated automatically each time you view this tab.
+            Score used: <strong><?= number_format((float)($pe_result['weighted_score_at_calc'] ?? 0), 2) ?></strong>
+        </div>
+        </div>
+    </div>
+
+
+    <?php elseif ($cur_cat === 'Position Requirements'): ?>
+    <!-- POSITION REQUIREMENTS PANEL -->
+    <div class="panel">
+        <div class="panel-hd">
+            <div class="panel-hd-title"><i class="bi bi-file-earmark-check me-1"></i>Position Requirements — <?= sanitize($rank ?: 'Unknown Rank') ?></div>
+        </div>
+        <div class="panel-body">
+            <?php
+            $is_instructor_pr = strpos($rank, 'Instructor') !== false;
+            $is_asst_pr       = strpos($rank, 'Assistant Professor') !== false;
+            $is_assoc_pr      = strpos($rank, 'Associate Professor') !== false;
+            $is_univ_pr       = $rank === 'University Professor';
+            $is_professor_pr  = strpos($rank, 'Professor') !== false && !$is_asst_pr && !$is_assoc_pr && !$is_univ_pr;
+            ?>
+            <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:.75rem 1rem;margin-bottom:1rem;font-size:.78rem;color:#1e4d8c;">
+                <i class="bi bi-info-circle me-1"></i>These are the additional documents required for your position when reclassifying. Prepare them ahead of time before a cycle opens.
+            </div>
+
+            <?php if ($is_instructor_pr || $is_asst_pr || $is_assoc_pr): ?>
+            <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:1.5rem;text-align:center;">
+                <i class="bi bi-check-circle-fill" style="color:#16a34a;font-size:1.75rem;margin-bottom:.6rem;display:block;"></i>
+                <div style="font-weight:700;color:#16a34a;font-size:.88rem;margin-bottom:.3rem;">No Additional Documents Required</div>
+                <div style="color:#15803d;font-size:.78rem;">Your current rank (<?= sanitize($rank) ?>) does not require additional position documentation beyond the standard KRA evidence.</div>
+            </div>
+
+            <?php elseif ($is_professor_pr): ?>
+            <div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:.75rem;">
+                <div style="background:#1e4d8c;padding:.45rem .85rem;">
+                    <span style="color:#fff;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;">Professor Position Requirements</span>
+                </div>
+                <table style="width:100%;border-collapse:collapse;font-size:.82rem;">
+                    <thead>
+                        <tr style="background:#f8fafc;border-bottom:1px solid #e2e8f0;">
+                            <th style="padding:.6rem .75rem;color:#64748b;font-size:.68rem;font-weight:700;text-transform:uppercase;width:36px;">#</th>
+                            <th style="padding:.6rem .75rem;color:#64748b;font-size:.68rem;font-weight:700;text-transform:uppercase;">Requirement</th>
+                            <th style="padding:.6rem .75rem;color:#64748b;font-size:.68rem;font-weight:700;text-transform:uppercase;">Evidence Needed</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr style="border-bottom:1px solid #f1f5f9;">
+                            <td style="padding:.7rem .75rem;text-align:center;font-weight:700;color:#64748b;">1</td>
+                            <td style="padding:.7rem .75rem;font-weight:600;color:#1e293b;">CAV Transcript of Records</td>
+                            <td style="padding:.7rem .75rem;color:#475569;font-size:.78rem;">Official CAV-authenticated transcript from CHED or your institution's registrar certifying your academic credentials.</td>
+                        </tr>
+                        <tr>
+                            <td style="padding:.7rem .75rem;text-align:center;font-weight:700;color:#64748b;">2</td>
+                            <td style="padding:.7rem .75rem;font-weight:600;color:#1e293b;">
+                                Internationally Indexed Article
+                                <div style="font-size:.72rem;color:#64748b;font-weight:400;margin-top:2px;">Scopus, WoS, or ACI — published within the last 3 years</div>
+                            </td>
+                            <td style="padding:.7rem .75rem;color:#475569;font-size:.78rem;">
+                                Published article with indexing proof (Scopus author profile, WoS record, or ACI listing). Must be within 3 years of application date. Co-authored articles are accepted.
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <?php elseif ($is_univ_pr): ?>
+            <div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:.75rem;">
+                <div style="background:#1e4d8c;padding:.45rem .85rem;">
+                    <span style="color:#fff;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;">University Professor Requirements</span>
+                </div>
+                <table style="width:100%;border-collapse:collapse;font-size:.82rem;">
+                    <thead>
+                        <tr style="background:#f8fafc;border-bottom:1px solid #e2e8f0;">
+                            <th style="padding:.6rem .75rem;color:#64748b;font-size:.68rem;font-weight:700;text-transform:uppercase;width:36px;">#</th>
+                            <th style="padding:.6rem .75rem;color:#64748b;font-size:.68rem;font-weight:700;text-transform:uppercase;">Requirement</th>
+                            <th style="padding:.6rem .75rem;color:#64748b;font-size:.68rem;font-weight:700;text-transform:uppercase;">Evidence Needed</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td style="padding:.7rem .75rem;text-align:center;font-weight:700;color:#64748b;">1</td>
+                            <td style="padding:.7rem .75rem;font-weight:600;color:#1e293b;">College/University Professor Certification Form</td>
+                            <td style="padding:.7rem .75rem;color:#475569;font-size:.78rem;">
+                                Signed certification form from the College Dean and University President confirming eligibility for University Professor status. Must include endorsement from the Academic Council.
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <?php else: ?>
+            <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:1.5rem;text-align:center;color:#94a3b8;font-size:.82rem;">
+                <i class="bi bi-question-circle" style="font-size:1.5rem;display:block;margin-bottom:.5rem;"></i>
+                Position requirements for your rank (<?= sanitize($rank ?: 'unknown') ?>) are not yet configured. Contact your administrator.
+            </div>
+            <?php endif; ?>
+
+            <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:.75rem 1rem;margin-top:.75rem;font-size:.78rem;color:#64748b;">
+                <i class="bi bi-shield-check me-1"></i>Upload these documents in the actual Reclassification application when a cycle is open — not here in Self-Assessment.
+            </div>
+        </div>
+    </div>
+
+    <?php else: ?>
+        <!-- KRA ENTRIES PANEL -->
         <div class="panel">
             <div class="panel-hd">
                 <div class="panel-hd-title"><?= $cur['label'] ?></div>
-                <button class="btn-p" onclick="toggleForm()" id="addBtn"
-                        <?= !$eligible ? 'disabled title="Not eligible — see notice above" style="opacity:.45;cursor:not-allowed;"' : '' ?>>
-                    + Add Entry
-                </button>
+                <div style="display:flex;gap:.4rem;align-items:center;">
+                    <button class="btn-p" onclick="toggleForm()" id="addBtn"
+                            <?= !$eligible ? 'disabled title="Not eligible — see notice above" style="opacity:.45;cursor:not-allowed;"' : '' ?>>
+                        + Add Entry
+                    </button>
+                    <button class="btn-p" id="resetAllBtn"
+                            onclick="confirmResetAll()"
+                            style="background:#fef2f2;color:#dc2626;border:1px solid #fecaca;"
+                            <?= !$eligible ? 'disabled style="opacity:.45;cursor:not-allowed;"' : '' ?>>
+                        <i class="bi bi-arrow-counterclockwise"></i> Reset All
+                    </button>
+                </div>
             </div>
             <div class="panel-body">
 
@@ -509,12 +856,27 @@ textarea.fi{resize:vertical;min-height:52px;}
                     <div class="fg"><label class="fl">Contribution % (co-authorship)</label><input type="number" class="fi" id="resContrib" value="100" min="1" max="100" oninput="previewScore()"></div>
 
                     <?php elseif ($cur_cat === 'Extension'): ?>
-                    <div class="fg"><label class="fl">Activity / Program Name</label><input type="text" class="fi" id="extAct" placeholder="e.g. Community outreach program"></div>
-                    <div class="fg2">
-                        <div><label class="fl">Income Generated (₱)</label><input type="number" class="fi" id="extInc" value="0" min="0" oninput="previewScore()"></div>
-                        <div><label class="fl">MOA / Linkage Count</label><input type="number" class="fi" id="extMoa" value="0" min="0" oninput="previewScore()"></div>
+                    <div class="fg">
+                        <label class="fl">Criterion / Type</label>
+                        <select class="fi" id="extType" onchange="updateExtOpts();previewScore()">
+                            <option value="moa-linkage">MOA / Linkage (5 pts)</option>
+                            <option value="income">Income Generating Project</option>
+                            <option value="accredit-local">Accreditation / QA - Local (8 pts)</option>
+                            <option value="accredit-intl">Accreditation / QA - International (10 pts)</option>
+                            <option value="resource-speaker-local">Resource Speaker - Local (2 pts)</option>
+                            <option value="resource-speaker-intl">Resource Speaker - International (3 pts)</option>
+                            <option value="outreach-isr-lead">Outreach / ISR - Lead (5 pts)</option>
+                            <option value="outreach-isr-member">Outreach / ISR - Member (2 pts)</option>
+                            <option value="csr-satisfaction">CSR Satisfaction Rating (max 20 pts)</option>
+                            <option value="consultant-local">Consultant / Expert - Local (8 pts)</option>
+                            <option value="consultant-intl">Consultant / Expert - International (10 pts)</option>
+                            <option value="judge-research">Judge - Research/Competition (2 pts)</option>
+                            <option value="judge-other">Judge - Other Event (1 pt)</option>
+                        </select>
                     </div>
-                    <div class="fg"><label class="fl">Outreach Activities Count</label><input type="number" class="fi" id="extOut" value="0" min="0" oninput="previewScore()"></div>
+                    <div class="fg"><label class="fl">Activity / Project / Designation Name</label><input type="text" class="fi" id="extTitle" placeholder="e.g. Community outreach program"></div>
+                    <div class="fg" id="extVal1Wrap" style="display:none;"><label class="fl" id="extVal1Label">Value</label><input type="number" class="fi" id="extVal1" value="" min="0" oninput="previewScore()"></div>
+                    <div class="fg" id="extVal2Wrap" style="display:none;"><label class="fl">Role</label><select class="fi" id="extVal2" onchange="previewScore()"><option value="lead">Lead</option><option value="co">Co/Member</option></select></div>
 
                     <?php else: // Professional Development ?>
                     <div class="fg">
@@ -545,14 +907,65 @@ textarea.fi{resize:vertical;min-height:52px;}
                     </div>
                 </div>
 
+                <!-- Sub-cap progress bars — hidden until get_score runs -->
+                <?php
+                // Sub-cap definitions per KRA (label, JS key into kra_detail, cap)
+                $subcap_defs = [
+                    'Instruction'              => [['A — Teaching Effectiveness','criterion_a',60],['B — Instructional Materials','criterion_b',30],['C — Research/Advisory','criterion_c',10]],
+                    'Research'                 => [['A — Books/Monographs','criterion_a_raw',null],['B — Articles/Chapters','criterion_b_raw',null],['C — Citations/Policy','criterion_c_raw',null]],
+                    'Extension'                => [['A — Income','criterion_a',null],['B — MOA/Linkage','criterion_b',null],['C — Outreach','criterion_c',null],['D — Bonus','criterion_d_bonus',null]],
+                    'Professional Development' => [['A — Prof. Orgs','criterion_a',20],['B — Training/Degrees','criterion_b',60],['C — Awards','criterion_c',20],['D — Bonus','criterion_d_bonus',20]],
+                ];
+                $bars = $subcap_defs[$cur_cat] ?? [];
+                // kra_detail key in get_score JSON
+                $detail_key = ['Instruction'=>'kra1','Research'=>'kra2','Extension'=>'kra3','Professional Development'=>'kra4'][$cur_cat] ?? '';
+                ?>
+                <div id="subcapBars" style="display:none;background:#f8fafc;border:1px solid #e2e8f0;border-top:none;padding:.55rem .85rem .45rem;margin-bottom:.6rem;">
+                    <div style="font-size:.58rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.08em;margin-bottom:.4rem;">
+                        <i class="bi bi-bar-chart-line me-1"></i>Criterion breakdown
+                        <span style="font-weight:400;font-style:italic;margin-left:.3rem;">(updates after each save)</span>
+                    </div>
+                    <div id="subcapList" style="display:flex;flex-direction:column;gap:.3rem;">
+                        <?php foreach ($bars as [$lbl, $key, $cap]): ?>
+                        <div class="subcap-row" data-key="<?= $key ?>" data-cap="<?= $cap ?? '' ?>" data-detail="<?= $detail_key ?>">
+                            <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:1px;">
+                                <span style="font-size:.65rem;color:#475569;font-weight:600;"><?= $lbl ?></span>
+                                <span class="subcap-pts" style="font-size:.65rem;font-weight:700;color:#1a3a6b;">—</span>
+                            </div>
+                            <div style="height:4px;background:#e2e8f0;border-radius:3px;overflow:hidden;">
+                                <div class="subcap-fill" style="height:100%;width:0%;background:#1e4d8c;border-radius:3px;transition:width .35s ease;"></div>
+                            </div>
+                        </div>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+
                 <!-- Entry list -->
                 <div class="entry-list" id="entryList">
-                    <div class="empty-state"><i class="bi bi-inbox"></i><p>No entries yet. Click <strong>Add Entry</strong> to start.</p></div>
+                    <?php
+                    $es = ['Instruction'=>['bi-book-half',100,'Teaching effectiveness (SET/SEF), instructional materials, and thesis/capstone advisory work.'],
+                           'Research'=>['bi-journal-text',100,'Publications, book chapters, citations, and policy research outputs.'],
+                           'Extension'=>['bi-people-fill',100,'Community outreach programs, MOAs/linkages, and income-generating extension activities.'],
+                           'Professional Development'=>['bi-award-fill',100,'Professional org membership, training/conferences, paper presentations, degrees, and awards.']];
+                    $ei = $es[$cur_cat] ?? ['bi-inbox',0,''];
+                    ?>
+                    <div class="empty-state">
+                        <i class="bi <?= $ei[0] ?>"></i>
+                        <p>No entries yet. Click <strong>+ Add Entry</strong> to start.</p>
+                        <?php if ($ei[2]): ?>
+                        <p style="margin-top:.35rem;font-size:.68rem;color:#b0bec5;max-width:240px;margin-left:auto;margin-right:auto;"><?= $ei[2] ?></p>
+                        <?php endif; ?>
+                        <?php if ($ei[1]): ?>
+                        <p style="margin-top:.25rem;font-size:.65rem;color:#bfdbfe;font-weight:700;">Max: <?= $ei[1] ?> pts</p>
+                        <?php endif; ?>
+                    </div>
                 </div>
 
                 <input type="file" id="entryFileInput" style="display:none" accept=".pdf,.jpg,.jpeg,.png" onchange="attachFile(this)">
             </div>
         </div>
+
+    <?php endif; // end autosubrank / posreq / kra panel ?>
 
     </div><!-- /panels -->
 </div><!-- /main -->
@@ -639,6 +1052,12 @@ textarea.fi{resize:vertical;min-height:52px;}
 const AJAX = 'pre_eval_ajax.php';
 const CAT  = <?= json_encode($cur_cat) ?>;
 const KRA_NUM = <?= $kra_num ?>;
+const EMPTY_STATE_INFO = <?= json_encode([
+    'Instruction'              => ['icon'=>'bi-book-half',    'max'=>100, 'desc'=>'Teaching effectiveness (SET/SEF ratings), instructional materials, and thesis/capstone advisory work.'],
+    'Research'                 => ['icon'=>'bi-journal-text', 'max'=>100, 'desc'=>'Publications, book chapters, citations, and policy research outputs.'],
+    'Extension'                => ['icon'=>'bi-people-fill',  'max'=>100, 'desc'=>'Community outreach programs, MOAs/linkages, and income-generating extension activities.'],
+    'Professional Development' => ['icon'=>'bi-award-fill',   'max'=>100, 'desc'=>'Professional org membership, training/conferences, paper presentations, degrees, and awards.'],
+]) ?>;
 let attachTarget = null;
 
 // ── Nav dropdown ──────────────────────────────────────────────
@@ -698,6 +1117,28 @@ function updatePdOpts(){
     w.style.display='block';
 }
 
+function updateExtOpts(){
+    const t=document.getElementById('extType')?.value||'';
+    const v1w=document.getElementById('extVal1Wrap');
+    const v2w=document.getElementById('extVal2Wrap');
+    const v1=document.getElementById('extVal1');
+    const v1l=document.getElementById('extVal1Label');
+    if(!v1w||!v2w||!v1||!v1l)return;
+    v1w.style.display='none';
+    v2w.style.display='none';
+    v1.value='';
+    if(t==='income'){
+        v1l.textContent='Income Generated';
+        v1.placeholder='Amount';
+        v1w.style.display='block';
+        v2w.style.display='block';
+    }else if(t==='csr-satisfaction'){
+        v1l.textContent='CSR Rating (0-100)';
+        v1.placeholder='Rating';
+        v1w.style.display='block';
+    }
+}
+
 // ── Build remarks ──────────────────────────────────────────────
 function buildRemarks(){
     if(CAT==='Instruction'){
@@ -719,17 +1160,17 @@ function buildRemarks(){
         const t=document.getElementById('resType')?.value||'';
         const ti=document.getElementById('resTitle')?.value||'';
         const c=document.getElementById('resContrib')?.value||'100';
-        return `${t}|||${ti}|||${c}`;
+        return `${t}|||${ti}||||||||||||${c}`;
     }else if(CAT==='Extension'){
-        const a=document.getElementById('extAct')?.value||'';
-        const i=document.getElementById('extInc')?.value||'0';
-        const m=document.getElementById('extMoa')?.value||'0';
-        const o=document.getElementById('extOut')?.value||'0';
-        return `${a}|||${i}|||${m}|||${o}`;
+        const t=document.getElementById('extType')?.value||'';
+        const title=document.getElementById('extTitle')?.value||'';
+        const v1=document.getElementById('extVal1')?.value||'';
+        const v2=document.getElementById('extVal2')?.value||'';
+        return `${t}|||${title}|||${v1}|||${v2}`;
     }else{
         const t=document.getElementById('pdType')?.value||'A-org';
         const d=document.getElementById('pdDesc')?.value||'';
-        const v=t==='A-org'?'5':(document.getElementById('pdSubval')?.value||'0');
+        const v=t==='A-org'?'1':(document.getElementById('pdSubval')?.value||'0');
         return `${t}|||${d}|||${v}`;
     }
 }
@@ -762,15 +1203,28 @@ function saveEntry(){
 
 // ── Load entries ───────────────────────────────────────────────
 function loadEntries(){
-    fetch(`${AJAX}?action=get_entries&cat=${encodeURIComponent(CAT)}`)
+    return fetch(`${AJAX}?action=get_entries&cat=${encodeURIComponent(CAT)}`)
         .then(x=>x.json()).then(d=>{
             const el=document.getElementById('entryList');
+            if(!el)return d;
             if(!d.ok||!d.entries.length){
-                el.innerHTML='<div class="empty-state"><i class="bi bi-inbox"></i><p>No entries yet. Click <strong>Add Entry</strong> to start.</p></div>';
-                return;
+                const info = EMPTY_STATE_INFO[CAT] || {};
+                const icon = info.icon || 'bi-inbox';
+                const max  = info.max  || 0;
+                const desc = info.desc || '';
+                const html = `<div class="empty-state">
+                    <i class="bi ${icon}"></i>
+                    <p>No entries yet. Click <strong>+ Add Entry</strong> to start.</p>
+                    ${desc ? `<p style="margin-top:.35rem;font-size:.68rem;color:#b0bec5;max-width:240px;margin-left:auto;margin-right:auto;">${desc}</p>` : ''}
+                    ${max  ? `<p style="margin-top:.25rem;font-size:.65rem;color:#bfdbfe;font-weight:700;">Max: ${max} pts</p>` : ''}
+                </div>`;
+                if(el.innerHTML!==html)el.innerHTML=html;
+                return d;
             }
-            el.innerHTML=d.entries.map(e=>entryCard(e)).join('');
-        });
+            const html=d.entries.map(e=>entryCard(e)).join('');
+            if(el.innerHTML!==html)el.innerHTML=html;
+            return d;
+        }).catch(()=>null);
 }
 
 function entryCard(e){
@@ -801,6 +1255,10 @@ function fmtLabel(r){
     if(t==='A-set-sef') return `<strong>Teaching Evaluation</strong> — SET: ${p[1]||0}%, SEF: ${p[2]||0}%`;
     if(t==='B-material') return `<strong>Material:</strong> ${esc(p[1]||'')}`;
     if(t==='C-thesis')   return `<strong>Thesis/Dissertation:</strong> ${esc(p[1]||'')}`;
+    if(['moa-linkage','income','accredit-local','accredit-intl','resource-speaker-local','resource-speaker-intl','outreach-isr-lead','outreach-isr-member','csr-satisfaction','consultant-local','consultant-intl','judge-research','judge-other'].includes(t)){
+        const value = p[2] ? ` - ${esc(p[2])}${t==='csr-satisfaction'?'%':''}` : '';
+        return `<strong>${esc(t.replaceAll('-',' '))}</strong>${p[1]?' - '+esc(p[1]):''}${value}`;
+    }
     if(t==='A-org')      return `<strong>Professional Org Membership</strong>`;
     if(t.startsWith('B-')||t.startsWith('C-')) return `<strong>${esc(p[1]||t)}</strong>${p[2]?' — '+esc(p[2])+'pts':''}`;
     // Research / Extension
@@ -817,7 +1275,7 @@ function attachFile(input){
     fd.append('entry_id',attachTarget);
     fd.append('evidence',input.files[0]);
     fetch(AJAX,{method:'POST',body:fd}).then(x=>x.json()).then(d=>{
-        if(d.ok)loadEntries();
+        if(d.ok){loadEntries();refreshScore();}
         else alert(d.error||'Upload failed.');
         input.value=''; attachTarget=null;
     });
@@ -825,15 +1283,47 @@ function attachFile(input){
 
 // ── Delete entry / file ────────────────────────────────────────
 function delEntry(eid){
-    if(!confirm('Remove this entry and all its files?'))return;
-    const fd=new FormData(); fd.append('action','delete_entry'); fd.append('entry_id',eid);
-    fetch(AJAX,{method:'POST',body:fd}).then(x=>x.json()).then(d=>{if(d.ok){loadEntries();refreshScore();}});
+    peConfirm(
+        'bi-trash',
+        '#dc2626',
+        'Remove Entry',
+        'This will permanently delete this entry and all its attached files.',
+        'Remove',
+        () => {
+            const fd=new FormData(); fd.append('action','delete_entry'); fd.append('entry_id',eid);
+            fetch(AJAX,{method:'POST',body:fd}).then(x=>x.json()).then(d=>{if(d.ok){loadEntries();refreshScore();}});
+        }
+    );
 }
 function delFile(e,fid){
     e.preventDefault();e.stopPropagation();
-    if(!confirm('Remove this file?'))return;
-    const fd=new FormData(); fd.append('action','delete_file'); fd.append('file_id',fid);
-    fetch(AJAX,{method:'POST',body:fd}).then(x=>x.json()).then(d=>{if(d.ok)loadEntries();});
+    peConfirm(
+        'bi-paperclip',
+        '#dc2626',
+        'Remove File',
+        'This will permanently delete this evidence file.',
+        'Remove File',
+        () => {
+            const fd=new FormData(); fd.append('action','delete_file'); fd.append('file_id',fid);
+            fetch(AJAX,{method:'POST',body:fd}).then(x=>x.json()).then(d=>{if(d.ok){loadEntries();refreshScore();}});
+        }
+    );
+}
+
+function confirmResetAll(){
+    peConfirm(
+        'bi-arrow-counterclockwise',
+        '#dc2626',
+        'Reset All Entries',
+        'This will permanently delete <strong>all entries and files</strong> in the <strong>' + CAT + '</strong> tab. This cannot be undone.',
+        'Reset All',
+        () => {
+            const fd=new FormData(); fd.append('action','delete_all_entries'); fd.append('cat',CAT);
+            fetch(AJAX,{method:'POST',body:fd}).then(x=>x.json()).then(d=>{
+                if(d.ok){ loadEntries(); refreshScore(); }
+            });
+        }
+    );
 }
 
 // ── Refresh sidebar score via AJAX (no page reload) ────────────
@@ -870,6 +1360,98 @@ function refreshScore(){
             if(bar) bar.style.width=pct+'%';
             if(rawTxt) rawTxt.textContent=raw.toFixed(1)+'/'+mx+' · '+(WEIGHTS[i]||0)+'% wt';
         });
+
+        // Update rank projection + increment badge
+        const potEl  = document.getElementById('sbPotRank');
+        const incWrap = document.querySelector('.rank-box');
+        if (incWrap) {
+            const curRankEl = document.getElementById('sbCurRank');
+            const curRank   = curRankEl ? curRankEl.textContent.trim() : '';
+            const potRank   = d.pot_rank || '';
+            if (potEl) potEl.textContent = potRank;
+
+            // Show/hide arrow + pot rank
+            const arrow = incWrap.querySelector('.rank-arrow');
+            if (arrow) arrow.style.display = (potRank && potRank !== curRank && potRank !== '—') ? '' : 'none';
+            if (potEl) potEl.style.display  = (potRank && potRank !== curRank && potRank !== '—') ? '' : 'none';
+
+            // Rebuild increment badge
+            let badge = incWrap.querySelector('.increment-badge');
+            const belowNote = incWrap.querySelector('.below-note');
+            if (d.sub_rank > 0) {
+                const tip = 'Sub-rank = the number of steps forward in the rank scale your weighted score earns (e.g. +2 means you move up 2 positions from your current rank).';
+                const label = '+'+d.sub_rank+' sub-rank'+(d.sub_rank>1?'s':'');
+                if (!badge) {
+                    badge = document.createElement('div');
+                    badge.className = 'increment-badge';
+                    incWrap.appendChild(badge);
+                }
+                badge.title = tip;
+                badge.style.cursor = 'help';
+                badge.innerHTML = label+' <i class="bi bi-question-circle" style="font-size:.58rem;opacity:.65;margin-left:2px;"></i>';
+                badge.style.display = '';
+                if (belowNote) belowNote.style.display = 'none';
+            } else {
+                if (badge) badge.style.display = 'none';
+                if (belowNote) {
+                    belowNote.style.display = d.weighted > 0 ? '' : 'none';
+                }
+            }
+        }
+
+        // ── Update sub-cap criterion bars ──────────────────
+        const bars  = document.querySelectorAll('.subcap-row');
+        const barsWrap = document.getElementById('subcapBars');
+        if (bars.length && d.kra_detail) {
+            if (barsWrap) barsWrap.style.display = '';
+            bars.forEach(row => {
+                const detailKey = row.dataset.detail;   // kra1 / kra2 / kra3 / kra4
+                const field     = row.dataset.key;      // criterion_a, criterion_b etc.
+                const cap       = parseFloat(row.dataset.cap) || 0;
+                const detail    = d.kra_detail?.[detailKey] || {};
+                const val       = parseFloat(detail[field] ?? 0);
+
+                const ptsEl  = row.querySelector('.subcap-pts');
+                const fillEl = row.querySelector('.subcap-fill');
+
+                if (ptsEl) {
+                    ptsEl.textContent = cap
+                        ? `${val.toFixed(1)} / ${cap}`
+                        : val.toFixed(1);
+                    // Turn red when at or over cap
+                    ptsEl.style.color = (cap && val >= cap) ? '#dc2626' : '#1a3a6b';
+                }
+                if (fillEl && cap) {
+                    const pct = Math.min(100, Math.round((val / cap) * 100));
+                    fillEl.style.width = pct + '%';
+                    fillEl.style.background = pct >= 100 ? '#dc2626' : '#1e4d8c';
+                } else if (fillEl) {
+                    // No hard cap (Research) — show filled proportionally to 100 pts
+                    fillEl.style.width = Math.min(100, val) + '%';
+                }
+            });
+        }
+
+        // ── Gap-to-threshold note in sidebar ───────────────
+        let gapEl = document.getElementById('sbGapNote');
+        if (!gapEl) {
+            const mn = document.getElementById('sbMinNote');
+            if (mn) {
+                gapEl = document.createElement('div');
+                gapEl.id = 'sbGapNote';
+                gapEl.style.cssText = 'font-size:.58rem;font-weight:600;margin-top:3px;';
+                mn.after(gapEl);
+            }
+        }
+        if (gapEl) {
+            const gap = Math.max(0, 41 - d.weighted);
+            if (gap > 0 && d.weighted > 0) {
+                gapEl.textContent = `Need ${gap.toFixed(1)} more pts to qualify`;
+                gapEl.style.color = '#c2410c';
+            } else {
+                gapEl.textContent = '';
+            }
+        }
     });
 }
 
@@ -919,8 +1501,106 @@ function filterCriteria(){
 
 // ── Init ───────────────────────────────────────────────────────
 <?php if($cur_cat==='Instruction'): ?>switchInstrForm();<?php endif; ?>
+<?php if($cur_cat==='Extension'): ?>updateExtOpts();<?php endif; ?>
 <?php if($cur_cat==='Professional Development'): ?>updatePdOpts();<?php endif; ?>
-loadEntries();
+function selfAssessmentFormOpen(){
+    return document.getElementById('addForm')?.style.display !== 'none';
+}
+function refreshSelfAssessment(){
+    refreshScore();
+    if(!selfAssessmentFormOpen())loadEntries();
+}
+refreshSelfAssessment();
+setInterval(refreshSelfAssessment, 5000);
+
+// ── In-page confirm modal ──────────────────────────────────────
+function peConfirm(icon, color, title, msg, btnLabel, onConfirm) {
+    const m = document.getElementById('peConfirmModal');
+    document.getElementById('peConfirmIcon').className       = 'bi ' + icon;
+    document.getElementById('peConfirmIcon').style.color     = color;
+    document.getElementById('peConfirmIconWrap').style.background = color + '18';
+    document.getElementById('peConfirmTitle').textContent    = title;
+    document.getElementById('peConfirmMsg').innerHTML        = msg;
+    document.getElementById('peConfirmBtn').textContent      = btnLabel;
+    document.getElementById('peConfirmBtn').style.background = color;
+    // Rebind confirm button to avoid stacking listeners
+    const fresh = document.getElementById('peConfirmBtn').cloneNode(true);
+    document.getElementById('peConfirmBtn').replaceWith(fresh);
+    fresh.style.background = color;
+    fresh.addEventListener('click', () => { m.style.display = 'none'; document.body.style.overflow = ''; onConfirm(); });
+    m.style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+}
+document.addEventListener('DOMContentLoaded', () => {
+    const m = document.getElementById('peConfirmModal');
+    if (!m) return;
+    document.getElementById('peConfirmCancelBtn')
+        .addEventListener('click', () => { m.style.display = 'none'; document.body.style.overflow = ''; });
+    m.addEventListener('click', e => { if (e.target === m) { m.style.display = 'none'; document.body.style.overflow = ''; } });
+});
 </script>
+
+<!-- ── In-page Confirm Modal ─────────────────────────────────── -->
+<div id="peConfirmModal"
+     style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;
+            background:rgba(0,0,0,0.5);z-index:99999;overflow:hidden;
+            align-items:center;justify-content:center;padding:1rem;">
+    <div style="background:#fff;border-radius:14px;width:100%;max-width:400px;
+                box-shadow:0 24px 64px rgba(0,0,0,0.28);overflow:hidden;
+                animation:peModalIn .18s ease;max-height:90vh;">
+
+        <!-- Header -->
+        <div style="background:#1a3a6b;padding:.85rem 1.25rem;display:flex;align-items:center;gap:.65rem;">
+            <img src="../assets/images/logo.jpg" alt=""
+                 style="width:32px;height:32px;border-radius:50%;object-fit:cover;
+                        border:2px solid rgba(255,255,255,.25);flex-shrink:0;">
+            <div>
+                <div style="color:#fff;font-weight:700;font-size:.85rem;line-height:1.2;">SUCFRMS</div>
+                <div style="color:rgba(255,255,255,.5);font-size:.65rem;">Self-Assessment</div>
+            </div>
+        </div>
+
+        <!-- Body -->
+        <div style="padding:1.5rem 1.5rem 1rem;text-align:center;">
+            <div id="peConfirmIconWrap"
+                 style="width:56px;height:56px;border-radius:50%;display:inline-flex;align-items:center;
+                        justify-content:center;margin-bottom:.85rem;">
+                <i id="peConfirmIcon" class="bi bi-trash" style="font-size:1.5rem;"></i>
+            </div>
+            <div id="peConfirmTitle"
+                 style="font-size:.97rem;font-weight:700;color:#0f172a;margin-bottom:.4rem;"></div>
+            <div id="peConfirmMsg"
+                 style="font-size:.82rem;color:#64748b;line-height:1.55;"></div>
+        </div>
+
+        <!-- Divider -->
+        <div style="height:1px;background:#f1f5f9;margin:0 1.25rem;"></div>
+
+        <!-- Buttons -->
+        <div style="padding:.85rem 1.25rem 1.25rem;display:flex;gap:.5rem;">
+            <button id="peConfirmCancelBtn"
+                    style="flex:1;padding:.6rem;border:1.5px solid #e2e8f0;border-radius:8px;
+                           background:#fff;color:#475569;font-weight:600;font-size:.83rem;cursor:pointer;
+                           transition:background .12s;">
+                Cancel
+            </button>
+            <button id="peConfirmBtn"
+                    style="flex:1;padding:.6rem;border:none;border-radius:8px;
+                           color:#fff;font-weight:700;font-size:.83rem;cursor:pointer;
+                           transition:opacity .12s;">
+                Confirm
+            </button>
+        </div>
+
+    </div>
+</div>
+
+<style>
+@keyframes peModalIn {
+    from { opacity:0; transform:scale(.95) translateY(8px); }
+    to   { opacity:1; transform:scale(1)   translateY(0);   }
+}
+</style>
+
 </body>
 </html>

@@ -37,7 +37,7 @@ $dept_stats = $pdo->query("
 $status_dist = $pdo->query("
     SELECT a.status, COUNT(*) as cnt
     FROM applications a JOIN users u ON a.user_id=u.user_id
-    WHERE u.role IN ('faculty','checker_faculty') AND a.status != 'draft'
+    WHERE u.role = 'faculty' AND a.status != 'draft'
     GROUP BY a.status
 ")->fetchAll(PDO::FETCH_KEY_PAIR);
 

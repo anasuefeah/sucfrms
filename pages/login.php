@@ -29,6 +29,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['middle_name'] = $user['middle_name'] ?? '';
                 $_SESSION['last_name']   = $user['last_name']   ?? '';
                 $_SESSION['full_name']   = formatDisplayName($user);
+                $_SESSION['checker_label'] = $user['checker_label'] ?? null;
                 $_SESSION['role']        = $user['role'];
                 $_SESSION['email']       = $user['email'];
                 $_SESSION['profile_pic'] = $user['profile_pic'] ?? '';
@@ -46,7 +47,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 } catch (\Exception $e) {}
 
                 // Faculty lands on portal overview first; all other roles go to dashboard
-                $redirect = in_array($user['role'], ['faculty','checker_faculty'])
+                $redirect = $user['role'] === 'faculty'
                     ? '../pages/portal.php'
                     : '../index.php';
                 header('Location: ' . $redirect);

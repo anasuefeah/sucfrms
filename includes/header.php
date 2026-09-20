@@ -293,8 +293,12 @@ function notifIconFor(type) {
 }
 
 function timeAgo(ts) {
-    const diff = Math.floor((Date.now() - new Date(ts)) / 1000);
-    if (diff < 60)   return 'just now';
+    // ts is now a Unix timestamp in seconds (from UNIX_TIMESTAMP() in MySQL)
+    // Multiply by 1000 to get milliseconds. No timezone issues.
+    const ms   = Number(ts) * 1000;
+    const diff = Math.floor((Date.now() - ms) / 1000);
+    if (diff < 5)    return 'just now';
+    if (diff < 60)   return diff + 's ago';
     if (diff < 3600) return Math.floor(diff/60) + 'm ago';
     if (diff < 86400)return Math.floor(diff/3600) + 'h ago';
     return Math.floor(diff/86400) + 'd ago';
@@ -313,10 +317,10 @@ function renderNotifs(notifs) {
         const id     = n.application_id;
 
         // Map notification type → correct page + anchor
-        function notifLink(type, appId) {
+        function notifLink(type, appId, submissionId, kraCategory) {
             if (!appId) return '#';
-            const isFaculty  = ['faculty','checker_faculty'].includes(role);
-            const isChecker  = ['checker','checker_faculty'].includes(role);
+            const isFaculty  = role === 'faculty';
+            const isChecker  = role === 'checker';
             const isTalisay  = role === 'talisay_checker';
 
             switch (type) {
@@ -324,9 +328,19 @@ function renderNotifs(notifs) {
                 case 'score_adjusted':
                     return `index.php?page=my_application&id=${appId}#score-comparison`;
 
-                // Faculty: application under review / revision / returned / talisay
-                case 'under_review':
+                // Faculty: entry flagged for revision → deep-link straight to that KRA entry
                 case 'needs_revision':
+                    if (isFaculty && submissionId) {
+                        const slugMap = { 'Research': 'research', 'Extension': 'extension', 'Professional Development': 'profdev' };
+                        const slug = slugMap[kraCategory] || 'instruction';
+                        return `index.php?page=apply&tab=${slug}&edit_sid=${submissionId}`;
+                    }
+                    return isFaculty
+                        ? `index.php?page=my_application&id=${appId}#app-status`
+                        : `index.php?page=review_application&id=${appId}`;
+
+                // Faculty: application under review / returned / talisay
+                case 'under_review':
                 case 'rejected':
                 case 'approved':
                 case 'talisay_review':
@@ -350,7 +364,7 @@ function renderNotifs(notifs) {
             }
         }
 
-        const link = notifLink(n.type, id);
+        const link = notifLink(n.type, id, n.submission_id, n.kra_category);
         return `<div onclick="markOneRead(${n.notif_id}, '${link}')"
                      style="display:flex;gap:0.75rem;align-items:flex-start;padding:0.75rem 1rem;cursor:pointer;
                             border-bottom:1px solid #f1f5f9;transition:background 0.15s;
@@ -488,6 +502,86 @@ setInterval(() => {
         })
         .catch(() => {});
 }, 30000);
+
+// ── Real-time dashboard poll — updates KPI numbers every 15s ──
+(function() {
+    const POLL_URL = 'ajax/dashboard_poll.php';
+    let _lastCounts = {};
+    let _lastFacultyStatus = null;
+
+    function applyPollData(counts) {
+        // Update all [data-poll-key] elements on the page
+        Object.entries(counts).forEach(([key, val]) => {
+            if (key === 'faculty_status' || key === 'faculty_score') return;
+            document.querySelectorAll('[data-poll-key="' + key + '"]').forEach(el => {
+                if (el.textContent.trim() !== String(val)) {
+                    el.textContent = val;
+                    // Flash animation to signal update
+                    el.style.transition = 'color 0.3s';
+                    el.style.color = '#16a34a';
+                    setTimeout(() => { el.style.color = ''; }, 1200);
+                }
+            });
+        });
+
+        // Faculty: show toast if application status changed
+        if (counts.faculty_status && counts.faculty_status !== _lastFacultyStatus && _lastFacultyStatus !== null) {
+            const labels = {
+                under_review:   'Your application is now under review.',
+                needs_revision: 'A checker has flagged an entry for revision.',
+                approved:       'Your application has been approved!',
+                rejected:       'Your application has been returned.',
+                talisay_review: 'Your application is now in Talisay review.',
+            };
+            const msg = labels[counts.faculty_status] || 'Your application status has changed.';
+            showPollToast(msg, counts.faculty_status === 'approved' ? 'success' : 'info');
+        }
+        _lastFacultyStatus = counts.faculty_status ?? _lastFacultyStatus;
+
+        // Checker: toast if new items arrived in queue
+        if (_lastCounts.checker_pending !== undefined && counts.checker_pending > _lastCounts.checker_pending) {
+            showPollToast('New application submitted — ' + counts.checker_pending + ' awaiting decision.', 'info');
+        }
+
+        _lastCounts = counts;
+    }
+
+    function showPollToast(msg, type) {
+        const color = type === 'success' ? '#16a34a' : type === 'warn' ? '#d97706' : '#1e4d8c';
+        const icon  = type === 'success' ? 'bi-check-circle-fill' : 'bi-bell-fill';
+        const id    = 'pollToast_' + Date.now();
+        const el    = document.createElement('div');
+        el.id       = id;
+        el.style.cssText = 'position:fixed;bottom:1.5rem;right:1.5rem;z-index:999998;'
+            + 'min-width:260px;max-width:380px;background:#fff;border-radius:12px;'
+            + 'box-shadow:0 8px 32px rgba(0,0,0,0.16);display:flex;align-items:flex-start;gap:0.75rem;'
+            + 'padding:0.9rem 1rem;border-left:4px solid ' + color + ';'
+            + 'animation:sucfrmsToastIn 0.3s ease;';
+        el.innerHTML = '<i class="bi ' + icon + '" style="color:' + color + ';font-size:1.1rem;flex-shrink:0;margin-top:2px;"></i>'
+            + '<div style="flex:1;font-size:0.83rem;color:#1e293b;line-height:1.5;">' + msg + '</div>'
+            + '<button onclick="document.getElementById(\'' + id + '\').remove()" '
+            + 'style="background:none;border:none;color:#94a3b8;cursor:pointer;font-size:1.1rem;padding:0;flex-shrink:0;">&times;</button>';
+        document.body.appendChild(el);
+        setTimeout(() => {
+            if (document.getElementById(id)) {
+                el.style.animation = 'sucfrmsToastOut 0.4s ease forwards';
+                setTimeout(() => el.remove(), 400);
+            }
+        }, 4000);
+    }
+
+    function doPoll() {
+        fetch(POLL_URL, { cache: 'no-store' })
+            .then(r => r.ok ? r.json() : null)
+            .then(d => { if (d && d.ok) applyPollData(d.counts); })
+            .catch(() => {});
+    }
+
+    // Initial poll after 3s (let page fully load), then every 15s
+    setTimeout(doPoll, 3000);
+    setInterval(doPoll, 15000);
+})();
+
 // -- Feedback modal ------------------------------------------
 function openFeedbackModal() {
     document.getElementById('feedbackForm').reset();
