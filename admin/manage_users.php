@@ -34,7 +34,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $password    = $_POST['password'] ?? '';
         $checker_role = $_POST['checker_role'] ?? '';
 
-        if (!$first_name || !$last_name || !$email || !$password || !in_array($checker_role, ['checker','talisay_checker'])) {
+        if (!$first_name || !$last_name || !$email || !$password || $checker_role !== 'checker') {
             flashMessage('danger', 'Please fill in all required fields to add a checker.');
         } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
             flashMessage('danger', 'Invalid email address.');
@@ -131,21 +131,168 @@ $users = $users->fetchAll();
             <input type="password" name="password" required minlength="8" placeholder="Min. 8 characters"
                    style="width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:0.5rem 0.65rem;font-size:0.85rem;color:#1e293b;background:#f8fafc;outline:none;">
         </div>
-        <div style="min-width:150px;">
-            <label style="font-size:0.72rem;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;display:block;margin-bottom:5px;">Role <span style="color:#334155;">*</span></label>
-            <select name="checker_role" required
-                    style="width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:0.5rem 0.65rem;font-size:0.85rem;color:#1e293b;background:#f8fafc;outline:none;cursor:pointer;">
-                <option value="checker">Checker</option>
-                <option value="talisay_checker">Talisay Checker</option>
-            </select>
-        </div>
+        <input type="hidden" name="checker_role" value="checker">
         <button type="button"
                 style="background:#16a34a;color:#fff;border:1px solid #16a34a;border-radius:8px;padding:0.5rem 1.35rem;font-size:0.85rem;font-weight:600;cursor:pointer;white-space:nowrap;"
-                onclick="if(document.getElementById('addCheckerForm').reportValidity()) confirmDelete('Create this checker account?','addCheckerForm','Add Checker','bi-person-plus')">
+                onclick="reviewCheckerBeforeAdd()">
             <i class="bi bi-person-plus me-1"></i>Add Checker
         </button>
     </form>
 </div>
+
+<!-- ── Checker Review Modal ─────────────────────────────────── -->
+<div id="checkerReviewModal"
+     style="display:none;position:fixed;inset:0;background:rgba(15,23,42,0.55);z-index:9999;
+            align-items:center;justify-content:center;padding:1rem;">
+  <div style="background:#fff;border-radius:14px;width:100%;max-width:480px;
+              box-shadow:0 20px 60px rgba(0,0,0,0.22);overflow:hidden;animation:slideUpModal 0.18s ease;">
+
+    <!-- Modal header -->
+    <div style="background:linear-gradient(135deg,#1e3a6b,#1e4d8c);padding:1rem 1.25rem;
+                display:flex;align-items:center;gap:0.75rem;">
+      <div style="width:38px;height:38px;border-radius:8px;background:rgba(255,255,255,0.15);
+                  display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+        <i class="bi bi-person-check-fill" style="color:#fff;font-size:1rem;"></i>
+      </div>
+      <div>
+        <div style="color:#fff;font-weight:700;font-size:0.95rem;">Review Checker Details</div>
+        <div style="color:rgba(255,255,255,0.6);font-size:0.72rem;margin-top:1px;">Please confirm the information before creating the account</div>
+      </div>
+      <button type="button" onclick="document.getElementById('checkerReviewModal').style.display='none'"
+              style="margin-left:auto;background:none;border:none;color:rgba(255,255,255,0.6);
+                     font-size:1.2rem;cursor:pointer;padding:0.2rem 0.4rem;border-radius:4px;line-height:1;"
+              title="Close">&times;</button>
+    </div>
+
+    <!-- Review body -->
+    <div style="padding:1.4rem 1.5rem;">
+      <!-- Info grid -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.65rem 1rem;margin-bottom:1.2rem;">
+        <div>
+          <div style="font-size:0.68rem;font-weight:700;color:#94a3b8;text-transform:uppercase;
+                      letter-spacing:0.05em;margin-bottom:3px;">First Name</div>
+          <div id="rv_first_name" style="font-size:0.9rem;font-weight:600;color:#1e293b;">—</div>
+        </div>
+        <div>
+          <div style="font-size:0.68rem;font-weight:700;color:#94a3b8;text-transform:uppercase;
+                      letter-spacing:0.05em;margin-bottom:3px;">Middle Name</div>
+          <div id="rv_middle_name" style="font-size:0.9rem;font-weight:600;color:#1e293b;">—</div>
+        </div>
+        <div>
+          <div style="font-size:0.68rem;font-weight:700;color:#94a3b8;text-transform:uppercase;
+                      letter-spacing:0.05em;margin-bottom:3px;">Last Name</div>
+          <div id="rv_last_name" style="font-size:0.9rem;font-weight:600;color:#1e293b;">—</div>
+        </div>
+        <div>
+          <div style="font-size:0.68rem;font-weight:700;color:#94a3b8;text-transform:uppercase;
+                      letter-spacing:0.05em;margin-bottom:3px;">Role</div>
+          <div style="font-size:0.9rem;font-weight:600;color:#1e293b;">
+            <span style="background:#eff6ff;color:#1e4d8c;border-radius:5px;
+                         padding:2px 8px;font-size:0.78rem;font-weight:700;border:1px solid #bfdbfe;">
+              <i class="bi bi-check2-circle me-1"></i>Checker
+            </span>
+          </div>
+        </div>
+        <div style="grid-column:1/-1;">
+          <div style="font-size:0.68rem;font-weight:700;color:#94a3b8;text-transform:uppercase;
+                      letter-spacing:0.05em;margin-bottom:3px;">Email Address</div>
+          <div id="rv_email" style="font-size:0.9rem;font-weight:600;color:#1e293b;
+                                    word-break:break-all;">—</div>
+        </div>
+        <div style="grid-column:1/-1;">
+          <div style="font-size:0.68rem;font-weight:700;color:#94a3b8;text-transform:uppercase;
+                      letter-spacing:0.05em;margin-bottom:3px;">Password</div>
+          <div style="display:flex;align-items:center;gap:0.5rem;">
+            <div id="rv_password_dots" style="font-size:1rem;color:#475569;letter-spacing:2px;">••••••••</div>
+            <button type="button" id="rv_toggle_pw"
+                    onclick="toggleReviewPassword()"
+                    style="background:none;border:1px solid #e2e8f0;border-radius:5px;
+                           padding:2px 7px;font-size:0.72rem;color:#64748b;cursor:pointer;">
+              <i class="bi bi-eye" id="rv_pw_icon"></i> Show
+            </button>
+            <span id="rv_password_plain" style="display:none;font-size:0.85rem;
+                  font-family:monospace;color:#1e293b;background:#f1f5f9;
+                  padding:2px 8px;border-radius:5px;word-break:break-all;"></span>
+          </div>
+        </div>
+      </div>
+
+
+
+      <!-- Action buttons -->
+      <div style="display:flex;gap:0.65rem;">
+        <button type="button"
+                onclick="document.getElementById('checkerReviewModal').style.display='none'"
+                style="flex:1;padding:0.6rem 1rem;border:1px solid #cbd5e1;border-radius:8px;
+                       background:#fff;color:#475569;font-weight:600;cursor:pointer;font-size:0.85rem;">
+          <i class="bi bi-pencil me-1"></i>Edit
+        </button>
+        <button type="button"
+                onclick="document.getElementById('checkerReviewModal').style.display='none';
+                         document.getElementById('addCheckerForm').submit();"
+                style="flex:2;padding:0.6rem 1rem;border:none;border-radius:8px;
+                       background:#16a34a;color:#fff;font-weight:700;cursor:pointer;font-size:0.85rem;
+                       display:flex;align-items:center;justify-content:center;gap:0.4rem;">
+          <i class="bi bi-person-plus-fill"></i>Confirm &amp; Create Account
+        </button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<style>
+@keyframes slideUpModal {
+    from { opacity: 0; transform: translateY(18px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+</style>
+
+<script>
+function reviewCheckerBeforeAdd() {
+    const form = document.getElementById('addCheckerForm');
+    if (!form.reportValidity()) return;
+
+    const first  = form.querySelector('[name="first_name"]').value.trim();
+    const middle = form.querySelector('[name="middle_name"]').value.trim();
+    const last   = form.querySelector('[name="last_name"]').value.trim();
+    const email  = form.querySelector('[name="email"]').value.trim();
+    const pw     = form.querySelector('[name="password"]').value;
+
+    document.getElementById('rv_first_name').textContent  = first  || '—';
+    document.getElementById('rv_middle_name').textContent = middle || '(none)';
+    document.getElementById('rv_last_name').textContent   = last   || '—';
+    document.getElementById('rv_email').textContent       = email  || '—';
+    document.getElementById('rv_password_plain').textContent = pw;
+
+    // Reset password visibility on each open
+    document.getElementById('rv_password_dots').style.display  = 'block';
+    document.getElementById('rv_password_plain').style.display = 'none';
+    document.getElementById('rv_pw_icon').className = 'bi bi-eye';
+    document.getElementById('rv_toggle_pw').innerHTML = '<i class="bi bi-eye" id="rv_pw_icon"></i> Show';
+
+    document.getElementById('checkerReviewModal').style.display = 'flex';
+}
+
+function toggleReviewPassword() {
+    const dots  = document.getElementById('rv_password_dots');
+    const plain = document.getElementById('rv_password_plain');
+    const btn   = document.getElementById('rv_toggle_pw');
+    const showing = plain.style.display !== 'none';
+    dots.style.display  = showing ? 'block' : 'none';
+    plain.style.display = showing ? 'none'  : 'inline';
+    btn.innerHTML = showing
+        ? '<i class="bi bi-eye"></i> Show'
+        : '<i class="bi bi-eye-slash"></i> Hide';
+}
+
+// Close on backdrop click
+document.addEventListener('DOMContentLoaded', function() {
+    document.getElementById('checkerReviewModal').addEventListener('click', function(e) {
+        if (e.target === this) this.style.display = 'none';
+    });
+});
+</script>
 
 <div class="neon-card" style="padding:1rem 1.25rem;">
     <!-- Header -->
@@ -273,26 +420,26 @@ $users = $users->fetchAll();
                 <!-- Actions -->
                 <td style="padding:0.75rem 0.75rem;">
                     <?php if ($u['user_id'] !== $_SESSION['user_id']): ?>
-                    <div style="display:flex;gap:0.35rem;align-items:center;flex-wrap:wrap;">
+                    <div style="display:flex;gap:0.3rem;align-items:center;flex-wrap:nowrap;">
                         <!-- Activate/Deactivate -->
                         <?php if ($u['status'] === 'inactive'): ?>
                         <form method="POST" id="activateForm_<?= $u['user_id'] ?>">
                             <input type="hidden" name="action" value="set_active">
                             <input type="hidden" name="uid" value="<?= $u['user_id'] ?>">
-                            <button type="button"
-                                    style="padding:3px 10px;border-radius:6px;background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0;font-size:0.72rem;font-weight:600;cursor:pointer;"
+                            <button type="button" title="Activate account"
+                                    style="display:inline-flex;align-items:center;gap:0.3rem;padding:0.3rem 0.65rem;border-radius:6px;background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0;font-size:0.72rem;font-weight:600;cursor:pointer;white-space:nowrap;"
                                     onclick="confirmDelete('Reactivate &ldquo;<?= htmlspecialchars(formatDisplayName($u), ENT_QUOTES) ?>&rdquo;?','activateForm_<?= $u['user_id'] ?>','Reactivate','bi-person-check')">
-                                <i class="bi bi-person-check me-1"></i>Activate
+                                <i class="bi bi-person-check"></i> Activate
                             </button>
                         </form>
                         <?php else: ?>
                         <form method="POST" id="deactivateForm_<?= $u['user_id'] ?>">
                             <input type="hidden" name="action" value="set_inactive">
                             <input type="hidden" name="uid" value="<?= $u['user_id'] ?>">
-                            <button type="button"
-                                    style="padding:3px 10px;border-radius:6px;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;font-size:0.72rem;font-weight:600;cursor:pointer;"
+                            <button type="button" title="Deactivate account"
+                                    style="display:inline-flex;align-items:center;gap:0.3rem;padding:0.3rem 0.65rem;border-radius:6px;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;font-size:0.72rem;font-weight:600;cursor:pointer;white-space:nowrap;"
                                     onclick="confirmDelete('Deactivate &ldquo;<?= htmlspecialchars(formatDisplayName($u), ENT_QUOTES) ?>&rdquo;?','deactivateForm_<?= $u['user_id'] ?>','Deactivate','bi-person-slash')">
-                                <i class="bi bi-person-slash me-1"></i>Deactivate
+                                <i class="bi bi-person-slash"></i> Deactivate
                             </button>
                         </form>
                         <?php endif; ?>
@@ -300,8 +447,8 @@ $users = $users->fetchAll();
                         <form method="POST" id="deleteUserForm_<?= $u['user_id'] ?>">
                             <input type="hidden" name="action" value="delete_user">
                             <input type="hidden" name="uid" value="<?= $u['user_id'] ?>">
-                            <button type="button"
-                                    style="padding:3px 8px;border-radius:6px;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;font-size:0.75rem;cursor:pointer;"
+                            <button type="button" title="Delete user"
+                                    style="display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:6px;background:#fef2f2;color:#dc2626;border:1px solid #fecaca;font-size:0.78rem;cursor:pointer;flex-shrink:0;"
                                     onclick="confirmDelete('Delete &ldquo;<?= htmlspecialchars(formatDisplayName($u), ENT_QUOTES) ?>&rdquo;? This cannot be undone.','deleteUserForm_<?= $u['user_id'] ?>')">
                                 <i class="bi bi-trash"></i>
                             </button>

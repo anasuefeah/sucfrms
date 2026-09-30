@@ -213,6 +213,123 @@ function recalcApplicationScore($pdo, int $application_id): float {
 }
 
 /**
+ * Authoritative score summary for application displays.
+ *
+ * UI/report layers should use this for KRA subtotals, grand totals,
+ * weighted score, and sub-rank values instead of re-summing/capping rows.
+ */
+function getApplicationScoreSummary($pdo, int $application_id, bool $refresh = true): array {
+    static $cache = [];
+    $cache_key = $application_id . ':' . ($refresh ? 'fresh' : 'stored');
+    if (isset($cache[$cache_key])) return $cache[$cache_key];
+
+    $result = null;
+    $scoring_dir = __DIR__ . '/scoring/orchestrator.php';
+    if ($refresh && file_exists($scoring_dir)) {
+        try {
+            if (!class_exists('\Scoring\Orchestrator')) {
+                require_once $scoring_dir;
+            }
+            $result = \Scoring\Orchestrator::run($pdo, $application_id);
+            if (!empty($result['error'])) $result = null;
+        } catch (\Throwable $e) {
+            error_log('SUCFRMS score summary orchestrator error: ' . $e->getMessage());
+            $result = null;
+        }
+    }
+
+    $app_stmt = $pdo->prepare("
+        SELECT a.*, u.rank AS faculty_rank
+        FROM applications a
+        JOIN users u ON a.user_id = u.user_id
+        WHERE a.application_id = ?
+        LIMIT 1
+    ");
+    $app_stmt->execute([$application_id]);
+    $app = $app_stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+
+    $verified_stmt = $pdo->prepare("
+        SELECT kra_category, COALESCE(SUM(computed_points),0) AS entry_total, MAX(verified) AS verified
+        FROM kra_submissions
+        WHERE application_id = ?
+        GROUP BY kra_category
+    ");
+    $verified_stmt->execute([$application_id]);
+
+    $kra_map = [
+        'Instruction'              => ['pts' => 0.0, 'entry_total' => 0.0, 'verified' => 0],
+        'Research'                 => ['pts' => 0.0, 'entry_total' => 0.0, 'verified' => 0],
+        'Extension'                => ['pts' => 0.0, 'entry_total' => 0.0, 'verified' => 0],
+        'Professional Development' => ['pts' => 0.0, 'entry_total' => 0.0, 'verified' => 0],
+    ];
+    foreach ($verified_stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        if (!isset($kra_map[$row['kra_category']])) continue;
+        $kra_map[$row['kra_category']]['entry_total'] = (float)$row['entry_total'];
+        $kra_map[$row['kra_category']]['verified'] = (int)$row['verified'];
+    }
+
+    if ($result) {
+        $kra_results = $result['kra_results'];
+        $kra_map['Instruction']['pts'] = (float)$kra_results['kra1']['subtotal'];
+        $kra_map['Research']['pts'] = (float)$kra_results['kra2']['subtotal'];
+        $kra_map['Extension']['pts'] = (float)$kra_results['kra3']['subtotal'];
+        $kra_map['Professional Development']['pts'] = (float)$kra_results['kra4']['subtotal'];
+        $weights = $result['iss']['weight_row_pass2']
+            ?? \Scoring\Orchestrator::getKraWeights($result['iss']['initial_reclassified_rank'] ?? ($app['faculty_rank'] ?? ''));
+        $summary = [
+            'kra1' => $kra_map['Instruction']['pts'],
+            'kra2' => $kra_map['Research']['pts'],
+            'kra3' => $kra_map['Extension']['pts'],
+            'kra4' => $kra_map['Professional Development']['pts'],
+            'raw_total' => (float)$result['grand_total'],
+            'grand_total' => (float)$result['grand_total'],
+            'weights' => $weights,
+            'weighted_score' => (float)$result['weighted_score'],
+            'sub_rank_increment' => (int)$result['sub_rank_increment'],
+            'award_bonus' => (int)($result['auto_subrank']['bonus_increment'] ?? 0),
+            'potential_rank' => $result['target_rank'] ?? ($app['potential_rank'] ?? ''),
+            'kra_map' => $kra_map,
+            'kra_results' => $kra_results,
+            'pending_documentation' => $result['pending_documentation'] ?? [],
+            'config_incomplete' => $result['config_incomplete'] ?? [],
+            'source' => 'orchestrator',
+        ];
+    } else {
+        $weights = getKraWeights($app['faculty_rank'] ?? '');
+        foreach ($kra_map as &$k) $k['pts'] = min(100, $k['entry_total']);
+        unset($k);
+        $weighted = round(
+            ($kra_map['Instruction']['pts'] * $weights['Instruction']) +
+            ($kra_map['Research']['pts'] * $weights['Research']) +
+            ($kra_map['Extension']['pts'] * $weights['Extension']) +
+            ($kra_map['Professional Development']['pts'] * $weights['Professional Development']),
+            2
+        );
+        $summary = [
+            'kra1' => $kra_map['Instruction']['pts'],
+            'kra2' => $kra_map['Research']['pts'],
+            'kra3' => $kra_map['Extension']['pts'],
+            'kra4' => $kra_map['Professional Development']['pts'],
+            'raw_total' => array_sum(array_column($kra_map, 'pts')),
+            'grand_total' => array_sum(array_column($kra_map, 'pts')),
+            'weights' => $weights,
+            'weighted_score' => $weighted,
+            'sub_rank_increment' => getSubRankIncrement($weighted),
+            'award_bonus' => 0,
+            'potential_rank' => $app['potential_rank'] ?? '',
+            'kra_map' => $kra_map,
+            'kra_results' => [],
+            'pending_documentation' => [],
+            'config_incomplete' => [],
+            'source' => 'legacy_fallback',
+        ];
+    }
+
+    $cache[$cache_key] = $summary;
+    return $summary;
+}
+
+/**
  * Returns KRA weights (as decimals) based on faculty rank.
  */
 function getKraWeights(string $rank): array {

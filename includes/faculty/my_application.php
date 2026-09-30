@@ -63,21 +63,23 @@ foreach ($subs as &$sub) {
 }
 unset($sub);
 
-// Compute potential rank for display
-$raw_kra_faculty = [];
-foreach ($subs as $s) {
-    $raw_kra_faculty[$s['kra_category']] = ($raw_kra_faculty[$s['kra_category']] ?? 0) + (float)$s['computed_points'];
-}
 // Fetch faculty rank from users table (not in $app which is from applications)
 $faculty_rank_row = $pdo->prepare("SELECT rank FROM users WHERE user_id=?");
 $faculty_rank_row->execute([$uid]);
 $faculty_rank_row = $faculty_rank_row->fetch();
 $faculty_current_rank = $faculty_rank_row['rank'] ?? '';
-$potential_data_faculty = computePotentialRank($raw_kra_faculty, $faculty_current_rank);
+$score_summary_faculty = getApplicationScoreSummary($pdo, (int)$app_id);
+$raw_kra_faculty       = array_map(fn($d) => $d['pts'], $score_summary_faculty['kra_map']);
+$potential_data_faculty = [
+    'potential_rank'   => $score_summary_faculty['potential_rank'] ?: 'â€”',
+    'flags'            => [],
+    'crossed_category' => false,
+    'recomputed_score' => $score_summary_faculty['weighted_score'],
+];
 
 // Pre-compute weighted scores per KRA category for the table display
-$score_result_fac = computeWeightedScore($raw_kra_faculty, $faculty_current_rank);
-$kra_caps_fac     = ['Instruction'=>100,'Research'=>100,'Extension'=>100,'Professional Development'=>100];
+$score_result_fac = $score_summary_faculty;
+$kra_caps_fac     = ['Instruction'=>100,'Research'=>100,'Extension'=>120,'Professional Development'=>120];
 $kra_weights_fac  = $score_result_fac['weights'];
 // Sum raw per category for proportional distribution per entry
 $kra_raw_totals_fac = [];

@@ -65,21 +65,19 @@ foreach ($all_subs as $s) $subs_by_cat[$s['kra_category']][] = $s;
 $kra_info = [
     'Instruction'              => ['num'=>'I',   'max'=>100, 'label'=>'Teaching Effectiveness'],
     'Research'                 => ['num'=>'II',  'max'=>100, 'label'=>'Research, Innovation & Creative Work'],
-    'Extension'                => ['num'=>'III', 'max'=>100, 'label'=>'Extension Services'],
-    'Professional Development' => ['num'=>'IV',  'max'=>100, 'label'=>'Professional Development'],
+    'Extension'                => ['num'=>'III', 'max'=>120, 'label'=>'Extension Services'],
+    'Professional Development' => ['num'=>'IV',  'max'=>120, 'label'=>'Professional Development'],
 ];
 
-$kra_totals = [];
-foreach ($kra_info as $cat => $info) {
-    $entries = $subs_by_cat[$cat] ?? [];
-    $total   = array_sum(array_column($entries, 'computed_points'));
-    $cap     = $info['max']; // JC01 s.2026: all KRAs capped at 100
-    $kra_totals[$cat] = min($cap, $total);
-}
-$grand_total = array_sum($kra_totals);
-
 $rank   = $faculty['rank'] ?? '';
-$result = computeWeightedScore($kra_totals, $rank);
+$result = getApplicationScoreSummary($pdo, (int)$app_id);
+$kra_totals = [
+    'Instruction'              => $result['kra1'],
+    'Research'                 => $result['kra2'],
+    'Extension'                => $result['kra3'],
+    'Professional Development' => $result['kra4'],
+];
+$grand_total = $result['grand_total'];
 
 $weights = $result['weights'];
 $printed_at = date('F d, Y h:i A');

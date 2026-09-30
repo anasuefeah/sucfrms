@@ -129,9 +129,8 @@ if (isset($_GET['ajax_entries'])) {
 
 // -- AJAX: return current weighted score for sidebar -----------
 if (isset($_GET['ajax_score'])) {
-    $faculty_rank_ajax = $faculty['rank'] ?? '';
     $totals_ajax = step2OfficialKraTotals($pdo, $app_id);
-    $score_ajax = computeWeightedScore($totals_ajax, $faculty_rank_ajax);
+    $score_ajax = getApplicationScoreSummary($pdo, (int)$app_id);
     $weights_ajax = $score_ajax['weights'];
     $kra_weighted_ajax = [
         'Instruction'              => round($score_ajax['kra1'] * $weights_ajax['Instruction'], 2),
@@ -440,7 +439,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $can_edit) {
 
         // Block if weighted score is below 41
         $faculty_rank_check = $faculty['rank'] ?? '';
-        $score_check = computeWeightedScore(step2OfficialKraTotals($pdo, $app_id), $faculty_rank_check);
+        $score_check = getApplicationScoreSummary($pdo, (int)$app_id);
         if ($score_check['weighted_score'] < 41) {
             flashMessage('danger', 'Your weighted score (' . number_format($score_check['weighted_score'], 2) . ') is below the minimum of <strong>41.00</strong> required for reclassification. Improve your KRA scores before submitting.');
             echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}';</script>"; exit;
@@ -576,7 +575,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
       <?php if (!$locked && $grand2 > 0): ?>
       <?php
         $faculty_rank_btn = $faculty['rank'] ?? '';
-        $score_btn = computeWeightedScore($kra_totals2, $faculty_rank_btn);
+        $score_btn = getApplicationScoreSummary($pdo, (int)$app_id);
         $can_submit_step2 = $score_btn['weighted_score'] >= 41;
         $deadline_passed_step2 = $_deadline_passed;
       ?>
@@ -1473,7 +1472,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
     <!-- Bottom grand total bar -->
     <?php
     $faculty_rank_step2 = $faculty['rank'] ?? '';
-    $score_step2   = computeWeightedScore($kra_totals2, $faculty_rank_step2);
+    $score_step2   = getApplicationScoreSummary($pdo, (int)$app_id);
     $weighted2     = $score_step2['weighted_score'];
     $inc2          = $score_step2['sub_rank_increment'];
     $weights2      = $score_step2['weights'];
@@ -1997,6 +1996,10 @@ const ACTIVE_TAB  = '<?= $active_tab ?>';
 const AJAX_URL    = 'includes/apply/kra_ajax.php';
 const SCORE_URL   = 'index.php?page=apply&ajax_score=1&app_id=<?= $app_id ?>';
 const EDIT_SID    = <?= intval($_GET['edit_sid'] ?? 0) ?>;
+// Cycle-based Evaluation Period generation for KRA I Criterion A
+// Derived from the active cycle's start_date; 0 = no cycle / fallback to current year
+const CYCLE_START_YEAR = <?= !empty($cycle['start_date']) ? (int)date('Y', strtotime($cycle['start_date'])) : date('Y') ?>;
+const CYCLE_ROW_LIMIT  = 3;
 <?php
 $cjs = [];
 foreach ($criteria_list as $c) $cjs[] = ['label'=>$c['criterion_label'],'pts'=>(float)$c['max_points']];
@@ -2182,6 +2185,8 @@ function setKraTableHeaderForCriteriaA() {
             <td colspan="6" style="padding:0.75rem 1rem;font-size:0.78rem;font-weight:700;color:#1a3a6b;text-align:right;">OVERALL AVERAGE RATING: <span id="kraOverallAverage" style="color:#1e4d8c;font-size:1rem;font-weight:800;">0.00</span></td>
             <td colspan="2" style="padding:0.75rem 1rem;font-size:0.78rem;font-weight:700;color:#1a3a6b;text-align:right;">FACULTY SCORE: <span id="kraGrandTotalCriteriaA" style="color:#1e4d8c;font-size:1.15rem;font-weight:800;">0.00</span></td>`;
     }
+    // Sync + button state with rows already rendered (e.g. draft restore)
+    setTimeout(refreshAddRowButton, 0);
 }
 
 function captureKraTableDefaults() {
@@ -2359,7 +2364,7 @@ function buildCriteriaARow(group, num) {
         <td style="padding:0.5rem 0.5rem;color:#94a3b8;font-size:0.75rem;font-weight:600;">${num}</td>
         <td style="padding:0.5rem 0.75rem;">
             <input class="kra-a-period" value="${esc(group.period || '')}" placeholder="AY 2023-2024" oninput="syncCriteriaAPeriod(this)"
-                   style="min-width:145px;font-weight:600;color:#1e293b;">
+                   readonly style="min-width:145px;font-weight:600;color:#1e293b;background:#f1f5f9;cursor:default;border-color:#cbd5e1;" title="Auto-generated from cycle start year">
         </td>
         <td style="padding:0.55rem 0.55rem;text-align:center;">${criteriaAScoreFields(first, 1)}</td>
         <td style="padding:0.55rem 0.45rem;text-align:center;">${criteriaAUploadButton(first, 1)}</td>
@@ -3093,6 +3098,7 @@ function deleteCriteriaARow(btn) {
             tr.remove();
             updateCriteriaASummary();
             restoreKraScrollState(pendingKraScrollState);
+            refreshAddRowButton();
             if (!document.querySelector('#kraTableBody tr')) loadRows();
             return;
         }
@@ -3370,6 +3376,7 @@ function loadCriteriaARows() {
                 updateCriteriaASummary();
                 refreshSidebarScore();
                 restoreKraScrollState(scrollState);
+                refreshAddRowButton();
                 return;
             }
             tbody.innerHTML = '';
@@ -3399,23 +3406,100 @@ function loadCriteriaARows() {
             } else {
                 restoreKraScrollState(scrollState);
             }
+            refreshAddRowButton();
         });
+}
+
+// -- Cycle-year helpers ----------------------------------------
+/**
+ * Returns the start year of the LAST existing evaluation-period row,
+ * reading the "AY YYYY-YYYY" value stored in .kra-a-period inputs.
+ * Falls back to CYCLE_START_YEAR when no rows are present yet.
+ */
+function lastExistingCycleYear() {
+    const rows = Array.from(document.querySelectorAll('#kraTableBody tr.kra-a-row'));
+    for (let i = rows.length - 1; i >= 0; i--) {
+        const val = rows[i].querySelector('.kra-a-period')?.value.trim() || '';
+        const m = val.match(/\b(\d{4})-\d{4}\b/);
+        if (m) return parseInt(m[1], 10);
+    }
+    return CYCLE_START_YEAR;
+}
+
+/**
+ * Returns the AY string for the next row to be added, based on how many
+ * Criterion-A rows already exist in the tbody.
+ *   row 1 → CYCLE_START_YEAR-(CYCLE_START_YEAR+1)
+ *   row 2 → (CYCLE_START_YEAR+1)-(CYCLE_START_YEAR+2)
+ *   row 3 → (CYCLE_START_YEAR+2)-(CYCLE_START_YEAR+3)
+ * If rows already present don't follow the cycle sequence (e.g. partial
+ * reload), we advance from the last stored year instead.
+ */
+function nextCycleYear() {
+    const existingRows = document.querySelectorAll('#kraTableBody tr.kra-a-row').length;
+    // Use cycle start + offset when the count matches a clean sequence
+    const sequenceYear = CYCLE_START_YEAR + existingRows;
+    // Also check what the last stored row says — pick whichever is larger
+    // so we never generate a duplicate or go backwards
+    const lastYear = lastExistingCycleYear();
+    const baseYear = existingRows === 0 ? CYCLE_START_YEAR : Math.max(sequenceYear, lastYear + 1);
+    return `AY ${baseYear}-${baseYear + 1}`;
+}
+
+/**
+ * Counts how many Criterion-A rows are currently rendered (saved or unsaved).
+ */
+function criteriaARowCount() {
+    return document.querySelectorAll('#kraTableBody tr.kra-a-row').length;
+}
+
+/**
+ * Enables/disables the + (Add Row) button in the Criterion A table header
+ * based on the 3-row cycle limit.  Also updates the button's title tooltip.
+ */
+function refreshAddRowButton() {
+    if (!isCriteriaATableMode()) return;
+    const btn = document.querySelector('#kraTable thead tr th:first-child button');
+    if (!btn) return;
+    const count = criteriaARowCount();
+    const atLimit = count >= CYCLE_ROW_LIMIT;
+    btn.disabled = atLimit;
+    btn.style.opacity = atLimit ? '0.45' : '1';
+    btn.style.cursor  = atLimit ? 'not-allowed' : 'pointer';
+    btn.title = atLimit
+        ? `Cycle limit reached — ${CYCLE_ROW_LIMIT} years per cycle`
+        : 'Add evaluation period';
+    // Restore hover colours only when enabled
+    if (!atLimit) {
+        btn.onmouseover = () => { btn.style.background = '#1a3a6b'; };
+        btn.onmouseout  = () => { btn.style.background = '#1e4d8c'; };
+    } else {
+        btn.onmouseover = null;
+        btn.onmouseout  = null;
+        btn.style.background = '#1e4d8c';
+    }
 }
 
 // -- Add row ---------------------------------------------------
 function addKraRow() {
     if (isCriteriaATableMode()) {
         const tbody = document.getElementById('kraTableBody');
+        // Guard: never exceed the 3-row cycle limit
+        if (criteriaARowCount() >= CYCLE_ROW_LIMIT) {
+            showKraAlert(`Cycle limit reached — only ${CYCLE_ROW_LIMIT} evaluation years are allowed per reclassification cycle.`);
+            return;
+        }
         const emptyRow = document.getElementById('kraEmptyRow');
         if (emptyRow) emptyRow.remove();
-        const num = tbody.rows.length + 1;
-        const period = `AY ${new Date().getFullYear()}-${new Date().getFullYear() + 1}`;
-        const group = { period, first: makeEmptySemester(period, 1), second: makeEmptySemester(period, 2) };
+        const num    = tbody.rows.length + 1;
+        const period = nextCycleYear();
+        const group  = { period, first: makeEmptySemester(period, 1), second: makeEmptySemester(period, 2) };
         const tr = document.createElement('tr');
         tr.className = 'kra-a-row';
         tr.innerHTML = buildCriteriaARow(group, num);
         tbody.appendChild(tr);
         updateCriteriaASummary();
+        refreshAddRowButton();
         return;
     }
     const tbody = document.getElementById('kraTableBody');

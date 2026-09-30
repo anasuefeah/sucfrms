@@ -129,14 +129,18 @@ class KRA3Scorer
         // ISR sub-cap within Crit B (nested cap of 30)
         // Already tracked in scoreCritB; the overall Crit B cap handles it.
 
-        $sum_with_bonus = $crit_a + $crit_b + $crit_c + $crit_d;
-        $subtotal       = min(self::CAP, $sum_with_bonus);
+        $sum_before_bonus = $crit_a + $crit_b + $crit_c;
+        $capped_base      = min(self::CAP, $sum_before_bonus);
+        $sum_with_bonus   = $capped_base + $crit_d;
+        $subtotal         = $sum_with_bonus;
 
         return [
             'criterion_a'           => round($crit_a, 2),
             'criterion_b'           => round($crit_b, 2),
             'criterion_c'           => round($crit_c, 2),
             'criterion_d_bonus'     => round($crit_d, 2),
+            'sum_before_bonus'      => round($sum_before_bonus, 2),
+            'capped_base'           => round($capped_base, 2),
             'sum_with_bonus'        => round($sum_with_bonus, 2),
             'subtotal'              => round($subtotal, 2),
             'cap'                   => self::CAP,

@@ -19,18 +19,9 @@ $app    = getOrCreateApplication($pdo, $uid, $cycle['cycle_id']);
 $app_id = $app['application_id'];
 
 // â”€â”€ KRA scores â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-$kra_scores = $pdo->prepare("SELECT kra_category, SUM(computed_points) as pts, MAX(verified) as verified FROM kra_submissions WHERE application_id = ? GROUP BY kra_category");
-$kra_scores->execute([$app_id]);
-$kra_map = [
-    'Instruction'              => ['pts'=>0,'verified'=>0],
-    'Research'                 => ['pts'=>0,'verified'=>0],
-    'Extension'                => ['pts'=>0,'verified'=>0],
-    'Professional Development' => ['pts'=>0,'verified'=>0],
-];
-foreach ($kra_scores->fetchAll() as $k) {
-    $kra_map[$k['kra_category']] = ['pts' => (float)$k['pts'], 'verified' => (int)$k['verified']];
-}
-$total = array_sum(array_column($kra_map, 'pts'));
+$score_result = getApplicationScoreSummary($pdo, (int)$app_id);
+$kra_map      = $score_result['kra_map'];
+$total        = $score_result['grand_total'];
 
 // â”€â”€ Score computation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 $faculty_row  = $pdo->prepare("SELECT rank, full_name FROM users WHERE user_id=?");
@@ -38,16 +29,6 @@ $faculty_row->execute([$uid]);
 $faculty_row  = $faculty_row->fetch();
 $faculty_rank = $faculty_row['rank'] ?? '';
 $raw_kra      = array_map(fn($d) => $d['pts'], $kra_map);
-
-// Detect national/international award bonus from live submissions
-$award_check = $pdo->prepare("
-    SELECT COUNT(*) FROM kra_submissions
-    WHERE application_id = ?
-      AND kra_category = 'Professional Development'
-      AND remarks LIKE 'C-award|||%|||0'
-");
-$award_check->execute([$app_id]);
-$has_national_award = (int)$award_check->fetchColumn() > 0;
 
 // â”€â”€ Checker approval progress (for under_review status display) â”€â”€
 $chk_approved = 0;
@@ -66,7 +47,6 @@ try {
     }
 } catch (\Exception $e) { /* table not yet created */ }
 
-$score_result = computeWeightedScore($raw_kra, $faculty_rank, $has_national_award);
 $weights      = $score_result['weights'];
 $weighted     = $score_result['weighted_score'];
 $inc          = $score_result['sub_rank_increment'];
@@ -145,8 +125,8 @@ $can_edit   = !in_array($app['status'], ['approved','admin_rejected']);
 $kra_info = [
     'Instruction'              => ['icon'=>'bi-book',        'color'=>'#1e4d8c','max'=>100, 'short'=>'KRA I',  'tab'=>'instruction'],
     'Research'                 => ['icon'=>'bi-journal-text','color'=>'#1a3a6b','max'=>100, 'short'=>'KRA II', 'tab'=>'research'],
-    'Extension'                => ['icon'=>'bi-people',      'color'=>'#1a5276','max'=>100, 'short'=>'KRA III','tab'=>'extension'],
-    'Professional Development' => ['icon'=>'bi-award',       'color'=>'#1e4d8c','max'=>100, 'short'=>'KRA IV', 'tab'=>'profdev'],
+    'Extension'                => ['icon'=>'bi-people',      'color'=>'#1a5276','max'=>120, 'short'=>'KRA III','tab'=>'extension'],
+    'Professional Development' => ['icon'=>'bi-award',       'color'=>'#1e4d8c','max'=>120, 'short'=>'KRA IV', 'tab'=>'profdev'],
 ];
 
 // â”€â”€ POST handlers (unchanged logic) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

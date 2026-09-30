@@ -72,8 +72,8 @@ foreach ($all_subs as $s) $subs_by_app[$s['application_id']][$s['kra_category']]
 $kra_info = [
     'Instruction'              => ['num'=>'I',   'max'=>100, 'label'=>'Teaching Effectiveness'],
     'Research'                 => ['num'=>'II',  'max'=>100, 'label'=>'Research, Innovation & Creative Work'],
-    'Extension'                => ['num'=>'III', 'max'=>100, 'label'=>'Extension Services'],
-    'Professional Development' => ['num'=>'IV',  'max'=>100, 'label'=>'Professional Development'],
+    'Extension'                => ['num'=>'III', 'max'=>120, 'label'=>'Extension Services'],
+    'Professional Development' => ['num'=>'IV',  'max'=>120, 'label'=>'Professional Development'],
 ];
 
 $printed_at = date('M d, Y h:i A');
@@ -205,16 +205,14 @@ foreach ($applications as $idx => $a) {
     $subs_by_cat = $subs_by_app[$a['application_id']] ?? [];
     $rank        = $a['rank'] ?? '';
 
-    // Compute KRA totals
-    $kra_totals = [];
-    foreach ($kra_info as $cat => $info) {
-        $entries = $subs_by_cat[$cat] ?? [];
-        $raw     = array_sum(array_column($entries, 'computed_points'));
-        $cap     = $info['max']; // JC01 s.2026: all KRAs capped at 100
-        $kra_totals[$cat] = min($cap, $raw);
-    }
-    $grand_total = array_sum($kra_totals);
-    $result      = computeWeightedScore($kra_totals, $rank);
+    $result      = getApplicationScoreSummary($pdo, (int)$a['application_id']);
+    $kra_totals  = [
+        'Instruction'              => $result['kra1'],
+        'Research'                 => $result['kra2'],
+        'Extension'                => $result['kra3'],
+        'Professional Development' => $result['kra4'],
+    ];
+    $grand_total = $result['grand_total'];
     $weights     = $result['weights'];
 
     // â”€â”€ Faculty info â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -301,7 +299,7 @@ foreach ($applications as $idx => $a) {
     $pdf->SetFillColor(220,220,220);
     $pdf->SetFont('Times','B',10);
     $pdf->SetTextColor(0,0,0);
-    $pdf->Cell(146, 7, 'GRAND TOTAL SCORE (out of 360 pts)', 1, 0, 'R', true);
+    $pdf->Cell(146, 7, 'GRAND TOTAL SCORE', 1, 0, 'R', true);
     $pdf->Cell(40,  7, number_format($grand_total, 2),        1, 1, 'C', true);
     $pdf->Ln(3);
 

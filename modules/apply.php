@@ -26,28 +26,14 @@ $faculty = $pdo->prepare("SELECT u.*, c.campus_name FROM users u LEFT JOIN campu
 $faculty->execute([$uid]);
 $faculty = $faculty->fetch();
 
-// Fetch KRA submissions for this application
-$stmt = $pdo->prepare("SELECT kra_category, SUM(computed_points) AS total FROM kra_submissions WHERE application_id = ? GROUP BY kra_category");
-$stmt->execute([$app_id]);
-$raw_totals = [];
-foreach ($stmt->fetchAll() as $r) {
-    $raw_totals[$r['kra_category']] = (float)$r['total'];
-}
-
-$kra_max = [
-    'Instruction'              => 100,
-    'Research'                 => 100,
-    'Extension'                => 100,
-    'Professional Development' => 100,
+$score_summary = getApplicationScoreSummary($pdo, (int)$app_id);
+$kra_totals = [
+    'Instruction'              => $score_summary['kra1'],
+    'Research'                 => $score_summary['kra2'],
+    'Extension'                => $score_summary['kra3'],
+    'Professional Development' => $score_summary['kra4'],
 ];
-
-$kra_totals = [];
-// Cap each KRA at its actual maximum
-foreach ($kra_max as $cat => $max) {
-    $kra_totals[$cat] = min($max, $raw_totals[$cat] ?? 0);
-}
-
-$grand_total = array_sum($kra_totals);
+$grand_total = $score_summary['grand_total'];
 
 $kra_short = [
     'Instruction'              => 'KRA 1',

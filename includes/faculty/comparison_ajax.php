@@ -178,7 +178,7 @@ foreach ($subs as $s) {
 }
 
 // Compute weighted scores
-$kra_caps = ['Instruction' => 100, 'Research' => 100, 'Extension' => 100, 'Professional Development' => 100];
+$kra_caps = ['Instruction' => 100, 'Research' => 100, 'Extension' => 120, 'Professional Development' => 120];
 $faculty_raw = [];
 $checker_raw = [];
 $stage2_raw  = [];
@@ -203,9 +203,10 @@ foreach ($kra_caps as $cat => $cap) {
 }
 
 $faculty_rank    = $app['faculty_rank'] ?? '';
+$official_summary = getApplicationScoreSummary($pdo, (int)$app_id);
 $ws_faculty      = computeWeightedScore($faculty_raw, $faculty_rank)['weighted_score'];
-$ws_stage1       = computeWeightedScore($checker_raw, $faculty_rank)['weighted_score'];
-$ws_stage2       = !empty($stage2_reviews) ? computeWeightedScore($stage2_raw, $faculty_rank)['weighted_score'] : null;
+$ws_stage1       = $official_summary['weighted_score'];
+$ws_stage2       = !empty($stage2_reviews) ? $official_summary['weighted_score'] : null;
 
 $has_stage2      = !empty($stage2_reviews);
 $has_stage1      = !empty($stage1_reviews);
@@ -235,7 +236,7 @@ echo json_encode([
     'ws_faculty'   => $ws_faculty,
     'ws_stage1'    => $ws_stage1,
     'ws_stage2'    => $ws_stage2,
-    'potential_rank' => $app['potential_rank'],
-    'sub_rank_increment' => (int)$app['sub_rank_increment'],
+    'potential_rank' => $official_summary['potential_rank'],
+    'sub_rank_increment' => (int)$official_summary['sub_rank_increment'],
     'updated_at'   => date('H:i:s'),
 ]);

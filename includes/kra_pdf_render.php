@@ -57,7 +57,7 @@ function kraDefinitions(): array {
         ],
         'III' => [
             'number' => 'III', 'label' => 'EXTENSION SERVICES',
-            'category' => 'Extension', 'max_points' => 100,
+            'category' => 'Extension', 'max_points' => 120,
             'criteria' => [
                 'A' => [
                     'title' => 'CRITERION A - EXTENSION SERVICES (MAX = 100 POINTS)',
@@ -70,7 +70,7 @@ function kraDefinitions(): array {
         ],
         'IV' => [
             'number' => 'IV', 'label' => 'PROFESSIONAL DEVELOPMENT',
-            'category' => 'Professional Development', 'max_points' => 100,
+            'category' => 'Professional Development', 'max_points' => 120,
             'criteria' => [
                 'A' => [
                     'title' => 'CRITERION A - INVOLVEMENT IN PROFESSIONAL ORGANIZATIONS (MAX = 20 POINTS)',
@@ -588,7 +588,7 @@ class KRA_PDF extends FPDF {
  * @param string   $suc_name       University name for the "Name of SUC" row
  * @return KRA_PDF  (caller decides Output mode/filename)
  */
-function renderKraPdf(array $faculty, array $subs_by_cat, array $kras_to_print, string $suc_name = 'Carlos Hilado Memorial State University', ?array $iss = null): KRA_PDF {
+function renderKraPdf(array $faculty, array $subs_by_cat, array $kras_to_print, string $suc_name = 'Carlos Hilado Memorial State University', ?array $iss = null, ?array $score_iss = null): KRA_PDF {
     $definitions = kraDefinitions();
 
     $pdf = new KRA_PDF('P', 'mm', 'A4');
@@ -652,6 +652,12 @@ function renderKraPdf(array $faculty, array $subs_by_cat, array $kras_to_print, 
         }
 
         $grand_total_capped = min($def['max_points'], $grand_total);
+        $iss_for_totals = $score_iss ?? $iss;
+        $iss_key_by_num = ['I' => 'kra1', 'II' => 'kra2', 'III' => 'kra3', 'IV' => 'kra4'];
+        $iss_key = $iss_key_by_num[$def['number']] ?? null;
+        if ($iss_key && isset($iss_for_totals['kra_raw_points'][$iss_key])) {
+            $grand_total_capped = (float)$iss_for_totals['kra_raw_points'][$iss_key];
+        }
         $pdf->Ln(2);
         $pdf->GrandTotalRow($def['number'], $grand_total_capped, $def['max_points']);
 

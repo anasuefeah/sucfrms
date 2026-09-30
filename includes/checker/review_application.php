@@ -631,10 +631,14 @@ foreach ($subs as &$sub) {
 unset($sub);
 
 $faculty_rank   = $app['rank'] ?? '';
-$raw_kra        = [];
-foreach ($subs as $s) $raw_kra[$s['kra_category']] = ($raw_kra[$s['kra_category']] ?? 0) + (float)$s['computed_points'];
-$score_result   = computeWeightedScore($raw_kra, $faculty_rank);
-$potential_data = computePotentialRank($raw_kra, $faculty_rank);
+$score_result   = getApplicationScoreSummary($pdo, (int)$app_id);
+$raw_kra        = array_map(fn($d) => $d['pts'], $score_result['kra_map']);
+$potential_data = [
+    'potential_rank'   => $score_result['potential_rank'] ?: ($app['potential_rank'] ?? 'â€”'),
+    'flags'            => [],
+    'crossed_category' => false,
+    'recomputed_score' => $score_result['weighted_score'],
+];
 
 // -- Multi-checker state ---------------------------------------
 $checker_reviews   = getCheckerReviews($pdo, $app_id);
