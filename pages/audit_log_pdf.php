@@ -1,6 +1,6 @@
 <?php
 /**
- * Audit Log PDF &mdash; FPDF
+ * Audit Log PDF - FPDF
  */
 ob_start();
 if (session_status() === PHP_SESSION_NONE) session_start();
@@ -38,11 +38,42 @@ $stmt = $pdo->prepare("
 $stmt->execute($params);
 $logs = $stmt->fetchAll();
 
+function auditPdfDisplayText(?string $text): string {
+    return strtr((string)$text, [
+        'Pending Verification' => 'Pending Review',
+        'Not Verified' => 'Not Acceptable',
+        'Unverified' => 'Not Acceptable',
+        'unverified' => 'not acceptable',
+        'Verified by' => 'Marked Acceptable by',
+        'verified by' => 'marked acceptable by',
+        'Verification' => 'Review',
+        'verification' => 'review',
+        'Verifying' => 'Reviewing',
+        'verifying' => 'reviewing',
+        'Verified' => 'Acceptable',
+        'verified' => 'acceptable',
+        'Verify' => 'Review',
+        'verify' => 'review',
+        'Approval' => 'Evaluation Completion',
+        'approval' => 'evaluation completion',
+        'Approved' => 'Evaluation Complete',
+        'approved' => 'evaluation complete',
+        'Approve' => 'Complete Evaluation',
+        'approve' => 'complete evaluation',
+        'Rejection' => 'Return for Revision',
+        'rejection' => 'return for revision',
+        'Rejected' => 'Returned for Revision',
+        'rejected' => 'returned for revision',
+        'Reject' => 'Return for Revision',
+        'reject' => 'return for revision',
+    ]);
+}
+
 $printed_at = date('M d, Y h:i A');
 $admin_name = $_SESSION['full_name'] ?? 'Administrator';
 $title      = $role === 'admin' ? 'System Audit Log' : 'My Activity Log';
 
-// â”€â”€ FPDF â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- FPDF -------------------------------------------------------
 class AuditPDF extends FPDF {
     public $doc_title  = '';
     public $printed_at = '';
@@ -53,21 +84,7 @@ class AuditPDF extends FPDF {
     function Header() {
         $this->SetFont('Times','B',13);
         $this->SetTextColor(0,0,0);
-        $this->SetXY(12, 6);
-        $this->Cell(0, 6, 'State Universities and Colleges', 0, 1, 'C');
-
-        $this->SetFont('Times','',8.5);
-        $this->SetTextColor(60,60,60);
-        $this->SetX(12);
-        $this->Cell(0, 4.5, 'SUC Faculty Reclassification Management System', 0, 1, 'C');
-
-        $this->SetLineWidth(0.4);
-        $this->SetDrawColor(0,0,0);
-        $this->Line(12, $this->GetY(), 285, $this->GetY());
-        $this->Ln(1.5);
-
-        $this->SetFont('Times','B',11);
-        $this->SetTextColor(0,0,0);
+        $this->SetXY(12, 8);
         $this->SetX(12);
         $this->Cell(0, 6, strtoupper($this->doc_title), 0, 1, 'C');
 
@@ -170,7 +187,7 @@ class AuditPDF extends FPDF {
     }
 }
 
-// â”€â”€ Build PDF â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Build PDF --------------------------------------------------
 $pdf = new AuditPDF('L','mm','A4');
 $pdf->AliasNbPages();
 $pdf->doc_title  = $title;
@@ -218,7 +235,7 @@ if (empty($logs)) {
     $pdf->Cell(0, 8, 'No records found.', 1, 1, 'C');
 } else {
     foreach ($logs as $i => $log) {
-        $details = strip_tags($log['details'] ?? '');
+        $details = strip_tags(auditPdfDisplayText($log['details'] ?? ''));
         $details = preg_replace('/\s+/', ' ', trim($details));
         if (mb_strlen($details) > 200) $details = mb_substr($details, 0, 197).'...';
 
@@ -229,18 +246,20 @@ if (empty($logs)) {
             $actor_display = in_array($actor_role, ['checker','talisay_checker'])
                 ? checkerDisplayLabel(['checker_label' => $log['checker_label'] ?? null, 'user_id' => $log['user_id'] ?? null])
                 : ($log['full_name'] ?? 'System');
+            $role_display_map = ['admin'=>'Admin','checker'=>'Evaluator','faculty'=>'Faculty','talisay_checker'=>'ITC Evaluator'];
+            $role_display = $role_display_map[$log['role_at_time'] ?? ''] ?? ucfirst($log['role_at_time'] ?? '-');
             $row = [
                 [8,   (string)($i + 1),                              'C'],
                 [44,  $actor_display,                                 'L'],
-                [18,  ucfirst($log['role_at_time'] ?? '-'),           'C'],
-                [36,  $log['action_performed'],                       'L'],
+                [18,  $role_display,                                  'C'],
+                [36,  auditPdfDisplayText($log['action_performed']),   'L'],
                 [124, $details,                                       'L'],
                 [43,  $dt,                                            'C'],
             ];
         } else {
             $row = [
                 [8,   (string)($i + 1),          'C'],
-                [48,  $log['action_performed'],   'L'],
+                [48,  auditPdfDisplayText($log['action_performed']),   'L'],
                 [172, $details,                   'L'],
                 [45,  $dt,                        'C'],
             ];

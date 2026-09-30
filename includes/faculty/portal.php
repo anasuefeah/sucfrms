@@ -1,11 +1,11 @@
 <?php
 /**
- * Faculty Portal — clean SFPRS-style overview shown after login.
+ * Faculty Portal  -  clean SFPRS-style overview shown after login.
  */
 
 $uid = $_SESSION['user_id'];
 
-// ── Faculty profile ──────────────────────────────────────────
+// -- Faculty profile ------------------------------------------
 $faculty = $pdo->prepare("
     SELECT u.first_name, u.middle_name, u.last_name, u.full_name,
            u.email, u.employee_id, u.rank, u.profile_pic,
@@ -20,23 +20,23 @@ $faculty = $faculty->fetch();
 $full_name = formatDisplayName($faculty);
 $first_name  = $faculty['first_name']  ?? '';
 $last_name   = $faculty['last_name']   ?? '';
-$rank        = $faculty['rank']        ?? '—';
-$campus      = $faculty['campus_name'] ?? '—';
-$email       = $faculty['email']       ?? '—';
-$employee_id = $faculty['employee_id'] ?? '—';
+$rank        = $faculty['rank']        ?? ' - ';
+$campus      = $faculty['campus_name'] ?? ' - ';
+$email       = $faculty['email']       ?? ' - ';
+$employee_id = $faculty['employee_id'] ?? ' - ';
 $profile_pic = $faculty['profile_pic'] ?? '';
 
-// ── Initials ─────────────────────────────────────────────────
+// -- Initials -------------------------------------------------
 $init = strtoupper(substr($first_name, 0, 1) . substr($last_name, 0, 1)) ?: 'FA';
 
-// ── Active cycle + application ───────────────────────────────
+// -- Active cycle + application -------------------------------
 $cycle = getActiveCycle($pdo);
 
 $current_app = null;
 if ($cycle) {
     $app_row = getOrCreateApplication($pdo, $uid, $cycle['cycle_id']);
     $re = $pdo->prepare("
-        SELECT a.*, c.cycle_name, c.start_date, c.end_date, c.submission_deadline
+        SELECT a.*, c.cycle_name, c.start_date, c.end_date, c.submission_start_date, c.submission_deadline
         FROM applications a
         LEFT JOIN cycles c ON a.cycle_id = c.cycle_id
         WHERE a.application_id = ?
@@ -59,28 +59,30 @@ $past_stmt = $pdo->prepare("
 $past_stmt->execute([$uid]);
 $past_apps = $past_stmt->fetchAll();
 
-// ── Deadline helpers ─────────────────────────────────────────
+// -- Deadline helpers -----------------------------------------
 $deadline_str    = '';
 $days_left       = null;
 $deadline_passed = false;
 if ($current_app && !empty($current_app['submission_deadline'])) {
-    $dl_ts           = strtotime($current_app['submission_deadline'] . ' 23:59:59');
+    $effective_deadline = getEffectiveSubmissionDeadline($pdo, (int)$current_app['cycle_id'], (int)$uid, $current_app['submission_deadline']);
+    $dl_ts           = strtotime($effective_deadline . ' 23:59:59');
     $deadline_passed = time() > $dl_ts;
-    $deadline_str    = date('M d, Y', strtotime($current_app['submission_deadline']));
+    $deadline_str    = date('M d, Y', strtotime($effective_deadline));
     $days_left       = max(0, (int)ceil(($dl_ts - time()) / 86400));
 }
 
-// ── Status pill helper ───────────────────────────────────────
+// -- Status pill helper ---------------------------------------
 function portalStatus(string $s): array {
     return match($s) {
         'submitted'      => ['Submitted',      '#2563b0', '#eff6ff', '#bfdbfe'],
         'under_review'   => ['Under Review',   '#1a3a6b', '#f0f4fb', '#bfdbfe'],
-        'talisay_review' => ['Talisay Review', '#1a3a6b', '#f0f4fb', '#bfdbfe'],
+        // Display name for stored status value 'talisay_review' is "ITC Review".
+        'talisay_review' => ['ITC Review', '#1a3a6b', '#f0f4fb', '#bfdbfe'],
         'needs_revision' => ['Needs Revision', '#475569', '#f8fafc', '#e2e8f0'],
-        'approved'       => ['Approved',       '#1e4d8c', '#f0f4fb', '#bfdbfe'],
-        'reclassified'   => ['Reclassified',   '#1e4d8c', '#f0fdfa', '#99f6e4'],
+        'approved'       => ['Evaluation Complete', '#1e4d8c', '#f0f4fb', '#bfdbfe'],
+        'reclassified'   => ['Evaluation Complete', '#1e4d8c', '#f0f4fb', '#bfdbfe'],
         'rejected',
-        'admin_rejected' => ['Returned',       '#1e293b', '#f8fafc', '#e2e8f0'],
+        'admin_rejected' => ['Returned for Revision', '#1e293b', '#f8fafc', '#e2e8f0'],
         default          => ['Pending',        '#475569', '#f8fafc', '#e2e8f0'],
     };
 }
@@ -89,7 +91,7 @@ function portalStatus(string $s): array {
 
 <div class="portal-wrap">
 
-    <!-- ── Top header banner ── -->
+    <!-- -- Top header banner -- -->
     <div class="portal-header">
         <img src="assets/images/logo.jpg" alt="Logo" class="portal-header-logo">
         <div class="portal-header-body">
@@ -107,7 +109,7 @@ function portalStatus(string $s): array {
         </div>
     </div>
 
-    <!-- ── Section title ── -->
+    <!-- -- Section title -- -->
     <div class="portal-section-title">
         <i class="bi bi-grid-1x2"></i>
         Applications for Evaluation
@@ -123,7 +125,7 @@ function portalStatus(string $s): array {
 
     <?php else: ?>
 
-    <!-- ── Current application card ── -->
+    <!-- -- Current application card -- -->
     <?php if ($current_app):
         [$slabel, $scolor, $sbg, $sborder] = portalStatus($current_app['status'] ?? 'draft');
         $score    = (float)($current_app['weighted_score'] ?? 0);
@@ -164,8 +166,8 @@ function portalStatus(string $s): array {
         <!-- Current rank line -->
         <div class="portal-rank-line">
             <?= sanitize($rank) ?>
-            <?php if ($potential && $potential !== $rank && $potential !== '—'): ?>
-            <span style="color:#94a3b8;margin:0 0.4rem;">→</span>
+            <?php if ($potential && $potential !== $rank && $potential !== ' - '): ?>
+            <span style="color:#94a3b8;margin:0 0.4rem;">-></span>
             <span style="color:#1e4d8c;font-weight:600;"><?= sanitize($potential) ?></span>
             <span style="font-size:0.68rem;color:#1e4d8c;background:#f0f4fb;border:1px solid #bfdbfe;
                          border-radius:4px;padding:1px 5px;margin-left:4px;font-weight:600;">Potential</span>
@@ -192,12 +194,12 @@ function portalStatus(string $s): array {
             </div>
             <div class="portal-info-row">
                 <div class="portal-info-label">Cycle</div>
-                <div class="portal-info-value"><?= sanitize($current_app['cycle_name'] ?? '—') ?></div>
+                <div class="portal-info-value"><?= sanitize($current_app['cycle_name'] ?? ' - ') ?></div>
             </div>
             <div class="portal-info-row">
                 <div class="portal-info-label">Submission Deadline</div>
                 <div class="portal-info-value" style="color:<?= $deadline_passed ? '#334155' : 'inherit' ?>">
-                    <?= $deadline_str ?: '—' ?>
+                    <?= $deadline_str ?: ' - ' ?>
                 </div>
             </div>
             <div class="portal-info-row full">
@@ -232,7 +234,7 @@ function portalStatus(string $s): array {
     </div>
     <?php endif; ?>
 
-    <!-- ── Past applications ── -->
+    <!-- -- Past applications -- -->
     <?php if (!empty($past_apps)): ?>
     <div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;
                 color:#94a3b8;margin:1.25rem 0 0.6rem;">Previous Applications</div>
@@ -242,12 +244,12 @@ function portalStatus(string $s): array {
     <div class="portal-past-item">
         <div>
             <div style="font-size:0.82rem;font-weight:600;color:#1e293b;">
-                <?= sanitize($pa['cycle_name'] ?? '—') ?>
+                <?= sanitize($pa['cycle_name'] ?? ' - ') ?>
             </div>
             <div style="font-size:0.72rem;color:#94a3b8;margin-top:2px;">
                 <?php if ($pa['submitted_at']): ?>
                 Submitted <?= date('M j, Y', strtotime($pa['submitted_at'])) ?>
-                <?php else: ?>&mdash;<?php endif; ?>
+                <?php else: ?>-<?php endif; ?>
             </div>
         </div>
         <div style="display:flex;align-items:center;gap:0.65rem;">

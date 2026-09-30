@@ -1,13 +1,13 @@
 <?php
 /**
- * KRA III Scorer — Extension Services (100 points + 20 bonus)
+ * KRA III Scorer  -  Extension Services (100 points + 20 bonus)
  * DBM-CHED Joint Circular No. 01, s. 2026
  *
  * Structure:
- *   Criterion A – Service to the Institution:   max 30 pts
- *   Criterion B – Service to the Community:     max 50 pts
- *   Criterion C – Quality of Extension Services: max 20 pts (formula)
- *   Criterion D – Admin Designation Bonus:       max 20 pts (added on top)
+ *   Criterion A - Service to the Institution:   max 30 pts
+ *   Criterion B - Service to the Community:     max 50 pts
+ *   Criterion C - Quality of Extension Services: max 20 pts (formula)
+ *   Criterion D - Admin Designation Bonus:       max 20 pts (added on top)
  *   KRA III total = min(A + B + C + D, 100)
  *
  * CRITICAL CROSS-VALIDATION (Criterion C):
@@ -64,12 +64,12 @@ class KRA3Scorer
             $val2    = $parts[3] ?? '';
             $pts     = 0.0;
 
-            // ── Criterion A: Service to the Institution ──────────────
+            // -- Criterion A: Service to the Institution --------------
             if (self::isCritA($subtype)) {
                 $pts = self::scoreCritA($subtype, $val1, $val2, $config_i, $pending, $s);
                 $crit_a += $pts;
             }
-            // ── Criterion B: Service to the Community ────────────────
+            // -- Criterion B: Service to the Community ----------------
             elseif (self::isCritB($subtype)) {
                 [$pts, $isr_inc] = self::scoreCritB(
                     $subtype, $title, $val1, $val2,
@@ -79,25 +79,25 @@ class KRA3Scorer
                 $crit_b      += $pts;
                 $isr_subtotal += $isr_inc;
             }
-            // ── Criterion C: Quality of Extension Services ───────────
+            // -- Criterion C: Quality of Extension Services -----------
             elseif (self::isCritC($subtype)) {
                 $project_key = strtolower(trim($title));
                 $csr_projects_c[] = $project_key;
 
                 // CROSS-VALIDATION: only credit if project was declared under ISR in Crit B
                 if (!in_array($project_key, $isr_projects_b) && !empty($project_key)) {
-                    $config_i[] = "KRA III Crit C: Project '{$title}' — cross-validation FAILED. This project was not declared under ISR (Criterion B outreach/ISR). CSR credit rejected per JC01 rule.";
+                    $config_i[] = "KRA III Crit C: Project '{$title}'  -  cross-validation FAILED. This project was not declared under ISR (Criterion B outreach/ISR). CSR credit was not counted per JC01 rule.";
                 } else {
                     $rating = min(100, max(0, (float)$val1));
-                    // Formula: (CSR Rating / 100) × 20
+                    // Formula: (CSR Rating / 100) x 20
                     $pts    = round(($rating / 100) * 20, 2);
                     $crit_c += $pts;
                     if ($rating === 0.0) {
-                        $pending[] = "KRA III Crit C: '{$title}' — CSR rating is 0. Provide CMO 18 s.2025 instrument summary.";
+                        $pending[] = "KRA III Crit C: '{$title}'  -  CSR rating is 0. Provide CMO 18 s.2025 instrument summary.";
                     }
                 }
             }
-            // ── Criterion D: Bonus Admin Designation ─────────────────
+            // -- Criterion D: Bonus Admin Designation -----------------
             elseif (self::isCritD($subtype)) {
                 $pts    = self::scoreCritD($subtype, (float)$val1, $pending, $s);
                 $crit_d += $pts;
@@ -114,8 +114,8 @@ class KRA3Scorer
                 elseif ($income >= 100001)   $inc_pts = 4;
                 elseif ($income > 0)         $inc_pts = 2;
                 $pts = $inc_pts + $moa_cnt * 5 + $out_cnt * 2;
-                $crit_a += min(10, $inc_pts);   // income → Crit A
-                $crit_b += $moa_cnt * 5;        // MOA/linkage → Crit A actually, but legacy maps differently
+                $crit_a += min(10, $inc_pts);   // income -> Crit A
+                $crit_b += $moa_cnt * 5;        // MOA/linkage -> Crit A actually, but legacy maps differently
                 $crit_b += $out_cnt * 2;
             }
         }
@@ -149,7 +149,7 @@ class KRA3Scorer
         ];
     }
 
-    // ── Category detectors ───────────────────────────────────────────
+    // -- Category detectors -------------------------------------------
     private static function isCritA(string $sub): bool
     {
         return str_contains($sub, 'a-') || str_contains($sub, 'moa') || str_contains($sub, 'linkage')
@@ -177,7 +177,7 @@ class KRA3Scorer
             || str_contains($sub, 'director') || str_contains($sub, 'chancellor') || str_contains($sub, 'vice');
     }
 
-    // ── Criterion A scorer ───────────────────────────────────────────
+    // -- Criterion A scorer -------------------------------------------
     private static function scoreCritA(
         string $subtype, string $val1, string $val2,
         array &$config_i, array &$pending, array $s
@@ -185,7 +185,7 @@ class KRA3Scorer
         // MOA/Linkage: 5 pts per successful instance
         if (str_contains($subtype, 'moa') || str_contains($subtype, 'linkage')) {
             if (empty($s['evidence_names'])) {
-                $pending[] = "KRA III Crit A: MOA/Linkage — missing notarized MOA/MOU + proof of implementation + Board/President approval.";
+                $pending[] = "KRA III Crit A: MOA/Linkage  -  missing notarized MOA/MOU + proof of implementation + Board/President approval.";
             }
             return 5.0;
         }
@@ -204,14 +204,14 @@ class KRA3Scorer
 
             $pts = $lead ? (float)$tier_pts : round($tier_pts / 2, 2);
             if (empty($s['evidence_names'])) {
-                $pending[] = "KRA III Crit A: Income generation — missing SUC Accountant-certified financial report.";
+                $pending[] = "KRA III Crit A: Income generation  -  missing SUC Accountant-certified financial report.";
             }
             return $pts;
         }
         return 0.0;
     }
 
-    // ── Criterion B scorer ───────────────────────────────────────────
+    // -- Criterion B scorer -------------------------------------------
     private static function scoreCritB(
         string $subtype, string $title, string $val1, string $val2,
         int &$media_occasional_count, int &$technical_guest_count,
@@ -222,15 +222,15 @@ class KRA3Scorer
 
         if (str_contains($subtype, 'accredit') || str_contains($subtype, 'qa') || str_contains($subtype, 'evaluation')) {
             $pts = str_contains($subtype, 'intl') ? 10.0 : 8.0;
-            if (empty($s['evidence_names'])) $pending[] = "KRA III Crit B: Accreditation '{$title}' — missing appointment letter + proof of engagement.";
+            if (empty($s['evidence_names'])) $pending[] = "KRA III Crit B: Accreditation '{$title}'  -  missing appointment letter + proof of engagement.";
         }
         elseif (str_contains($subtype, 'judge')) {
             $pts = str_contains($subtype, 'research') ? 2.0 : 1.0;
-            if (empty($s['evidence_names'])) $pending[] = "KRA III Crit B: Judging '{$title}' — missing appointment letter + proof.";
+            if (empty($s['evidence_names'])) $pending[] = "KRA III Crit B: Judging '{$title}'  -  missing appointment letter + proof.";
         }
         elseif (str_contains($subtype, 'consultant') || str_contains($subtype, 'expert')) {
             $pts = str_contains($subtype, 'intl') ? 10.0 : 8.0;
-            if (empty($s['evidence_names'])) $pending[] = "KRA III Crit B: Consultancy '{$title}' — missing contract of service.";
+            if (empty($s['evidence_names'])) $pending[] = "KRA III Crit B: Consultancy '{$title}'  -  missing contract of service.";
         }
         elseif (str_contains($subtype, 'column') || str_contains($subtype, 'media')) {
             if (str_contains($subtype, 'regular')) {
@@ -250,10 +250,10 @@ class KRA3Scorer
             }
         }
         elseif (str_contains($subtype, 'resource') || str_contains($subtype, 'speaker') || str_contains($subtype, 'facilitator')) {
-            // Per-hour rate — CONFIG_INCOMPLETE per JC01: confirm if per-hour or per-engagement
+            // Per-hour rate  -  CONFIG_INCOMPLETE per JC01: confirm if per-hour or per-engagement
             $pts = str_contains($subtype, 'intl') ? 3.0 : 2.0;
-            $config_i[] = "KRA III Crit B: Resource person '{$title}' — per-hour vs per-engagement rate is CONFIG_INCOMPLETE per JC01. Confirm with checkers. Currently applying per-entry rate.";
-            if (empty($s['evidence_names'])) $pending[] = "KRA III Crit B: Resource person '{$title}' — missing invitation letter, program, certificate of appreciation.";
+            $config_i[] = "KRA III Crit B: Resource person '{$title}'  -  per-hour vs per-engagement rate is CONFIG_INCOMPLETE per JC01. Confirm with evaluators. Currently applying per-entry rate.";
+            if (empty($s['evidence_names'])) $pending[] = "KRA III Crit B: Resource person '{$title}'  -  missing invitation letter, program, certificate of appreciation.";
         }
         elseif (str_contains($subtype, 'outreach') || str_contains($subtype, 'isr')) {
             // ISR sub-cap of 30 within Crit B
@@ -265,13 +265,13 @@ class KRA3Scorer
                 }
                 $isr_inc = $pts;
             }
-            if (empty($s['evidence_names'])) $pending[] = "KRA III Crit B: Outreach '{$title}' — missing appointment letter + proof of participation.";
+            if (empty($s['evidence_names'])) $pending[] = "KRA III Crit B: Outreach '{$title}'  -  missing appointment letter + proof of participation.";
         }
 
         return [$pts, $isr_inc];
     }
 
-    // ── Criterion D scorer ───────────────────────────────────────────
+    // -- Criterion D scorer -------------------------------------------
     private static function scoreCritD(
         string $subtype, float $years, array &$pending, array $s
     ): float {
@@ -300,7 +300,7 @@ class KRA3Scorer
         if (str_contains($subtype, 'coordinator')) return round(2.0 * $years, 2);
         // Fallback: generic designation
         if (empty($s['evidence_names'])) {
-            $pending[] = "KRA III Crit D: Designation bonus — missing appointment order with effectivity period + accomplishment report.";
+            $pending[] = "KRA III Crit D: Designation bonus  -  missing appointment order with effectivity period + accomplishment report.";
         }
         return 0.0;
     }

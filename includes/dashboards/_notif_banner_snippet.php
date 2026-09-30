@@ -1,12 +1,12 @@
 <?php
-// ── Faculty unread notification banner ────────────────────────────────────
+// -- Faculty unread notification banner ------------------------------------
 try {
     $fac_notifs_stmt = $pdo->prepare("
         SELECT n.notif_id, n.type, n.message, n.created_at, n.submission_id, ks.kra_category
         FROM notifications n
         LEFT JOIN kra_submissions ks ON ks.submission_id = n.submission_id
         WHERE n.user_id = ? AND n.is_read = 0
-          AND n.type IN ('score_adjusted','needs_revision','under_review','approved','rejected','talisay_review')
+          AND n.type IN ('score_adjusted','needs_revision','under_review','approved','rejected','talisay_review','appeal_message','appeal_resolved')
         ORDER BY n.created_at DESC
         LIMIT 2
     ");
@@ -16,7 +16,7 @@ try {
     $fac_total_stmt = $pdo->prepare("
         SELECT COUNT(*) FROM notifications
         WHERE user_id = ? AND is_read = 0
-          AND type IN ('score_adjusted','needs_revision','under_review','approved','rejected','talisay_review')
+          AND type IN ('score_adjusted','needs_revision','under_review','approved','rejected','talisay_review','appeal_message','appeal_resolved')
     ");
     $fac_total_stmt->execute([$uid]);
     $fac_total_unread = (int)$fac_total_stmt->fetchColumn();
@@ -30,9 +30,12 @@ if (!empty($fac_unread_notifs)):
         'score_adjusted' => ['icon'=>'bi-pencil-square',             'color'=>'#475569','bg'=>'#f8fafc','border'=>'#475569','label'=>'Score Updated'],
         'needs_revision' => ['icon'=>'bi-exclamation-triangle-fill', 'color'=>'#334155','bg'=>'#f8fafc','border'=>'#334155','label'=>'Revision Needed'],
         'under_review'   => ['icon'=>'bi-hourglass-split',           'color'=>'#1e4d8c','bg'=>'#f0f4fb','border'=>'#1e4d8c','label'=>'Under Review'],
-        'talisay_review' => ['icon'=>'bi-building-up',               'color'=>'#1a3a6b','bg'=>'#f0f4fb','border'=>'#1a3a6b','label'=>'Talisay Review'],
-        'approved'       => ['icon'=>'bi-check-circle-fill',         'color'=>'#1e4d8c','bg'=>'#f0f4fb','border'=>'#1e4d8c','label'=>'Approved'],
-        'rejected'       => ['icon'=>'bi-arrow-counterclockwise',    'color'=>'#475569','bg'=>'#f8fafc','border'=>'#475569','label'=>'Returned'],
+        // Display name for stored notification/status value 'talisay_review' is "ITC Review".
+        'talisay_review' => ['icon'=>'bi-building-up',               'color'=>'#1a3a6b','bg'=>'#f0f4fb','border'=>'#1a3a6b','label'=>'ITC Review'],
+        'approved'       => ['icon'=>'bi-clipboard-check',           'color'=>'#1e4d8c','bg'=>'#f0f4fb','border'=>'#1e4d8c','label'=>'Evaluation Complete'],
+        'rejected'       => ['icon'=>'bi-arrow-counterclockwise',    'color'=>'#475569','bg'=>'#f8fafc','border'=>'#475569','label'=>'Returned for Revision'],
+        'appeal_message' => ['icon'=>'bi-chat-dots',                 'color'=>'#1a3a6b','bg'=>'#f0f4fb','border'=>'#1a3a6b','label'=>'Appeal Reply'],
+        'appeal_resolved'=> ['icon'=>'bi-check2-circle',             'color'=>'#1e4d8c','bg'=>'#f0f4fb','border'=>'#1e4d8c','label'=>'Appeal Resolved'],
     ];
     $fac_notif_count  = count($fac_unread_notifs);
     $fac_extra_count  = max(0, $fac_total_unread - $fac_notif_count);
@@ -46,7 +49,7 @@ if (!empty($fac_unread_notifs)):
                 <i class="bi bi-bell-fill" style="color:#475569;font-size:0.9rem;animation:bellRing 1.2s ease 3;"></i>
             </span>
             <span style="color:#fff;font-weight:700;font-size:0.9rem;">
-                <?= $fac_total_unread ?> Unread Notification<?= $fac_total_unread > 1 ? 's' : '' ?> — Application Update
+                <?= $fac_total_unread ?> Unread Notification<?= $fac_total_unread > 1 ? 's' : '' ?>  -  Application Update
             </span>
             <span style="background:#334155;color:#fff;font-size:0.62rem;font-weight:700;
                          border-radius:20px;padding:1px 8px;letter-spacing:0.03em;">NEW</span>
@@ -71,6 +74,8 @@ if (!empty($fac_unread_notifs)):
             'needs_revision' => !empty($fn['submission_id'])
                 ? 'index.php?page=apply&tab=' . kraCategoryToTabSlug($fn['kra_category']) . '&edit_sid=' . (int)$fn['submission_id']
                 : 'index.php?page=my_application#app-status',
+            'appeal_message',
+            'appeal_resolved' => 'index.php?page=appeals',
             default          => 'index.php?page=my_application#app-status',
         };
         $diff_s = time() - strtotime($fn['created_at']);
@@ -110,7 +115,7 @@ if (!empty($fac_unread_notifs)):
     <?php if ($fac_extra_count > 0): ?>
     <div style="padding:0.55rem 1.1rem;background:#f0f4fb;border-top:1px solid #e2e8f0;
                 font-size:0.72rem;color:#64748b;text-align:center;">
-        <i class="bi bi-three-dots me-1"></i>+<?= $fac_extra_count ?> more unread &mdash;
+        <i class="bi bi-three-dots me-1"></i>+<?= $fac_extra_count ?> more unread -
         <button onclick="dismissFacultyBanner()"
                 style="background:none;border:none;color:#1e4d8c;font-size:0.72rem;font-weight:600;
                        cursor:pointer;padding:0;text-decoration:underline;">Mark all read</button>

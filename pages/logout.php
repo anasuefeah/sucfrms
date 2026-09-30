@@ -7,7 +7,7 @@ if (isLoggedIn()) {
     try {
         logAudit($pdo, $_SESSION['user_id'], 'Logout', 'User logged out.');
     } catch (\Exception $e) {
-        // Stale session user_id &mdash; ignore audit failure, proceed with logout
+        // Stale session user_id - ignore audit failure, proceed with logout
     }
 }
 

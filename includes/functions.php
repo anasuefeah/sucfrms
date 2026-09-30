@@ -35,28 +35,36 @@ function formatDisplayName(array $row, string $fallback_key = 'full_name'): stri
 }
 
 /**
- * The anonymous display name for a checker/talisay_checker account.
+ * The anonymous display name for an evaluator/talisay_checker account.
  * Pass a DB row (or partial row) containing checker_label and user_id.
- * Falls back to "Checker #<user_id>" if a label wasn't stored (should
+ * Falls back to "Evaluator #<user_id>" if a label wasn't stored (should
  * only happen for rows created before the checker_label migration ran).
  */
 function checkerDisplayLabel(array $row): string {
-    return $row['checker_label'] ?? ('Checker #' . ($row['user_id'] ?? '?'));
+    $label = $row['checker_label'] ?? null;
+    if ($label === null) {
+        return 'Evaluator #' . ($row['user_id'] ?? '?');
+    }
+    // Stored labels may still say "Checker #N" if the migration hasn't run yet  -  display as "Evaluator #N"
+    return preg_replace('/^Checker\s*#/i', 'Evaluator #', $label);
 }
 
 /**
- * Next auto-incremented anonymous checker label ("Checker #1", "Checker #2", ...).
+ * Next auto-incremented anonymous evaluator label ("Evaluator #1", "Evaluator #2", ...).
  * Based on the highest existing numeric suffix so deleted accounts don't
  * cause label reuse.
  */
 function nextCheckerLabel($pdo): string {
-    $stmt = $pdo->query("SELECT checker_label FROM users WHERE checker_label REGEXP '^Checker #[0-9]+$'");
+    $stmt = $pdo->query("SELECT checker_label FROM users WHERE checker_label REGEXP '^(Checker|Evaluator) #[0-9]+$'");
     $max = 0;
     foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $lbl) {
-        $n = (int) substr($lbl, 9);
-        if ($n > $max) $max = $n;
+        // Accept both legacy "Checker #N" and new "Evaluator #N" patterns
+        if (preg_match('/#(\d+)$/', $lbl, $m)) {
+            $n = (int)$m[1];
+            if ($n > $max) $max = $n;
+        }
     }
-    return 'Checker #' . ($max + 1);
+    return 'Evaluator #' . ($max + 1);
 }
 
 // -- Audit logging ---------------------------------------------
@@ -79,7 +87,195 @@ function createNotif($pdo, int $user_id, string $type, string $message, int $app
     try {
         $pdo->prepare("INSERT INTO notifications (user_id, type, message, application_id, submission_id) VALUES (?,?,?,?,?)")
             ->execute([$user_id, $type, $message, $application_id ?: null, $submission_id ?: null]);
-    } catch (\Exception $e) { /* table may not exist yet — silent fail */ }
+    } catch (\Exception $e) { /* table may not exist yet  -  silent fail */ }
+}
+
+function getEffectiveSubmissionDeadline(PDO $pdo, int $cycle_id, int $faculty_user_id = 0, ?string $base_deadline = null): ?string {
+    if (!$base_deadline && $cycle_id) {
+        try {
+            $s = $pdo->prepare("SELECT submission_deadline FROM cycles WHERE cycle_id=?");
+            $s->execute([$cycle_id]);
+            $base_deadline = $s->fetchColumn() ?: null;
+        } catch (\Exception $e) {}
+    }
+    if (!$cycle_id) return $base_deadline ?: null;
+    try {
+        $s = $pdo->prepare("
+            SELECT MAX(new_deadline)
+            FROM cycle_submission_extensions
+            WHERE cycle_id = ?
+              AND (applies_to_all = 1 OR faculty_user_id = ?)
+        ");
+        $s->execute([$cycle_id, $faculty_user_id ?: 0]);
+        $ext = $s->fetchColumn();
+        if ($ext && (!$base_deadline || strtotime($ext) > strtotime($base_deadline))) {
+            return $ext;
+        }
+    } catch (\Exception $e) {}
+    return $base_deadline ?: null;
+}
+
+function getEvaluationDeadlineLabel(?string $deadline): array {
+    if (!$deadline) return ['No Deadline', '#64748b', '#f1f5f9'];
+    $today = strtotime(date('Y-m-d'));
+    $due = strtotime($deadline);
+    if ($due < $today) return ['Overdue', '#dc2626', '#fef2f2'];
+    $days = (int)floor(($due - $today) / 86400);
+    if ($days <= 3) return ['Due Soon', '#d97706', '#fffbeb'];
+    return ['On Time', '#16a34a', '#f0fdf4'];
+}
+
+function kraAssignmentCategories(): array {
+    return [
+        'Instruction' => 'KRA I',
+        'Research' => 'KRA II',
+        'Extension' => 'KRA III',
+        'Professional Development' => 'KRA IV',
+    ];
+}
+
+function ensureKraAssignmentTable(PDO $pdo): void {
+    try {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS checker_kra_assignments (
+            assignment_id INT AUTO_INCREMENT PRIMARY KEY,
+            cycle_id INT NOT NULL,
+            checker_id INT NOT NULL,
+            kra_category ENUM('Instruction','Research','Extension','Professional Development') NOT NULL,
+            assigned_by INT DEFAULT NULL,
+            assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_checker_cycle_kra (cycle_id, checker_id, kra_category),
+            INDEX idx_cka_cycle_kra (cycle_id, kra_category),
+            INDEX idx_cka_checker_cycle (checker_id, cycle_id),
+            FOREIGN KEY (cycle_id) REFERENCES cycles(cycle_id) ON DELETE CASCADE,
+            FOREIGN KEY (checker_id) REFERENCES users(user_id) ON DELETE CASCADE,
+            FOREIGN KEY (assigned_by) REFERENCES users(user_id) ON DELETE SET NULL
+        )");
+        $count = (int)$pdo->query("SELECT COUNT(*) FROM checker_kra_assignments")->fetchColumn();
+        if ($count === 0) {
+            $ins = $pdo->prepare("INSERT IGNORE INTO checker_kra_assignments (cycle_id, checker_id, kra_category, assigned_by) VALUES (?,?,?,NULL)");
+            $cycles = $pdo->query("SELECT cycle_id FROM cycles")->fetchAll(PDO::FETCH_COLUMN);
+            $checkers = $pdo->query("SELECT user_id FROM users WHERE role='checker' AND status='active'")->fetchAll(PDO::FETCH_COLUMN);
+            foreach ($cycles as $cycle_id) {
+                foreach ($checkers as $checker_id) {
+                    foreach (array_keys(kraAssignmentCategories()) as $kra) {
+                        $ins->execute([(int)$cycle_id, (int)$checker_id, $kra]);
+                    }
+                }
+            }
+        }
+    } catch (\Exception $e) {}
+}
+
+function getCheckerAssignedKras(PDO $pdo, int $checker_id, int $cycle_id): array {
+    if (!$checker_id || !$cycle_id) return [];
+    ensureKraAssignmentTable($pdo);
+    try {
+        $stmt = $pdo->prepare("SELECT kra_category FROM checker_kra_assignments WHERE checker_id=? AND cycle_id=?");
+        $stmt->execute([$checker_id, $cycle_id]);
+        return $stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+    } catch (\Exception $e) {
+        return [];
+    }
+}
+
+function checkerCanReviewKra(PDO $pdo, int $checker_id, int $cycle_id, string $kra_category): bool {
+    if (isAdmin() || isTalisayChecker()) return true;
+    if (!isChecker()) return false;
+    return in_array($kra_category, getCheckerAssignedKras($pdo, $checker_id, $cycle_id), true);
+}
+
+function countAssignedCheckersForKra(PDO $pdo, int $cycle_id, string $kra_category): int {
+    ensureKraAssignmentTable($pdo);
+    try {
+        $stmt = $pdo->prepare("
+            SELECT COUNT(DISTINCT a.checker_id)
+            FROM checker_kra_assignments a
+            JOIN users u ON u.user_id = a.checker_id
+            WHERE a.cycle_id=? AND a.kra_category=? AND u.role='checker' AND u.status='active'
+        ");
+        $stmt->execute([$cycle_id, $kra_category]);
+        return (int)$stmt->fetchColumn();
+    } catch (\Exception $e) {
+        return 0;
+    }
+}
+
+function countAssignedCheckersForCycle(PDO $pdo, int $cycle_id): int {
+    ensureKraAssignmentTable($pdo);
+    try {
+        $stmt = $pdo->prepare("
+            SELECT COUNT(DISTINCT a.checker_id)
+            FROM checker_kra_assignments a
+            JOIN users u ON u.user_id = a.checker_id
+            WHERE a.cycle_id=? AND u.role='checker' AND u.status='active'
+        ");
+        $stmt->execute([$cycle_id]);
+        return max(1, (int)$stmt->fetchColumn());
+    } catch (\Exception $e) {
+        return max(1, (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role='checker' AND status='active'")->fetchColumn());
+    }
+}
+
+function ensureAppealTables(PDO $pdo): void {
+    try { $pdo->query("SELECT appeal_deadline FROM cycles LIMIT 1"); }
+    catch (\Exception $e) { try { $pdo->exec("ALTER TABLE cycles ADD COLUMN appeal_deadline DATE DEFAULT NULL AFTER evaluation_deadline"); } catch (\Exception $e2) {} }
+    try {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS appeals (
+            appeal_id INT AUTO_INCREMENT PRIMARY KEY,
+            application_id INT NOT NULL,
+            submission_id INT NOT NULL,
+            faculty_id INT NOT NULL,
+            checker_id INT NOT NULL,
+            cycle_id INT NOT NULL,
+            appeal_type ENUM('flag','score_change') NOT NULL,
+            original_score DECIMAL(6,2) DEFAULT NULL,
+            changed_score DECIMAL(6,2) DEFAULT NULL,
+            checker_remark TEXT DEFAULT NULL,
+            reason TEXT NOT NULL,
+            status ENUM('open','under_review','resolved') DEFAULT 'open',
+            outcome ENUM('upheld','revised','dismissed') DEFAULT NULL,
+            is_read_by_faculty TINYINT(1) DEFAULT 1,
+            is_read_by_checker TINYINT(1) DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            resolved_at TIMESTAMP NULL,
+            resolved_by INT DEFAULT NULL,
+            INDEX idx_appeals_submission_status (submission_id, status),
+            INDEX idx_appeals_faculty (faculty_id, status),
+            INDEX idx_appeals_checker (checker_id, status),
+            FOREIGN KEY (application_id) REFERENCES applications(application_id) ON DELETE CASCADE,
+            FOREIGN KEY (submission_id) REFERENCES kra_submissions(submission_id) ON DELETE CASCADE,
+            FOREIGN KEY (faculty_id) REFERENCES users(user_id) ON DELETE CASCADE,
+            FOREIGN KEY (checker_id) REFERENCES users(user_id) ON DELETE CASCADE,
+            FOREIGN KEY (cycle_id) REFERENCES cycles(cycle_id) ON DELETE CASCADE,
+            FOREIGN KEY (resolved_by) REFERENCES users(user_id) ON DELETE SET NULL
+        )");
+        $pdo->exec("CREATE TABLE IF NOT EXISTS appeal_messages (
+            message_id INT AUTO_INCREMENT PRIMARY KEY,
+            appeal_id INT NOT NULL,
+            sender_id INT NOT NULL,
+            message TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (appeal_id) REFERENCES appeals(appeal_id) ON DELETE CASCADE,
+            FOREIGN KEY (sender_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )");
+        $pdo->exec("CREATE TABLE IF NOT EXISTS appeal_attachments (
+            attachment_id INT AUTO_INCREMENT PRIMARY KEY,
+            message_id INT NOT NULL,
+            file_path VARCHAR(255) NOT NULL,
+            original_filename VARCHAR(255) NOT NULL,
+            file_size_bytes INT DEFAULT 0,
+            uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (message_id) REFERENCES appeal_messages(message_id) ON DELETE CASCADE
+        )");
+    } catch (\Exception $e) {}
+}
+
+function appealStatusLabel(array $appeal): string {
+    if (($appeal['status'] ?? '') === 'resolved') {
+        return 'Resolved' . (!empty($appeal['outcome']) ? ' - ' . ucfirst(str_replace('_', ' ', $appeal['outcome'])) : '');
+    }
+    return ($appeal['status'] ?? 'open') === 'under_review' ? 'Under Review' : 'Open';
 }
 
 function getUnreadNotifCount($pdo, int $user_id): int {
@@ -161,7 +357,7 @@ function getOrCreateApplication($pdo, int $user_id, int $cycle_id): array {
 }
 
 function recalcApplicationScore($pdo, int $application_id): float {
-    // ── Route through the JC01 s.2026 Orchestrator when available ───
+    // -- Route through the JC01 s.2026 Orchestrator when available ---
     // The orchestrator produces the authoritative result; the legacy path
     // below is kept as a fallback for any call before the scoring module loads.
     $scoring_dir = __DIR__ . '/scoring/orchestrator.php';
@@ -178,7 +374,7 @@ function recalcApplicationScore($pdo, int $application_id): float {
         }
     }
 
-    // ── Legacy fallback ──────────────────────────────────────────────
+    // -- Legacy fallback ----------------------------------------------
     $info = $pdo->prepare("SELECT u.rank FROM applications a JOIN users u ON a.user_id=u.user_id WHERE a.application_id=?");
     $info->execute([$application_id]);
     $rank = $info->fetchColumn() ?? '';
@@ -431,7 +627,7 @@ function getCriteria($pdo, string $key, ?int $cycle_id = null, ?string $position
 // -- UI helpers ------------------------------------------------
 
 /**
- * Parse the |||â€‘delimited remarks string into a human-readable HTML snippet.
+ * Parse the |||-delimited remarks string into a human-readable HTML snippet.
  * Format per KRA category:
  *   Instruction:              SET%  ||| SEF%  ||| notes
  *   Research:                 Type  ||| Developers ||| Affiliation ||| Area ||| Specific Contribution ||| Contribution%
@@ -452,7 +648,7 @@ function formatKraRemarks(string $category, string $remarks): string {
                 if ($d1 !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">SET</span> <strong>' . htmlspecialchars($d1, ENT_QUOTES) . '%</strong>';
                 if ($d2 !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">SEF</span> <strong>' . htmlspecialchars($d2, ENT_QUOTES) . '%</strong>';
                 if ($notes !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">Notes:</span> ' . htmlspecialchars($notes, ENT_QUOTES);
-                return implode(' &nbsp;|&nbsp; ', $parts) ?: '&mdash;';
+                return implode(' &nbsp;|&nbsp; ', $parts) ?: '-';
             } elseif ($critType === 'A-set-sef-sem') {
                 $period = $d1;
                 $sem    = $d2 === '2' ? '2nd Semester' : '1st Semester';
@@ -463,7 +659,27 @@ function formatKraRemarks(string $category, string $remarks): string {
                 $parts[] = '<span class="text-muted" style="font-size:0.75rem;">' . $sem . '</span>';
                 if ($set !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">SET</span> <strong>' . htmlspecialchars($set, ENT_QUOTES) . '%</strong>';
                 if ($sef !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">SEF</span> <strong>' . htmlspecialchars($sef, ENT_QUOTES) . '%</strong>';
-                return implode(' &nbsp;|&nbsp; ', $parts) ?: '&mdash;';
+                return implode(' &nbsp;|&nbsp; ', $parts) ?: '-';
+            } elseif ($critType === 'A-set-sem' || $critType === 'A-sef-sem') {
+                $period = $d1;
+                $sem    = $d2 === '2' ? '2nd Semester' : '1st Semester';
+                $label  = $critType === 'A-sef-sem' ? 'SEF' : 'SET';
+                $score  = $p[3] ?? '';
+                $parts = [];
+                if ($period !== '') $parts[] = '<strong>' . htmlspecialchars($period, ENT_QUOTES) . '</strong>';
+                $parts[] = '<span class="text-muted" style="font-size:0.75rem;">' . $sem . '</span>';
+                if ($score !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">' . $label . '</span> <strong>' . htmlspecialchars($score, ENT_QUOTES) . '%</strong>';
+                return implode(' &nbsp;|&nbsp; ', $parts) ?: '-';
+            } elseif (str_starts_with($critType, 'B|')) {
+                $label = $d1 ?: implode('|', array_slice(explode('|', $critType), 2));
+                $label = str_replace('\\u2014', ' - ', $label);
+                $out = '<div><span class="badge bg-info" style="font-size:0.7rem;">Crit. B</span> ' . htmlspecialchars($label, ENT_QUOTES) . '</div>';
+                if ($d2 !== '' && $d2 !== '100') $out .= '<div class="text-muted" style="font-size:0.78rem;">Contribution: ' . htmlspecialchars($d2, ENT_QUOTES) . '%</div>';
+                return $out;
+            } elseif (str_starts_with($critType, 'C|')) {
+                $label = $d1 ?: implode('|', array_slice(explode('|', $critType), 2));
+                $label = str_replace('\\u2014', ' - ', $label);
+                return '<div><span class="badge bg-warning text-dark" style="font-size:0.7rem;">Crit. C</span> ' . htmlspecialchars($label, ENT_QUOTES) . '</div>';
             } elseif ($critType === 'B-material') {
                 $out = '<div><span class="badge bg-info" style="font-size:0.7rem;">Crit. B</span> ' . htmlspecialchars($d1, ENT_QUOTES) . '</div>';
                 if ($d2 !== '' && $d2 !== '100') $out .= '<div class="text-muted" style="font-size:0.78rem;">Contribution: ' . htmlspecialchars($d2, ENT_QUOTES) . '%</div>';
@@ -474,11 +690,11 @@ function formatKraRemarks(string $category, string $remarks): string {
                 $competition = $d1 ?: 'Mentorship';
                 $level       = $d2 ? htmlspecialchars($d2, ENT_QUOTES) : '';
                 $placement   = $notes ? htmlspecialchars($notes, ENT_QUOTES) : '';
-                $out = '<div><span class="badge bg-secondary" style="font-size:0.7rem;">Crit. C – Mentor</span> '
+                $out = '<div><span class="badge bg-secondary" style="font-size:0.7rem;">Crit. C - Mentor</span> '
                      . htmlspecialchars($competition, ENT_QUOTES) . '</div>';
                 $meta = array_filter([$level, $placement]);
                 if ($meta) $out .= '<div class="text-muted" style="font-size:0.76rem;">' . implode(' &middot; ', $meta) . '</div>';
-                $out .= '<div style="font-size:0.72rem;color:#f59e0b;font-weight:600;"><i class="bi bi-exclamation-triangle me-1"></i>PENDING — CONFIG_MENTORSHIP_POINTS not confirmed (JC01 p.78 source gap)</div>';
+                $out .= '<div style="font-size:0.72rem;color:#f59e0b;font-weight:600;"><i class="bi bi-exclamation-triangle me-1"></i>PENDING  -  CONFIG_MENTORSHIP_POINTS not confirmed (JC01 p.78 source gap)</div>';
                 return $out;
             } else {
                 // Legacy format: SET%|||SEF%|||notes
@@ -489,7 +705,7 @@ function formatKraRemarks(string $category, string $remarks): string {
                 if ($set  !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">SET</span> <strong>' . htmlspecialchars($set, ENT_QUOTES) . '%</strong>';
                 if ($sef  !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">SEF</span> <strong>' . htmlspecialchars($sef, ENT_QUOTES) . '%</strong>';
                 if ($notes !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">Notes:</span> ' . htmlspecialchars($notes, ENT_QUOTES);
-                return implode(' &nbsp;|&nbsp; ', $parts) ?: '&mdash;';
+                return implode(' &nbsp;|&nbsp; ', $parts) ?: '-';
             }
 
         case 'Research':
@@ -506,7 +722,7 @@ function formatKraRemarks(string $category, string $remarks): string {
             if ($area  !== '') $out .= '<div class="text-muted" style="font-size:0.78rem;"><span class="text-muted" style="font-size:0.72rem;">Area:</span> ' . htmlspecialchars($area, ENT_QUOTES) . '</div>';
             if ($spec  !== '') $out .= '<div class="text-muted" style="font-size:0.78rem;"><span class="text-muted" style="font-size:0.72rem;">Specific Contribution:</span> ' . htmlspecialchars($spec, ENT_QUOTES) . '</div>';
             if ($contrib !== '') $out .= '<div style="font-size:0.78rem;"><span class="text-muted">Contribution:</span> <strong>' . htmlspecialchars($contrib, ENT_QUOTES) . '%</strong></div>';
-            return $out ?: '&mdash;';
+            return $out ?: '-';
 
         case 'Extension':
             $subtype = $p[0] ?? '';
@@ -520,7 +736,7 @@ function formatKraRemarks(string $category, string $remarks): string {
             if ($val1 !== '') $meta[] = '<span class="text-muted" style="font-size:0.78rem;">' . htmlspecialchars($val1, ENT_QUOTES) . '</span>';
             if ($val2 !== '') $meta[] = '<span class="text-muted" style="font-size:0.78rem;">' . htmlspecialchars($val2, ENT_QUOTES) . '</span>';
             if ($meta) $out .= '<div>' . implode(' &nbsp;&middot;&nbsp; ', $meta) . '</div>';
-            return $out ?: '&mdash;';
+            return $out ?: '-';
 
         case 'Professional Development':
             $critType = $p[0] ?? '';
@@ -556,11 +772,11 @@ function formatKraRemarks(string $category, string $remarks): string {
                 };
                 if ($degLabel) $out .= '<div><span class="badge bg-info" style="font-size:0.72rem;">' . $degLabel . '</span></div>';
             }
-            return $out ?: '&mdash;';
+            return $out ?: '-';
 
         default:
             // Fallback: just show first segment
-            return htmlspecialchars($p[0] ?? $remarks, ENT_QUOTES) ?: '&mdash;';
+            return htmlspecialchars($p[0] ?? $remarks, ENT_QUOTES) ?: '-';
     }
 }
 
@@ -577,17 +793,17 @@ function helpBtn(string $title, string $body): string {
 }
 
 function statusBadge(string $status): string {
-    // Color scheme: green for positive outcomes, red for negative, navy/gray for neutral/in-progress
+    // User-facing labels are neutral; stored legacy workflow values are mapped here.
     $map = [
         'draft'          => ['#64748b', '#f1f5f9', 'Draft'],
         'submitted'      => ['#1a3a6b', '#e8eef7', 'Submitted'],
-        'under_review'   => ['#1a3a6b', '#e8eef7', 'Under Review'],
-        'talisay_review' => ['#1a3a6b', '#e8eef7', 'Talisay Review'],
-        'approved'       => ['#16a34a', '#f0fdf4', 'Approved'],
-        'reclassified'   => ['#16a34a', '#f0fdf4', 'Reclassified'],
-        'rejected'       => ['#dc2626', '#fef2f2', 'Returned'],
-        'needs_revision' => ['#334155', '#f8fafc', 'Needs Revision'],
-        'admin_rejected' => ['#dc2626', '#fef2f2', 'Rejected'],
+        'under_review'   => ['#1a3a6b', '#e8eef7', 'Under Evaluation'],
+        'talisay_review' => ['#1a3a6b', '#e8eef7', 'Under Evaluation'],
+        'approved'       => ['#1a3a6b', '#f0f4fb', 'Evaluation Complete'],
+        'reclassified'   => ['#1a3a6b', '#f0f4fb', 'Evaluation Complete'],
+        'rejected'       => ['#475569', '#f8fafc', 'Returned for Revision'],
+        'needs_revision' => ['#475569', '#f8fafc', 'Returned for Revision'],
+        'admin_rejected' => ['#475569', '#f8fafc', 'Evaluation Complete'],
         'edit_requested' => ['#334155', '#f8fafc', 'Edit Requested'],
     ];
     [$tc, $bg, $label] = $map[$status] ?? ['#64748b', '#f1f5f9', ucfirst(str_replace('_', ' ', $status))];
@@ -621,26 +837,26 @@ function facultyRanks(): array {
  *  4. Flag Professor ranks for EAC; College/University Professor for CC.
  *
  * Returns array:
- *   potential_rank  string   &mdash; e.g. "Associate Professor III"
- *   flags           string[] &mdash; e.g. ['EAC accreditation required']
- *   crossed_category bool    &mdash; true if a rank-category boundary was crossed
- *   recomputed_score float|null &mdash; weighted score under new-category weights
+ *   potential_rank  string   - e.g. "Associate Professor III"
+ *   flags           string[] - e.g. ['EAC accreditation required']
+ *   crossed_category bool    - true if a rank-category boundary was crossed
+ *   recomputed_score float|null - weighted score under new-category weights
  */
 function computePotentialRank(array $raw_kra, string $current_rank, bool $has_national_award = false): array {
     $all_ranks   = facultyRanks();
     $current_idx = array_search($current_rank, $all_ranks);
 
-    // Unknown rank &mdash; cannot compute
+    // Unknown rank - cannot compute
     if ($current_idx === false) {
         return [
-            'potential_rank'    => '—',
+            'potential_rank'    => ' - ',
             'flags'             => ['Current rank not recognised'],
             'crossed_category'  => false,
             'recomputed_score'  => null,
         ];
     }
 
-    // Step 1 &mdash; weighted score under current rank weights
+    // Step 1 - weighted score under current rank weights
     $result    = computeWeightedScore($raw_kra, $current_rank, $has_national_award);
     $increment = $result['sub_rank_increment'];  // already includes award bonus if applicable
 
@@ -648,17 +864,17 @@ function computePotentialRank(array $raw_kra, string $current_rank, bool $has_na
     if ($increment === 0) {
         return [
             'potential_rank'    => $current_rank,
-            'flags'             => ['Score below 41 — no reclassification'],
+            'flags'             => ['Score below 41  -  no reclassification'],
             'crossed_category'  => false,
             'recomputed_score'  => null,
         ];
     }
 
-    // Step 2 &mdash; count sub-ranks forward (capped at end of rank list)
+    // Step 2 - count sub-ranks forward (capped at end of rank list)
     $target_idx  = min($current_idx + $increment, count($all_ranks) - 1);
     $target_rank = $all_ranks[$target_idx];
 
-    // Step 3 &mdash; detect category crossing
+    // Step 3 - detect category crossing
     $current_cat = getRankCategory($current_rank);
     $target_cat  = getRankCategory($target_rank);
     $crossed     = ($current_cat !== $target_cat);
@@ -673,14 +889,14 @@ function computePotentialRank(array $raw_kra, string $current_rank, bool $has_na
         $new_increment    = $recomputed['sub_rank_increment'];
 
         if ($new_increment === 0) {
-            // Does not qualify under new-category weights &mdash; cap at highest sub-rank of current category
+            // Does not qualify under new-category weights - cap at highest sub-rank of current category
             $highest_in_cat = getHighestRankInCategory($current_cat, $all_ranks);
             $target_rank    = $highest_in_cat;
-            $flags[]        = "Score insufficient under {$target_cat} weights — awarded highest sub-rank of {$current_cat}";
+            $flags[]        = "Score insufficient under {$target_cat} weights  -  awarded highest sub-rank of {$current_cat}";
         } else {
             $new_target_idx  = min($current_idx + $new_increment, count($all_ranks) - 1);
             $target_rank     = $all_ranks[$new_target_idx];
-            $flags[]         = "Category boundary crossed — re-computed under {$target_cat} weights";
+            $flags[]         = "Category boundary crossed  -  re-computed under {$target_cat} weights";
         }
     }
 
@@ -689,7 +905,7 @@ function computePotentialRank(array $raw_kra, string $current_rank, bool $has_na
         $flags[] = 'National/International Award applied: +1 sub-rank bonus (JC3 s.2022 Step 4)';
     }
 
-    // Step 4 &mdash; accreditation flags
+    // Step 4 - accreditation flags
     $final_cat = getRankCategory($target_rank);
     if (in_array($final_cat, ['College Professor', 'University Professor'])) {
         $flags[] = 'CC (Continuing Competency) certification required';

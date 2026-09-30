@@ -2,7 +2,7 @@
 /**
  * Forced first-login password change.
  * Only reachable when $_SESSION['force_pw_change'] is true.
- * No navigation — user cannot escape until they set a real password.
+ * No navigation  -  user cannot escape until they set a real password.
  */
 if (session_status() === PHP_SESSION_NONE) session_start();
 require_once __DIR__ . '/../config/db.php';
@@ -16,10 +16,7 @@ if (!isLoggedIn()) {
 
 // If they already changed it (flag gone), send them home
 if (empty($_SESSION['force_pw_change'])) {
-    $dest = ($_SESSION['role'] ?? '') === 'faculty'
-        ? 'portal.php'
-        : '../index.php';
-    header('Location: ' . $dest);
+    header('Location: ../index.php');
     exit;
 }
 
@@ -64,14 +61,14 @@ $full_name = formatDisplayName([
     'full_name'   => $_SESSION['full_name']   ?? 'User',
 ]);
 $role      = $_SESSION['role'] ?? 'faculty';
-$home_url  = $role === 'faculty' ? 'portal.php' : '../index.php';
+$home_url  = '../index.php';
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SUCFRMS — Set Your Password</title>
+    <title>SUCFRMS  -  Set Your Password</title>
     <link href="../assets/vendor/bootstrap-icons/bootstrap-icons.min.css" rel="stylesheet">
     <style>
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -261,7 +258,7 @@ $home_url  = $role === 'faculty' ? 'portal.php' : '../index.php';
 
     <?php if ($success): ?>
 
-    <!-- ── Success ── -->
+    <!-- -- Success -- -->
     <div class="success-body">
         <div class="success-icon" style="width:80px;height:80px;border-radius:50%;background:#1a3a6b;display:flex;align-items:center;justify-content:center;margin:0 auto 1.25rem;border:none;">
             <svg width="44" height="44" viewBox="0 0 52 52" style="display:block;">
@@ -274,7 +271,7 @@ $home_url  = $role === 'faculty' ? 'portal.php' : '../index.php';
         <div class="success-title">Password Set Successfully</div>
         <div class="success-sub">
             Your account is now secured.<br>
-            Redirecting you to the system&hellip;
+            Redirecting you to the system...
         </div>
         <div class="countdown">
             You'll be redirected in <strong id="cdCount">3</strong>s
@@ -292,7 +289,7 @@ $home_url  = $role === 'faculty' ? 'portal.php' : '../index.php';
 
     <?php else: ?>
 
-    <!-- ── Alert banner ── -->
+    <!-- -- Alert banner -- -->
     <div class="alert-banner">
         <div>
             <strong>Action required before you continue.</strong><br>
@@ -300,7 +297,7 @@ $home_url  = $role === 'faculty' ? 'portal.php' : '../index.php';
         </div>
     </div>
 
-    <!-- ── Form ── -->
+    <!-- -- Form -- -->
     <div class="card-body">
 
         <?php if ($error): ?>
@@ -374,7 +371,7 @@ $home_url  = $role === 'faculty' ? 'portal.php' : '../index.php';
 </div><!-- /card -->
 
 <div class="footer-note">
-    &copy; <?= date('Y') ?> SUCFRMS &mdash; SUC Faculty Reclassification Management System
+    &copy; <?= date('Y') ?> SUCFRMS - SUC Faculty Reclassification Management System
 </div>
 
 <script>
@@ -433,10 +430,10 @@ function checkMatch() {
     if (!cp) { msg.textContent = ''; return; }
     if (np === cp) {
         msg.style.color = '#16a34a';
-        msg.textContent = '✓ Passwords match';
+        msg.textContent = 'OK Passwords match';
     } else {
         msg.style.color = '#dc2626';
-        msg.textContent = '✗ Passwords do not match';
+        msg.textContent = 'X Passwords do not match';
     }
     updateSubmit();
 }

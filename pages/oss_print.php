@@ -1,6 +1,6 @@
 <?php
 /**
- * OSS &mdash; Overall Score Summary
+ * OSS - Overall Score Summary
  * Admin/checker only. Shows all faculty scores for a given cycle.
  */
 if (session_status() === PHP_SESSION_NONE) session_start();
@@ -40,7 +40,7 @@ if ($status && in_array($status, ['submitted','under_review','approved','rejecte
 
 $rows = $pdo->prepare("
     SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, u.employee_id, u.rank,
-           COALESCE(camp.campus_name,'&mdash;') as campus_name,
+           COALESCE(camp.campus_name,'-') as campus_name,
            chk.user_id as checker_uid,
            chk.checker_label as checker_label
     FROM applications a
@@ -71,6 +71,14 @@ $total = count($applications);
 $status_counts = [];
 foreach ($applications as $a) $status_counts[$a['status']] = ($status_counts[$a['status']] ?? 0) + 1;
 
+$status_labels = [
+    'submitted'    => 'Submitted',
+    'under_review' => 'Under Evaluation',
+    'approved'     => 'Evaluation Complete',
+    'rejected'     => 'Returned for Revision',
+    'reclassified' => 'Evaluation Complete',
+];
+
 // KRA averages
 $kra_avgs = ['Instruction'=>[],'Research'=>[],'Extension'=>[],'Professional Development'=>[]];
 foreach ($applications as $a) {
@@ -90,12 +98,12 @@ $admin_name = $_SESSION['full_name'] ?? 'Administrator';
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>OSS — Overall Score Summary</title>
+<title>OSS  -  Overall Score Summary</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body { font-family:'Times New Roman', Times, serif; font-size:10.5pt; color:#000; background:#f0f3f8; }
 
-/* ── Screen toolbar ── */
+/* -- Screen toolbar -- */
 .toolbar { background:#1e4d8c; color:#fff; padding:7px 16px; display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; position:sticky; top:0; z-index:100; }
 .toolbar h2 { font-size:12px; font-weight:700; }
 .toolbar-actions { display:flex; gap:6px; }
@@ -103,33 +111,25 @@ body { font-family:'Times New Roman', Times, serif; font-size:10.5pt; color:#000
 .btn-white { background:#fff; color:#1a3a6b; }
 .btn-outline { background:transparent; color:#fff; border:1px solid rgba(255,255,255,0.55); }
 
-/* ── Filter bar ── */
+/* -- Filter bar -- */
 .filter-bar { background:#fff; border-bottom:1px solid #e2e8f0; padding:5px 16px; display:flex; gap:10px; flex-wrap:wrap; align-items:center; font-size:10.5px; }
 .filter-bar label { font-weight:700; color:#475569; }
 .filter-bar select { font-size:10.5px; padding:3px 6px; border:1px solid #cbd5e1; border-radius:4px; }
 .filter-bar .btn-apply { background:#1e4d8c; color:#fff; padding:3px 12px; border-radius:4px; border:none; font-size:10.5px; font-weight:700; cursor:pointer; }
 @media print { .toolbar, .filter-bar { display:none !important; } }
 
-/* ── Document page ── */
+/* -- Document page -- */
 @page { size: A4 portrait; margin: 15mm 18mm 18mm 18mm; }
 .page-wrap { background:#fff; max-width:720px; margin:0 auto; padding:20px 24px; }
 @media print { .page-wrap { max-width:100%; padding:0; margin:0; background:#fff; box-shadow:none; } }
 @media screen { .page-wrap { margin:14px auto; box-shadow:0 2px 16px rgba(0,0,0,0.1); } }
 
-/* ── Document header ── */
-.doc-header { display:flex; align-items:flex-start; gap:14px; margin-bottom:6px; }
-.doc-header img { width:60px; height:60px; border-radius:50%; object-fit:cover; flex-shrink:0; border:2px solid #1a3a6b; }
-.doc-header-center { flex:1; text-align:center; line-height:1.35; }
-.doc-header-center .institution { font-size:12pt; font-weight:700; text-transform:uppercase; letter-spacing:0.3px; }
-.doc-header-center .system-name { font-size:8.5pt; color:#1a3a6b; margin-top:1px; text-decoration:underline; }
-.doc-title-bar { margin:6px 0 2px; border-top:2.5px solid #000; border-bottom:2.5px solid #000; padding:3px 0; text-align:center; }
-.doc-title-bar .form-title { font-size:13.5pt; font-weight:700; text-transform:uppercase; letter-spacing:1.5px; }
-
-/* ── Filter summary line ── */
+/* -- Document header -- */
+/* -- Filter summary line -- */
 .filter-line { font-size:8.5pt; color:#1e293b; margin-bottom:6px; }
 .filter-line strong { color:#1a3a6b; }
 
-/* ── Summary stats (inline, no boxes) ── */
+/* -- Summary stats (inline, no boxes) -- */
 .summary-line { font-size:9pt; margin-bottom:8px; border-bottom:1px solid #000; padding-bottom:4px; }
 .summary-line .cycle-lbl { font-weight:700; color:#1e293b; margin-right:8px; }
 .summary-line .total-lbl { color:#475569; margin-right:16px; }
@@ -137,7 +137,7 @@ body { font-family:'Times New Roman', Times, serif; font-size:10.5pt; color:#000
 .summary-stat .sv { font-size:12pt; font-weight:700; color:#1a3a6b; line-height:1; display:block; }
 .summary-stat .sl { font-size:7pt; text-transform:uppercase; letter-spacing:0.3px; color:#64748b; }
 
-/* ── KRA averages ── */
+/* -- KRA averages -- */
 .kra-avg-row { display:grid; grid-template-columns:repeat(2,1fr); gap:0; margin-bottom:10px; border:1px solid #000; }
 .kra-avg-box { border-right:1px solid #cbd5e1; border-bottom:1px solid #cbd5e1; }
 .kra-avg-box:nth-child(2n) { border-right:none; }
@@ -147,10 +147,10 @@ body { font-family:'Times New Roman', Times, serif; font-size:10.5pt; color:#000
 .kra-avg-box .kv { font-size:12pt; font-weight:700; line-height:1.2; margin-top:1px; }
 .kra-avg-box .km { font-size:7pt; color:#64748b; }
 
-/* ── Section title ── */
+/* -- Section title -- */
 .section-title { font-size:9pt; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; border-bottom:2px solid #000; padding-bottom:2px; margin-bottom:5px; }
 
-/* ── Main table ── */
+/* -- Main table -- */
 table.main { width:100%; border-collapse:collapse; font-size:7pt; }
 table.main thead tr { background:#1e4d8c; color:#fff; }
 table.main thead th { padding:3px 4px; font-size:6.5pt; font-weight:700; border:1px solid #000; text-align:center; white-space:nowrap; }
@@ -170,14 +170,14 @@ table.main tbody td.score-low  { color:#1e293b; font-weight:700; text-align:cent
 .badge-admin_rejected { background:#f1f5f9; color:#475569; }
 .badge-draft          { background:#f1f5f9; color:#94a3b8; }
 
-/* ── Campus header ── */
+/* -- Campus header -- */
 .campus-header { background:#1e4d8c; color:#fff; font-weight:700; font-size:8.5pt; padding:4px 8px; border:1px solid #000; margin-top:6px; }
 .campus-group { page-break-inside:avoid; }
 
-/* ── Subtotal row ── */
+/* -- Subtotal row -- */
 .subtotal-row td { background:#eff6ff !important; font-weight:700; border-top:2px solid #1a3a6b; color:#1a3a6b; font-size:7.5pt; }
 
-/* ── Signature section ── */
+/* -- Signature section -- */
 .sig-section { margin-top:18px; }
 .sig-title { font-size:9pt; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; border-bottom:1px solid #000; padding-bottom:2px; margin-bottom:8px; }
 .sig-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:28px; }
@@ -187,10 +187,10 @@ table.main tbody td.score-low  { color:#1e293b; font-weight:700; text-align:cent
 .sig-role { font-size:8pt; color:#475569; }
 .sig-date { font-size:8pt; color:#475569; margin-top:1px; }
 
-/* ── Footer ── */
+/* -- Footer -- */
 .doc-footer { margin-top:10px; border-top:1px solid #000; padding-top:3px; display:flex; justify-content:space-between; font-size:7.5pt; color:#64748b; }
 
-/* ── Empty state ── */
+/* -- Empty state -- */
 .empty-msg { text-align:center; padding:14px; font-style:italic; font-size:9pt; color:#64748b; }
 </style>
 </head>
@@ -198,7 +198,7 @@ table.main tbody td.score-low  { color:#1e293b; font-weight:700; text-align:cent
 
 <!-- Screen toolbar -->
 <div class="toolbar">
-    <h2>OSS &mdash; Overall Score Summary</h2>
+    <h2>OSS - Overall Score Summary</h2>
     <div class="toolbar-actions">
         <a href="../index.php?page=dashboard" class="btn btn-outline">&larr; Back</a>
         <a href="oss_pdf.php?cycle_id=<?= $cycle_id ?>&campus_id=<?= $campus_id ?>&status=<?= urlencode($status) ?>" class="btn btn-white" target="_blank">&#128462; Download PDF</a>
@@ -228,7 +228,7 @@ table.main tbody td.score-low  { color:#1e293b; font-weight:700; text-align:cent
     <select name="status">
         <option value="">All</option>
         <?php foreach (['submitted','under_review','approved','rejected','reclassified'] as $s): ?>
-        <option value="<?= $s ?>" <?= $status === $s ? 'selected' : '' ?>><?= ucwords(str_replace('_',' ',$s)) ?></option>
+        <option value="<?= $s ?>" <?= $status === $s ? 'selected' : '' ?>><?= $status_labels[$s] ?? ucwords(str_replace('_',' ',$s)) ?></option>
         <?php endforeach; ?>
     </select>
     <button type="submit" class="btn-apply">Apply</button>
@@ -236,41 +236,31 @@ table.main tbody td.score-low  { color:#1e293b; font-weight:700; text-align:cent
 
 <div class="page-wrap">
 
-    <!-- Document Header -->
-    <div class="doc-header">
-        <img src="../assets/images/logo.jpg" alt="Institution Logo">
-        <div class="doc-header-center">
-            <div class="institution">State Universities and Colleges</div>
-            <div class="system-name">SUC Faculty Reclassification Management System</div>
-            <div class="doc-title-bar">
-                <div class="form-title">Overall Score Summary (OSS)</div>
-            </div>
-        </div>
-
-    </div>
-
     <!-- Summary line (inline, no boxes) -->
     <div class="summary-line">
         <span class="cycle-lbl">Cycle: <?= htmlspecialchars($selected_cycle['cycle_name'] ?? 'All') ?></span>
         <?php if ($campus_id): foreach ($all_campuses as $cp) { if ($cp['campus_id'] === $campus_id) echo '<span style="margin-right:8px;">Campus: <strong>' . htmlspecialchars($cp['campus_name']) . '</strong></span>'; } endif; ?>
-        <?php if ($status): ?><span style="margin-right:8px;">Status: <strong><?= ucwords(str_replace('_',' ',$status)) ?></strong></span><?php endif; ?>
+        <?php if ($status): ?><span style="margin-right:8px;">Status: <strong><?= $status_labels[$status] ?? ucwords(str_replace('_',' ',$status)) ?></strong></span><?php endif; ?>
         <span class="total-lbl">Total Records: <strong><?= $total ?></strong></span>
         &nbsp;&nbsp;
         <span class="summary-stat"><span class="sv"><?= $total ?></span><span class="sl">Total</span></span>
-        <span class="summary-stat"><span class="sv"><?= $status_counts['reclassified'] ?? 0 ?></span><span class="sl">Reclassified</span></span>
-        <span class="summary-stat"><span class="sv"><?= $status_counts['approved'] ?? 0 ?></span><span class="sl">Approved</span></span>
+        <span class="summary-stat"><span class="sv"><?= $status_counts['reclassified'] ?? 0 ?></span><span class="sl">Evaluation Complete</span></span>
+        <span class="summary-stat"><span class="sv"><?= $status_counts['approved'] ?? 0 ?></span><span class="sl">Evaluation Complete</span></span>
         <span class="summary-stat"><span class="sv"><?= ($status_counts['submitted'] ?? 0) + ($status_counts['under_review'] ?? 0) ?></span><span class="sl">Pending</span></span>
-        <span class="summary-stat"><span class="sv"><?= $status_counts['rejected'] ?? 0 ?></span><span class="sl">Returned</span></span>
+        <span class="summary-stat"><span class="sv"><?= $status_counts['rejected'] ?? 0 ?></span><span class="sl">Returned for Revision</span></span>
+    </div>
+    <div style="font-size:8pt;color:#64748b;margin:-4px 0 8px;">
+        Scores and recommended ranks are for further committee review and are not final decisions.
     </div>
 
     <!-- KRA averages -->
     <div class="kra-avg-row">
         <?php
         $kra_short = [
-            'Instruction'              => 'KRA I &mdash; Instruction',
-            'Research'                 => 'KRA II &mdash; Research',
-            'Extension'                => 'KRA III &mdash; Extension',
-            'Professional Development' => 'KRA IV &mdash; Prof. Dev.',
+            'Instruction'              => 'KRA I - Instruction',
+            'Research'                 => 'KRA II - Research',
+            'Extension'                => 'KRA III - Extension',
+            'Professional Development' => 'KRA IV - Prof. Dev.',
         ];
         foreach ($kra_avg_vals as $cat => $avg): ?>
         <div class="kra-avg-box">
@@ -323,18 +313,18 @@ table.main tbody td.score-low  { color:#1e293b; font-weight:700; text-align:cent
             <tr>
                 <td class="center" style="color:#94a3b8;"><?= $row_num++ ?></td>
                 <td style="font-weight:600;"><?= htmlspecialchars(formatDisplayName($a)) ?></td>
-                <td class="center"><?= htmlspecialchars($a['employee_id'] ?? '—') ?></td>
-                <td style="font-size:7.5pt;"><?= htmlspecialchars($a['rank'] ?? '—') ?></td>
+                <td class="center"><?= htmlspecialchars($a['employee_id'] ?? ' - ') ?></td>
+                <td style="font-size:7.5pt;"><?= htmlspecialchars($a['rank'] ?? ' - ') ?></td>
                 <td class="center"><?= number_format($scores['Instruction'] ?? 0, 2) ?></td>
                 <td class="center"><?= number_format($scores['Research'] ?? 0, 2) ?></td>
                 <td class="center"><?= number_format($scores['Extension'] ?? 0, 2) ?></td>
                 <td class="center"><?= number_format($scores['Professional Development'] ?? 0, 2) ?></td>
                 <td class="<?= $sc ?>"><?= number_format((float)$a['total_score'], 2) ?></td>
                 <td class="<?= $sc ?>"><?= number_format($ws, 2) ?></td>
-                <td class="center" style="font-weight:700;color:<?= $inc>0?'#1e4d8c':'#94a3b8' ?>;"><?= $inc > 0 ? '+'.$inc : '—' ?></td>
+                <td class="center" style="font-weight:700;color:<?= $inc>0?'#1e4d8c':'#94a3b8' ?>;"><?= $inc > 0 ? '+'.$inc : ' - ' ?></td>
                 <td class="center"><span class="badge badge-<?= $a['status'] ?>"><?= ucwords(str_replace('_',' ',$a['status'])) ?></span></td>
                 <td style="font-size:7.5pt;"><?php
-                    $chk = '—';
+                    $chk = ' - ';
                     if (!empty($a['checker_uid'])) {
                         $chk = htmlspecialchars(checkerDisplayLabel([
                             'checker_label' => $a['checker_label'] ?? null,
@@ -354,7 +344,7 @@ table.main tbody td.score-low  { color:#1e293b; font-weight:700; text-align:cent
             <tr class="subtotal-row">
                 <td colspan="9" style="text-align:right;padding-right:8px;">Campus Average Weighted Score:</td>
                 <td class="center"><?= $avg_ws ?></td>
-                <td colspan="3">Reclassified: <?= $reclass_n ?> / <?= count($campus_apps) ?></td>
+                <td colspan="3">Evaluation Complete: <?= $reclass_n ?> / <?= count($campus_apps) ?></td>
             </tr>
             </tbody>
         </table>
@@ -370,7 +360,7 @@ table.main tbody td.score-low  { color:#1e293b; font-weight:700; text-align:cent
                 <div class="sig-block">
                     <div class="sig-line">
                         <div class="sig-name">___________________________</div>
-                        <div class="sig-role">Prepared by &mdash; <?= htmlspecialchars($admin_name) ?></div>
+                        <div class="sig-role">Prepared by - <?= htmlspecialchars($admin_name) ?></div>
                         <div class="sig-date">Date: ___________________</div>
                     </div>
                 </div>
@@ -379,7 +369,7 @@ table.main tbody td.score-low  { color:#1e293b; font-weight:700; text-align:cent
                 <div class="sig-block">
                     <div class="sig-line">
                         <div class="sig-name">___________________________</div>
-                        <div class="sig-role">Reviewed by &mdash; Campus Director / Dean</div>
+                        <div class="sig-role">Reviewed by - Campus Director / Dean</div>
                         <div class="sig-date">Date: ___________________</div>
                     </div>
                 </div>
@@ -388,7 +378,7 @@ table.main tbody td.score-low  { color:#1e293b; font-weight:700; text-align:cent
                 <div class="sig-block">
                     <div class="sig-line">
                         <div class="sig-name">___________________________</div>
-                        <div class="sig-role">Approved by &mdash; University President</div>
+                        <div class="sig-role">Approved by - University President</div>
                         <div class="sig-date">Date: ___________________</div>
                     </div>
                 </div>
@@ -398,7 +388,7 @@ table.main tbody td.score-low  { color:#1e293b; font-weight:700; text-align:cent
 
     <!-- Footer -->
     <div class="doc-footer">
-        <span>SUCFRMS &mdash; Overall Score Summary (OSS)</span>
+        <span>SUCFRMS - Overall Score Summary (OSS)</span>
         <span><?= htmlspecialchars($selected_cycle['cycle_name'] ?? '') ?></span>
         <span>Printed: <?= $printed_at ?></span>
     </div>

@@ -29,9 +29,10 @@ catch (\Exception $e) {
 }
 
 $my_uid = $_SESSION['user_id'];
+ensureKraAssignmentTable($pdo);
 
 if ($is_talisay) {
-    // Talisay checkers see talisay_review apps they haven't decided on
+    // ITC reviewers see talisay_review apps they haven't decided on
     if ($filter === 'pending_decision') {
         $base_where = "a.status = 'talisay_review' AND a.user_id != ?
             AND NOT EXISTS (
@@ -69,6 +70,19 @@ if ($is_talisay) {
     }
 }
 
+if (!$is_talisay) {
+    $base_where .= " AND EXISTS (
+        SELECT 1
+        FROM kra_submissions ks_scope
+        JOIN checker_kra_assignments ka_scope
+          ON ka_scope.cycle_id = a.cycle_id
+         AND ka_scope.kra_category = ks_scope.kra_category
+         AND ka_scope.checker_id = ?
+        WHERE ks_scope.application_id = a.application_id
+    )";
+    $params[] = $my_uid;
+}
+
 if ($search) {
     $base_where .= " AND (u.full_name LIKE ? OR u.employee_id LIKE ?)";
     $params = array_merge($params, ["%$search%", "%$search%"]);
@@ -76,7 +90,7 @@ if ($search) {
 
 $apps = $pdo->prepare("
     SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, u.employee_id, u.rank,
-        COALESCE(camp.campus_name, '&mdash;') as campus_name, c.cycle_name,
+        COALESCE(camp.campus_name, '-') as campus_name, c.cycle_name, c.evaluation_deadline,
         (SELECT COUNT(*) FROM application_checker_reviews r
          JOIN users uc ON r.checker_id = uc.user_id
          WHERE r.application_id = a.application_id AND r.decision = 'approved'
@@ -99,7 +113,23 @@ $apps = $pdo->prepare("
 $apps->execute(array_merge([$my_uid, $my_uid], $params));
 $apps = $apps->fetchAll();
 
-$counts = $pdo->query("SELECT status, COUNT(*) as cnt FROM applications GROUP BY status")->fetchAll(PDO::FETCH_KEY_PAIR);
+$counts = [];
+if ($is_talisay) {
+    $counts = $pdo->query("SELECT status, COUNT(*) as cnt FROM applications GROUP BY status")->fetchAll(PDO::FETCH_KEY_PAIR);
+} else {
+    $counts_stmt = $pdo->prepare("
+        SELECT a.status, COUNT(DISTINCT a.application_id) AS cnt
+        FROM applications a
+        JOIN kra_submissions ks_scope ON ks_scope.application_id = a.application_id
+        JOIN checker_kra_assignments ka_scope
+          ON ka_scope.cycle_id = a.cycle_id
+         AND ka_scope.kra_category = ks_scope.kra_category
+         AND ka_scope.checker_id = ?
+        GROUP BY a.status
+    ");
+    $counts_stmt->execute([$my_uid]);
+    $counts = $counts_stmt->fetchAll(PDO::FETCH_KEY_PAIR);
+}
 $returned_count = ($counts['needs_revision'] ?? 0) + ($counts['rejected'] ?? 0);
 
 // Pending count for MY role
@@ -118,6 +148,15 @@ if ($is_talisay) {
     $my_pending_stmt = $pdo->prepare("
         SELECT COUNT(*) FROM applications a
         WHERE a.status IN ('submitted','under_review') AND a.user_id != ?
+          AND EXISTS (
+              SELECT 1
+              FROM kra_submissions ks_scope
+              JOIN checker_kra_assignments ka_scope
+                ON ka_scope.cycle_id = a.cycle_id
+               AND ka_scope.kra_category = ks_scope.kra_category
+               AND ka_scope.checker_id = ?
+              WHERE ks_scope.application_id = a.application_id
+          )
           AND NOT EXISTS (
               SELECT 1 FROM application_checker_reviews r
               WHERE r.application_id = a.application_id
@@ -126,7 +165,7 @@ if ($is_talisay) {
           )
     ");
 }
-$my_pending_stmt->execute([$my_uid, $my_uid]);
+$my_pending_stmt->execute($is_talisay ? [$my_uid, $my_uid] : [$my_uid, $my_uid, $my_uid]);
 $my_pending_count = (int)$my_pending_stmt->fetchColumn();
 
 // My reviewed count
@@ -157,6 +196,8 @@ foreach ($apps as &$a) {
     $a['days_waiting'] = $a['submitted_at']
         ? max(0, (int)floor((time() - strtotime($a['submitted_at'])) / 86400))
         : 0;
+    [$a['eval_deadline_label'], $a['eval_deadline_color'], $a['eval_deadline_bg']] =
+        getEvaluationDeadlineLabel($a['evaluation_deadline'] ?? null);
 }
 unset($a);
 ?>
@@ -201,18 +242,19 @@ unset($a);
 if ($is_talisay) {
     $tabs = [
         'pending_decision' => ['label'=>'Awaiting My Decision',  'cnt'=>$my_pending_count,            'color'=>'#1a3a6b'],
-        'talisay_review'   => ['label'=>'Talisay Review',        'cnt'=>$counts['talisay_review']??0,  'color'=>'#1e4d8c'],
-        'approved'         => ['label'=>'Approved',              'cnt'=>$counts['approved']??0,        'color'=>'#1e4d8c'],
-        'rejected'         => ['label'=>'Returned',              'cnt'=>$returned_count,               'color'=>'#334155'],
+        // Display name for stored status value 'talisay_review' is "ITC Review".
+        'talisay_review'   => ['label'=>'ITC Review',            'cnt'=>$counts['talisay_review']??0,  'color'=>'#1e4d8c'],
+        'approved'         => ['label'=>'Evaluation Complete',   'cnt'=>$counts['approved']??0,        'color'=>'#1e4d8c'],
+        'rejected'         => ['label'=>'Returned for Revision', 'cnt'=>$returned_count,               'color'=>'#334155'],
     ];
 } else {
     $tabs = [
         'pending_decision' => ['label'=>'Awaiting My Decision', 'cnt'=>$my_pending_count,              'color'=>'#1a3a6b'],
         'submitted'        => ['label'=>'Submitted',             'cnt'=>$counts['submitted']??0,        'color'=>'#1e4d8c'],
-        'under_review'     => ['label'=>'Under Review',          'cnt'=>$counts['under_review']??0,     'color'=>'#1e4d8c'],
-        'talisay_review'   => ['label'=>'At Talisay',            'cnt'=>$counts['talisay_review']??0,   'color'=>'#1e4d8c'],
-        'approved'         => ['label'=>'Approved',              'cnt'=>$counts['approved']??0,         'color'=>'#1e4d8c'],
-        'needs_revision'   => ['label'=>'Returned',              'cnt'=>$returned_count,                'color'=>'#334155'],
+        'under_review'     => ['label'=>'Under Evaluation',      'cnt'=>$counts['under_review']??0,     'color'=>'#1e4d8c'],
+        'talisay_review'   => ['label'=>'At ITC',                'cnt'=>$counts['talisay_review']??0,   'color'=>'#1e4d8c'],
+        'approved'         => ['label'=>'Evaluation Complete',   'cnt'=>$counts['approved']??0,         'color'=>'#1e4d8c'],
+        'needs_revision'   => ['label'=>'Returned for Revision', 'cnt'=>$returned_count,                'color'=>'#334155'],
         'my_reviewed'      => ['label'=>'My History',             'cnt'=>$my_reviewed_count,             'color'=>'#1e4d8c'],
     ];
 }
@@ -251,7 +293,7 @@ foreach ($tabs as $key => $t):
                 <?php if ($filter === 'pending_decision'): ?>
                 <th style="padding:0.75rem 0.75rem;color:#64748b;font-size:0.68rem;text-transform:uppercase;letter-spacing:0.05em;font-weight:700;text-align:center;">Status</th>
                 <?php endif; ?>
-                <th style="padding:0.75rem 0.75rem;color:#64748b;font-size:0.68rem;text-transform:uppercase;letter-spacing:0.05em;font-weight:700;text-align:center;">Approvals</th>
+                <th style="padding:0.75rem 0.75rem;color:#64748b;font-size:0.68rem;text-transform:uppercase;letter-spacing:0.05em;font-weight:700;text-align:center;">Evaluator Progress</th>
                 <th style="padding:0.75rem 0.75rem;color:#64748b;font-size:0.68rem;text-transform:uppercase;letter-spacing:0.05em;font-weight:700;text-align:center;">My Status</th>
                 <?php endif; ?>
                 <th style="padding:0.75rem 0.75rem;color:#64748b;font-size:0.68rem;text-transform:uppercase;letter-spacing:0.05em;font-weight:700;">Submitted</th>
@@ -270,7 +312,9 @@ foreach ($tabs as $key => $t):
                 &nbsp;&middot;&nbsp;<span style="color:#64748b;"><?= sanitize($a['rank']) ?></span>
                 <?php endif; ?>
                 <?php $wait = (int)($a['days_waiting'] ?? 0);
-                if ($wait >= 5): ?>
+                [$due_label, $due_color, $due_bg] = [$a['eval_deadline_label'], $a['eval_deadline_color'], $a['eval_deadline_bg']]; ?>
+                &nbsp;<span style="background:<?= $due_bg ?>;color:<?= $due_color ?>;border:1px solid #e2e8f0;border-radius:20px;padding:1px 7px;font-size:0.65rem;font-weight:700;"><?= htmlspecialchars($due_label) ?></span>
+                <?php if ($wait >= 5): ?>
                 &nbsp;<span style="background:#f8fafc;color:#1e293b;border:1px solid #e2e8f0;border-radius:20px;padding:1px 7px;font-size:0.65rem;font-weight:700;"><i class="bi bi-clock-fill me-1"></i><?= $wait ?>d overdue</span>
                 <?php elseif ($wait >= 3): ?>
                 &nbsp;<span style="background:#f8fafc;color:#334155;border:1px solid #e2e8f0;border-radius:20px;padding:1px 7px;font-size:0.65rem;font-weight:700;"><?= $wait ?>d waiting</span>
@@ -307,7 +351,7 @@ foreach ($tabs as $key => $t):
                         $dot_bg = $d === 'approved' ? '#1a3a6b' : ($d === 'rejected' ? '#334155' : ($d === 'pending' ? '#475569' : '#e2e8f0'));
                     ?>
                     <span style="width:10px;height:10px;border-radius:50%;display:inline-block;background:<?= $dot_bg ?>;flex-shrink:0;"
-                          title="Checker <?= $i+1 ?>: <?= $d ?? 'not joined' ?>"></span>
+                          title="Evaluator <?= $i+1 ?>: <?= $d ?? 'not joined' ?>"></span>
                     <?php endfor; ?>
                     <span style="font-size:0.68rem;color:#94a3b8;margin-left:3px;"><?= $approvals ?>/<?= $total_checkers_count ?></span>
                 </div>
@@ -315,11 +359,11 @@ foreach ($tabs as $key => $t):
             <td style="padding:0.75rem 0.75rem;text-align:center;vertical-align:middle;">
                 <?php if ($my_dec === 'approved'): ?>
                 <span style="background:#dbeafe;color:#1e4d8c;padding:0.18rem 0.55rem;border-radius:20px;font-size:0.7rem;font-weight:600;white-space:nowrap;">
-                    <i class="bi bi-check-circle me-1"></i>Approved
+                    <i class="bi bi-check-circle me-1"></i>Evaluation Complete
                 </span>
                 <?php elseif ($my_dec === 'rejected'): ?>
                 <span style="background:#f8fafc;color:#1e293b;padding:0.18rem 0.55rem;border-radius:20px;font-size:0.7rem;font-weight:600;white-space:nowrap;">
-                    <i class="bi bi-x-circle me-1"></i>Rejected
+                    <i class="bi bi-arrow-counterclockwise me-1"></i>Returned for Revision
                 </span>
                 <?php else: ?>
                 <span style="background:#f8fafc;color:#334155;padding:0.18rem 0.55rem;border-radius:20px;font-size:0.7rem;font-weight:600;white-space:nowrap;">
@@ -333,7 +377,7 @@ foreach ($tabs as $key => $t):
                     <div style="font-size:0.72rem;color:#94a3b8;">Decided</div>
                     <?= date('M d, Y', strtotime($a['my_decided_at'])) ?>
                 <?php else: ?>
-                    <?= $a['submitted_at'] ? date('M d, Y', strtotime($a['submitted_at'])) : '&mdash;' ?>
+                    <?= $a['submitted_at'] ? date('M d, Y', strtotime($a['submitted_at'])) : '-' ?>
                 <?php endif; ?>
             </td>
             <td style="padding:0.75rem 0.75rem;text-align:center;vertical-align:middle;">

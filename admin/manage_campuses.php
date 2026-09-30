@@ -31,7 +31,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $has_users = $pdo->prepare("SELECT COUNT(*) FROM users WHERE campus_id = ?");
         $has_users->execute([$cid]);
         if ($has_users->fetchColumn() > 0) {
-            flashMessage('danger', 'Cannot delete &mdash; users are assigned to this campus.');
+            flashMessage('danger', 'Cannot delete - users are assigned to this campus.');
         } else {
             $name_row = $pdo->prepare("SELECT campus_name FROM campuses WHERE campus_id=?");
             $name_row->execute([$cid]);
@@ -142,7 +142,7 @@ $campuses = $campuses->fetchAll();
                 <td style="padding:0.75rem 0.75rem;text-align:center;">
                     <?php if ($c['user_count'] > 0): ?>
                     <span style="background:#eff6ff;color:#1e4d8c;font-weight:700;font-size:0.78rem;border-radius:20px;padding:2px 9px;"><?= $c['user_count'] ?></span>
-                    <?php else: ?><span style="color:#cbd5e1;font-size:0.78rem;">—</span><?php endif; ?>
+                    <?php else: ?><span style="color:#cbd5e1;font-size:0.78rem;"> - </span><?php endif; ?>
                 </td>
                 <td style="padding:0.75rem 0.75rem;text-align:center;">
                     <form method="POST" class="d-inline" id="toggleForm_<?= $c['campus_id'] ?>">
@@ -168,7 +168,7 @@ $campuses = $campuses->fetchAll();
                         <?php if (intval($c['user_count']) > 0): ?>
                         <button type="button"
                                 style="padding:3px 8px;border-radius:6px;background:#f1f5f9;color:#cbd5e1;border:1px solid #e2e8f0;font-size:0.75rem;cursor:not-allowed;"
-                                disabled title="Cannot delete — reassign the <?= intval($c['user_count']) ?> user(s) first">
+                                disabled title="Cannot delete  -  reassign the <?= intval($c['user_count']) ?> user(s) first">
                             <i class="bi bi-trash"></i>
                         </button>
                         <?php else: ?>

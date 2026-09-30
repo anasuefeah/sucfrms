@@ -1,6 +1,6 @@
 <?php
 /**
- * OSS — Overall Score Summary PDF (FPDF)
+ * OSS  -  Overall Score Summary PDF (FPDF)
  */
 ob_start();
 if (session_status() === PHP_SESSION_NONE) session_start();
@@ -11,7 +11,7 @@ require_once __DIR__ . '/../fpdf/fpdf.php';
 requireLogin();
 if (!isAdmin() && !isChecker()) { http_response_code(403); die('Access denied.'); }
 
-// ── Filters ──────────────────────────────────────────────────
+// -- Filters --------------------------------------------------
 $cycle_id  = intval($_GET['cycle_id']  ?? 0);
 $campus_id = intval($_GET['campus_id'] ?? 0);
 $status    = trim($_GET['status']      ?? '');
@@ -29,7 +29,7 @@ foreach ($all_cycles as $cy) {
     if ($cy['cycle_id'] === $cycle_id) { $selected_cycle = $cy; break; }
 }
 
-// ── Query ─────────────────────────────────────────────────────
+// -- Query -----------------------------------------------------
 $where  = "WHERE u.role = 'faculty' AND a.cycle_id=?";
 $params = [$cycle_id];
 if ($campus_id) { $where .= ' AND u.campus_id=?'; $params[] = $campus_id; }
@@ -52,7 +52,7 @@ $rows = $pdo->prepare("
 $rows->execute($params);
 $applications = $rows->fetchAll();
 
-// ── KRA scores ────────────────────────────────────────────────
+// -- KRA scores ------------------------------------------------
 $kra_cats   = ['Instruction','Research','Extension','Professional Development'];
 $kra_scores = [];
 if ($applications) {
@@ -65,12 +65,12 @@ if ($applications) {
     }
 }
 
-// ── Summary stats ─────────────────────────────────────────────
+// -- Summary stats ---------------------------------------------
 $total         = count($applications);
 $status_counts = [];
 foreach ($applications as $a) $status_counts[$a['status']] = ($status_counts[$a['status']] ?? 0) + 1;
 
-// ── KRA averages ──────────────────────────────────────────────
+// -- KRA averages ----------------------------------------------
 $kra_avgs = ['Instruction'=>[],'Research'=>[],'Extension'=>[],'Professional Development'=>[]];
 foreach ($applications as $a) {
     foreach ($kra_cats as $cat) {
@@ -85,30 +85,23 @@ foreach ($kra_avgs as $cat => $vals) {
 $printed_at = date('F d, Y h:i A');
 $admin_name = $_SESSION['full_name'] ?? 'Administrator';
 
-// ── Group by campus ───────────────────────────────────────────
+// -- Group by campus -------------------------------------------
 $by_campus = [];
 foreach ($applications as $a) {
     $by_campus[$a['campus_name']][] = $a;
 }
 
-// ── FPDF Class ────────────────────────────────────────────────
+// -- FPDF Class ------------------------------------------------
 class OSS_PDF extends FPDF {
     public $cyc_name    = '';
     public $printed_at  = '';
     public $admin_name  = '';
 
     function Header() {
-        $this->SetFont('Times', 'B', 12);
-        $this->SetTextColor(30, 58, 138);
-        $this->SetXY(10, 8);
-        $this->Cell(0, 5, 'State Universities and Colleges', 0, 1, 'C');
-        $this->SetFont('Times', '', 8.5);
-        $this->SetTextColor(80, 80, 80);
-        $this->SetX(10);
-        $this->Cell(0, 4, 'SUC Faculty Reclassification Management System', 0, 1, 'C');
         $this->SetFillColor(30, 58, 138);
         $this->SetTextColor(255, 255, 255);
         $this->SetFont('Times', 'B', 12);
+        $this->SetY(8);
         $this->SetX(10);
         $this->Cell(0, 7, 'OVERALL SCORE SUMMARY (OSS)', 0, 1, 'C', true);
         $this->SetFont('Times', '', 7.5);
@@ -151,7 +144,7 @@ class OSS_PDF extends FPDF {
     }
 }
 
-// ── Build PDF ─────────────────────────────────────────────────
+// -- Build PDF -------------------------------------------------
 $pdf = new OSS_PDF('L', 'mm', 'A4');
 $pdf->AliasNbPages();
 $pdf->cyc_name   = $selected_cycle['cycle_name'] ?? 'All Cycles';
@@ -161,15 +154,15 @@ $pdf->SetMargins(10, 38, 10);
 $pdf->SetAutoPageBreak(true, 12);
 $pdf->AddPage();
 
-// ── Summary stats row ─────────────────────────────────────────
+// -- Summary stats row -----------------------------------------
 $pdf->SectionBar('SUMMARY');
 $pdf->Ln(1);
 $stats = [
     ['Total',        $total],
-    ['Reclassified', $status_counts['reclassified'] ?? 0],
-    ['Approved',     $status_counts['approved'] ?? 0],
+    ['Evaluation Complete', $status_counts['reclassified'] ?? 0],
+    ['Evaluation Complete', $status_counts['approved'] ?? 0],
     ['Pending',      ($status_counts['submitted'] ?? 0) + ($status_counts['under_review'] ?? 0)],
-    ['Returned',     $status_counts['rejected'] ?? 0],
+    ['Returned for Revision', $status_counts['rejected'] ?? 0],
 ];
 $sw = 53; $sx = 10; $sy = $pdf->GetY();
 foreach ($stats as [$lbl, $val]) {
@@ -186,9 +179,13 @@ foreach ($stats as [$lbl, $val]) {
     $sx += $sw;
 }
 $pdf->SetY($sy + 14);
+$pdf->SetFont('Times', 'I', 7.5);
+$pdf->SetTextColor(80, 80, 80);
+$pdf->Cell(0, 5, 'Scores and recommended ranks are for further committee review and are not final decisions.', 0, 1, 'C');
+$pdf->SetTextColor(0, 0, 0);
 $pdf->Ln(3);
 
-// ── KRA averages ──────────────────────────────────────────────
+// -- KRA averages ----------------------------------------------
 $kra_labels = [
     'Instruction'              => 'KRA I - Instruction',
     'Research'                 => 'KRA II - Research',
@@ -213,10 +210,10 @@ foreach ($kra_avg_vals as $cat => $avg) {
 $pdf->SetY($ky + 14);
 $pdf->Ln(3);
 
-// ── Faculty score table grouped by campus ─────────────────────
+// -- Faculty score table grouped by campus ---------------------
 $pdf->SectionBar('FACULTY SCORE LIST (' . $total . ' records)');
 
-// Column widths — landscape A4 usable width ~277mm
+// Column widths  -  landscape A4 usable width ~277mm
 $cols = [
     [7,   '#',            'C'],
     [52,  'Faculty Name', 'L'],
@@ -315,13 +312,13 @@ if (empty($applications)) {
         $pdf->SetTextColor(30, 58, 138);
         $pdf->Cell(120, 5, 'Campus Average Weighted Score: ' . $avg_ws, 1, 0, 'R', true);
         $pdf->Cell(42,  5, 'Avg', 1, 0, 'C', true);
-        $pdf->Cell(95,  5, 'Reclassified: ' . $reclass_ct . ' / ' . count($campus_apps), 1, 1, 'L', true);
+        $pdf->Cell(95,  5, 'Evaluation Complete: ' . $reclass_ct . ' / ' . count($campus_apps), 1, 1, 'L', true);
         $pdf->SetTextColor(0, 0, 0);
         $pdf->Ln(2);
     }
 }
 
-// ── Signature block ───────────────────────────────────────────
+// -- Signature block -------------------------------------------
 $pdf->Ln(4);
 $pdf->SetFont('Times', 'B', 8.5);
 $pdf->SetTextColor(0, 0, 0);
@@ -332,9 +329,9 @@ $pdf->Ln(3);
 
 $sw3 = 92;
 $sigs = [
-    ['Prepared by — ' . $admin_name, 'Administrator'],
-    ['Reviewed by — Campus Director / Dean', ''],
-    ['Approved by — University President', ''],
+    ['Prepared by  -  ' . $admin_name, 'Administrator'],
+    ['Reviewed by  -  Campus Director / Dean', ''],
+    ['Approved by  -  University President', ''],
 ];
 $sig_x = 10; $sig_y = $pdf->GetY();
 foreach ($sigs as [$role, $name]) {

@@ -10,7 +10,7 @@ $under_review   = (int)$pdo->query("SELECT COUNT(*) FROM applications WHERE stat
 $needs_revision = (int)$pdo->query("SELECT COUNT(*) FROM applications WHERE status='needs_revision'")->fetchColumn();
 $total_checkers = (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role IN ('checker','talisay_checker') AND status='active'")->fetchColumn();
 
-// Deadline info removed — cycle timing is controlled by Open/Closed status only.
+// Deadline info removed  -  cycle timing is controlled by Open/Closed status only.
 $days_left = null; $deadline_str = ''; $deadline_urgent = false;
 
 // KRA averages
@@ -77,7 +77,7 @@ foreach ($status_counts as $st => $cnt) {
 ?>
 
 <!-- ══════════════════════════════════════════════
-     HEADER — greeting + actions
+     HEADER  -  greeting + actions
 ═══════════════════════════════════════════════ -->
 <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;margin-bottom:1.5rem;">
     <div style="display:flex;align-items:center;gap:1rem;">
@@ -164,10 +164,10 @@ foreach ($status_counts as $st => $cnt) {
 $kpi = [
     ['Total Faculty',    $total_faculty,  '?page=manage_users'],
     ['Submitted',        $total_applied,  '?page=all_applications'],
-    ['Awaiting Checker', $pending_review, '?page=all_applications&filter=submitted'],
+    ['Awaiting Evaluator', $pending_review, '?page=all_applications&filter=submitted'],
     ['Under Review',     $under_review,   '?page=all_applications&filter=under_review'],
     ['Needs Revision',   $needs_revision, '?page=all_applications&filter=needs_revision'],
-    ['Approved',         $total_approved, '?page=all_applications&filter=approved'],
+    ['Evaluation Complete', $total_approved, '?page=all_applications&filter=approved'],
 ];
 ?>
 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:0.75rem;margin-bottom:1.5rem;">
@@ -197,7 +197,7 @@ $kpi = [
 </div>
 
 <!-- ══════════════════════════════════════════════
-     CHARTS ROW — trend + donut + KRA
+     CHARTS ROW  -  trend + donut + KRA
 ═══════════════════════════════════════════════ -->
 <div style="display:grid;grid-template-columns:1fr 300px 300px;gap:1rem;margin-bottom:1.5rem;">
 
@@ -206,7 +206,7 @@ $kpi = [
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;">
             <div>
                 <div style="font-weight:700;color:#1a3a6b;font-size:0.88rem;">
-                    Submissions — Last 7 Days
+                    Submissions  -  Last 7 Days
                 </div>
                 <div style="font-size:0.7rem;color:#94a3b8;margin-top:1px;">Daily application submission activity</div>
             </div>
@@ -312,7 +312,7 @@ $kpi = [
                     <th style="padding:0.6rem 0.6rem;text-align:center;font-size:0.68rem;font-weight:700;
                                text-transform:uppercase;letter-spacing:0.05em;color:#64748b;">Pending</th>
                     <th style="padding:0.6rem 0.6rem;text-align:center;font-size:0.68rem;font-weight:700;
-                               text-transform:uppercase;letter-spacing:0.05em;color:#64748b;">Approved</th>
+                               text-transform:uppercase;letter-spacing:0.05em;color:#64748b;">Evaluation Complete</th>
                     <th style="padding:0.6rem 0.75rem;text-align:left;font-size:0.68rem;font-weight:700;
                                text-transform:uppercase;letter-spacing:0.05em;color:#64748b;min-width:90px;">Progress</th>
                 </tr>
@@ -343,7 +343,7 @@ $kpi = [
                                  border-radius:20px;font-weight:700;font-size:0.75rem;">
                         <?= $cs['pending_count'] ?>
                     </span>
-                    <?php else: ?><span style="color:#cbd5e1;font-size:0.75rem;">—</span><?php endif; ?>
+                    <?php else: ?><span style="color:#cbd5e1;font-size:0.75rem;"> - </span><?php endif; ?>
                 </td>
                 <td style="padding:0.75rem 0.6rem;text-align:center;">
                     <?php if ($cs['reclass_count'] > 0): ?>
@@ -351,7 +351,7 @@ $kpi = [
                                  border-radius:20px;font-weight:700;font-size:0.75rem;">
                         <?= $cs['reclass_count'] ?>
                     </span>
-                    <?php else: ?><span style="color:#cbd5e1;font-size:0.75rem;">—</span><?php endif; ?>
+                    <?php else: ?><span style="color:#cbd5e1;font-size:0.75rem;"> - </span><?php endif; ?>
                 </td>
                 <td style="padding:0.75rem 0.75rem;">
                     <div style="display:flex;align-items:center;gap:0.5rem;">
@@ -391,8 +391,8 @@ $kpi = [
             <?php
             $action_icons = [
                 'Login'=>'bi-box-arrow-in-right','Submitted'=>'bi-send',
-                'Approved'=>'bi-check-circle-fill','Rejected'=>'bi-x-circle-fill',
-                'Verified'=>'bi-patch-check-fill','Password'=>'bi-key-fill',
+                'Evaluation Complete'=>'bi-clipboard-check','Returned'=>'bi-arrow-counterclockwise',
+                'Acceptable'=>'bi-patch-check-fill','Password'=>'bi-key-fill',
                 'Role'=>'bi-person-gear','Score'=>'bi-pencil-square',
                 'Revision'=>'bi-flag-fill','Resent'=>'bi-envelope',
             ];
@@ -402,9 +402,37 @@ $kpi = [
                 'faculty' => ['#475569','#f1f5f9'],
             ];
             foreach ($recent_logs as $log):
+                $action_display = strtr((string)($log['action_performed'] ?? ''), [
+                    'Pending Verification' => 'Pending Review',
+                    'Not Verified' => 'Not Acceptable',
+                    'Unverified' => 'Not Acceptable',
+                    'unverified' => 'not acceptable',
+                    'Verified by' => 'Marked Acceptable by',
+                    'verified by' => 'marked acceptable by',
+                    'Verification' => 'Review',
+                    'verification' => 'review',
+                    'Verifying' => 'Reviewing',
+                    'verifying' => 'reviewing',
+                    'Verified' => 'Acceptable',
+                    'verified' => 'acceptable',
+                    'Verify' => 'Review',
+                    'verify' => 'review',
+                    'Approval' => 'Evaluation Completion',
+                    'approval' => 'evaluation completion',
+                    'Approved' => 'Evaluation Complete',
+                    'approved' => 'evaluation complete',
+                    'Approve' => 'Complete Evaluation',
+                    'approve' => 'complete evaluation',
+                    'Rejection' => 'Return for Revision',
+                    'rejection' => 'return for revision',
+                    'Rejected' => 'Returned for Revision',
+                    'rejected' => 'returned for revision',
+                    'Reject' => 'Return for Revision',
+                    'reject' => 'return for revision',
+                ]);
                 $icon = 'bi-clock-history';
                 foreach ($action_icons as $key => $ic) {
-                    if (stripos($log['action_performed'], $key) !== false) { $icon = $ic; break; }
+                    if (stripos($action_display, $key) !== false) { $icon = $ic; break; }
                 }
                 $diff = time() - strtotime($log['timestamp']);
                 $ago  = $diff < 60 ? 'just now'
@@ -432,10 +460,10 @@ $kpi = [
                     <div style="display:flex;align-items:center;gap:0.35rem;flex-wrap:wrap;">
                         <span style="background:<?= $rb ?>;color:<?= $rc ?>;font-size:0.6rem;font-weight:700;
                                      border-radius:4px;padding:1px 5px;border:1px solid <?= $rc ?>33;flex-shrink:0;">
-                            <?= sanitize($log['role_at_time'] ?? '—') ?>
+                            <?= sanitize($log['role_at_time'] ?? ' - ') ?>
                         </span>
                         <span style="font-size:0.72rem;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-                            <?= sanitize($log['action_performed']) ?>
+                            <?= sanitize($action_display) ?>
                         </span>
                     </div>
                 </div>
@@ -541,7 +569,7 @@ document.addEventListener('DOMContentLoaded', function () {
 </script>
 
 <style>
-/* ── Admin dashboard mobile responsive ── */
+/* -- Admin dashboard mobile responsive -- */
 @media (max-width: 767.98px) {
     /* Charts row: stack all 3 columns vertically */
     div[style*="grid-template-columns:1fr 300px 300px"] {

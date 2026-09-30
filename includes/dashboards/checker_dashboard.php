@@ -1,6 +1,7 @@
 <?php
 $uid   = $_SESSION['user_id'];
 $cycle = getActiveCycle($pdo);
+ensureKraAssignmentTable($pdo);
 
 try { $pdo->query("SELECT review_id FROM application_checker_reviews LIMIT 1"); }
 catch (\Exception $e) {
@@ -13,31 +14,31 @@ catch (\Exception $e) {
         FOREIGN KEY (checker_id) REFERENCES users(user_id) ON DELETE CASCADE)");
 }
 
-$pending_stmt = $pdo->prepare("SELECT COUNT(*) FROM applications a WHERE a.status IN ('submitted','under_review') AND a.user_id != ? AND NOT EXISTS (SELECT 1 FROM application_checker_reviews r WHERE r.application_id=a.application_id AND r.checker_id=? AND r.decision IN ('approved','rejected'))");
-$pending_stmt->execute([$uid,$uid]); $pending = (int)$pending_stmt->fetchColumn();
+$pending_stmt = $pdo->prepare("SELECT COUNT(*) FROM applications a WHERE a.status IN ('submitted','under_review') AND a.user_id != ? AND EXISTS (SELECT 1 FROM kra_submissions ks JOIN checker_kra_assignments ka ON ka.cycle_id=a.cycle_id AND ka.kra_category=ks.kra_category AND ka.checker_id=? WHERE ks.application_id=a.application_id) AND NOT EXISTS (SELECT 1 FROM application_checker_reviews r WHERE r.application_id=a.application_id AND r.checker_id=? AND r.decision IN ('approved','rejected'))");
+$pending_stmt->execute([$uid,$uid,$uid]); $pending = (int)$pending_stmt->fetchColumn();
 
-$my_under_review_stmt = $pdo->prepare("SELECT COUNT(*) FROM applications a WHERE a.status IN ('under_review','needs_revision') AND a.checker_id=? AND a.user_id != ?");
-$my_under_review_stmt->execute([$uid, $uid]); $my_under_review = (int)$my_under_review_stmt->fetchColumn();
+$my_under_review_stmt = $pdo->prepare("SELECT COUNT(*) FROM applications a WHERE a.status IN ('under_review','needs_revision') AND a.checker_id=? AND a.user_id != ? AND EXISTS (SELECT 1 FROM kra_submissions ks JOIN checker_kra_assignments ka ON ka.cycle_id=a.cycle_id AND ka.kra_category=ks.kra_category AND ka.checker_id=? WHERE ks.application_id=a.application_id)");
+$my_under_review_stmt->execute([$uid, $uid, $uid]); $my_under_review = (int)$my_under_review_stmt->fetchColumn();
 
-$needs_revision_stmt = $pdo->prepare("SELECT COUNT(*) FROM applications WHERE checker_id=? AND status='needs_revision'");
-$needs_revision_stmt->execute([$uid]); $needs_revision = (int)$needs_revision_stmt->fetchColumn();
+$needs_revision_stmt = $pdo->prepare("SELECT COUNT(*) FROM applications a WHERE a.checker_id=? AND a.status='needs_revision' AND EXISTS (SELECT 1 FROM kra_submissions ks JOIN checker_kra_assignments ka ON ka.cycle_id=a.cycle_id AND ka.kra_category=ks.kra_category AND ka.checker_id=? WHERE ks.application_id=a.application_id)");
+$needs_revision_stmt->execute([$uid, $uid]); $needs_revision = (int)$needs_revision_stmt->fetchColumn();
 
 $my_stats_stmt = $pdo->prepare("SELECT COUNT(*) AS total_reviewed, SUM(CASE WHEN r.decision='approved' THEN 1 ELSE 0 END) AS approved FROM application_checker_reviews r JOIN applications a ON r.application_id=a.application_id WHERE r.checker_id=? AND a.status IN ('approved','admin_rejected')");
 $my_stats_stmt->execute([$uid]); $my_stats = $my_stats_stmt->fetch();
 $total_reviewed = (int)$my_stats['total_reviewed']; $total_approved = (int)$my_stats['approved'];
 
-$total_checkers_dash = max(1,(int)$pdo->query("SELECT COUNT(*) FROM users WHERE role = 'checker' AND status='active'")->fetchColumn());
+$total_checkers_dash = $cycle ? countAssignedCheckersForCycle($pdo, (int)$cycle['cycle_id']) : max(1,(int)$pdo->query("SELECT COUNT(*) FROM users WHERE role = 'checker' AND status='active'")->fetchColumn());
 
-$queue_stmt = $pdo->prepare("SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, u.rank, COALESCE(camp.campus_name,'—') AS campus_name, c.cycle_name, DATEDIFF(NOW(),a.submitted_at) AS days_waiting FROM applications a JOIN users u ON a.user_id=u.user_id LEFT JOIN campuses camp ON u.campus_id=camp.campus_id JOIN cycles c ON a.cycle_id=c.cycle_id WHERE a.status IN ('submitted','under_review') AND a.user_id!=? AND NOT EXISTS (SELECT 1 FROM application_checker_reviews r WHERE r.application_id=a.application_id AND r.checker_id=? AND r.decision IN ('approved','rejected')) ORDER BY a.submitted_at ASC LIMIT 8");
-$queue_stmt->execute([$uid,$uid]); $queue = $queue_stmt->fetchAll();
+$queue_stmt = $pdo->prepare("SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, u.rank, COALESCE(camp.campus_name,' - ') AS campus_name, c.cycle_name, c.evaluation_deadline, DATEDIFF(NOW(),a.submitted_at) AS days_waiting FROM applications a JOIN users u ON a.user_id=u.user_id LEFT JOIN campuses camp ON u.campus_id=camp.campus_id JOIN cycles c ON a.cycle_id=c.cycle_id WHERE a.status IN ('submitted','under_review') AND a.user_id!=? AND EXISTS (SELECT 1 FROM kra_submissions ks JOIN checker_kra_assignments ka ON ka.cycle_id=a.cycle_id AND ka.kra_category=ks.kra_category AND ka.checker_id=? WHERE ks.application_id=a.application_id) AND NOT EXISTS (SELECT 1 FROM application_checker_reviews r WHERE r.application_id=a.application_id AND r.checker_id=? AND r.decision IN ('approved','rejected')) ORDER BY a.submitted_at ASC LIMIT 8");
+$queue_stmt->execute([$uid,$uid,$uid]); $queue = $queue_stmt->fetchAll();
 
-$revision_stmt = $pdo->prepare("SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, COALESCE(camp.campus_name,'—') AS campus_name, DATEDIFF(NOW(),a.updated_at) AS days_waiting FROM applications a JOIN users u ON a.user_id=u.user_id LEFT JOIN campuses camp ON u.campus_id=camp.campus_id WHERE a.checker_id=? AND a.status='needs_revision' ORDER BY a.updated_at ASC");
-$revision_stmt->execute([$uid]); $revision_apps = $revision_stmt->fetchAll();
+$revision_stmt = $pdo->prepare("SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, COALESCE(camp.campus_name,' - ') AS campus_name, c.evaluation_deadline, DATEDIFF(NOW(),a.updated_at) AS days_waiting FROM applications a JOIN users u ON a.user_id=u.user_id LEFT JOIN campuses camp ON u.campus_id=camp.campus_id LEFT JOIN cycles c ON a.cycle_id=c.cycle_id WHERE a.checker_id=? AND a.status='needs_revision' AND EXISTS (SELECT 1 FROM kra_submissions ks JOIN checker_kra_assignments ka ON ka.cycle_id=a.cycle_id AND ka.kra_category=ks.kra_category AND ka.checker_id=? WHERE ks.application_id=a.application_id) ORDER BY a.updated_at ASC");
+$revision_stmt->execute([$uid, $uid]); $revision_apps = $revision_stmt->fetchAll();
 
-$inprogress_stmt = $pdo->prepare("SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, u.rank, COALESCE(camp.campus_name,'—') AS campus_name, DATEDIFF(NOW(),a.submitted_at) AS days_waiting, NULL AS my_decision, (SELECT COUNT(*) FROM application_checker_reviews r2 JOIN users uc2 ON r2.checker_id=uc2.user_id WHERE r2.application_id=a.application_id AND r2.decision='approved' AND uc2.role = 'checker') AS approvals_count FROM applications a JOIN users u ON a.user_id=u.user_id LEFT JOIN campuses camp ON u.campus_id=camp.campus_id WHERE a.status IN ('under_review','needs_revision') AND a.checker_id=? AND a.user_id != ? ORDER BY a.submitted_at ASC LIMIT 5");
-$inprogress_stmt->execute([$uid, $uid]); $inprogress = $inprogress_stmt->fetchAll();
+$inprogress_stmt = $pdo->prepare("SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, u.rank, COALESCE(camp.campus_name,' - ') AS campus_name, c.evaluation_deadline, DATEDIFF(NOW(),a.submitted_at) AS days_waiting, NULL AS my_decision, (SELECT COUNT(*) FROM application_checker_reviews r2 JOIN users uc2 ON r2.checker_id=uc2.user_id WHERE r2.application_id=a.application_id AND r2.decision='approved' AND uc2.role = 'checker') AS approvals_count FROM applications a JOIN users u ON a.user_id=u.user_id LEFT JOIN campuses camp ON u.campus_id=camp.campus_id LEFT JOIN cycles c ON a.cycle_id=c.cycle_id WHERE a.status IN ('under_review','needs_revision') AND a.checker_id=? AND a.user_id != ? AND EXISTS (SELECT 1 FROM kra_submissions ks JOIN checker_kra_assignments ka ON ka.cycle_id=a.cycle_id AND ka.kra_category=ks.kra_category AND ka.checker_id=? WHERE ks.application_id=a.application_id) ORDER BY a.submitted_at ASC LIMIT 5");
+$inprogress_stmt->execute([$uid, $uid, $uid]); $inprogress = $inprogress_stmt->fetchAll();
 
-$recent_stmt = $pdo->prepare("SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, COALESCE(camp.campus_name,'—') AS campus_name FROM applications a JOIN users u ON a.user_id=u.user_id LEFT JOIN campuses camp ON u.campus_id=camp.campus_id JOIN application_checker_reviews r ON r.application_id=a.application_id AND r.checker_id=? WHERE a.status IN ('approved','admin_rejected') ORDER BY a.reviewed_at DESC LIMIT 5");
+$recent_stmt = $pdo->prepare("SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, COALESCE(camp.campus_name,' - ') AS campus_name FROM applications a JOIN users u ON a.user_id=u.user_id LEFT JOIN campuses camp ON u.campus_id=camp.campus_id JOIN application_checker_reviews r ON r.application_id=a.application_id AND r.checker_id=? WHERE a.status IN ('approved','admin_rejected') ORDER BY a.reviewed_at DESC LIMIT 5");
 $recent_stmt->execute([$uid]); $recent = $recent_stmt->fetchAll();
 ?>
 <?php include __DIR__ . '/_notif_banner_snippet.php'; ?>
@@ -60,10 +61,10 @@ $recent_stmt->execute([$uid]); $recent = $recent_stmt->fetchAll();
         <div style="width:48px;height:48px;border-radius:12px;background:#1a3a6b;display:flex;align-items:center;justify-content:center;font-size:0.95rem;font-weight:700;color:#fff;flex-shrink:0;"><?= $init_h ?></div>
         <?php endif; ?>
         <div>
-            <div style="font-size:1rem;font-weight:700;color:#0f172a;line-height:1.25;">Welcome back, <?= sanitize($_SESSION['full_name'] ?? 'Checker') ?></div>
+            <div style="font-size:1rem;font-weight:700;color:#0f172a;line-height:1.25;">Welcome back, <?= sanitize($_SESSION['full_name'] ?? 'Evaluator') ?></div>
             <div style="font-size:0.72rem;color:#94a3b8;margin-top:2px;display:flex;align-items:center;gap:0.5rem;">
                 <i class="bi bi-calendar3" style="font-size:0.7rem;"></i><?= date('l, F j, Y') ?>
-                &ensp;<span style="background:#dbeafe;color:#1e4d8c;font-size:0.62rem;font-weight:700;letter-spacing:0.04em;padding:1px 7px;border-radius:4px;border:1px solid #bfdbfe;">CHECKER</span>
+                &ensp;<span style="background:#dbeafe;color:#1e4d8c;font-size:0.62rem;font-weight:700;letter-spacing:0.04em;padding:1px 7px;border-radius:4px;border:1px solid #bfdbfe;">EVALUATOR</span>
             </div>
         </div>
     </div>
@@ -152,20 +153,20 @@ foreach ($kpi as [$label, $val, $icon, $accent, $link]):
 </div>
 
 <!-- ══════════════════════════════════════════════
-     MAIN CONTENT — sidebar + tabbed list
+     MAIN CONTENT  -  sidebar + tabbed list
 ═══════════════════════════════════════════════ -->
 <div style="display:grid;grid-template-columns:220px 1fr;gap:1rem;margin-bottom:1.25rem;">
 
-    <!-- Sidebar: approval donut -->
+    <!-- Sidebar: completion donut -->
     <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:1.1rem;">
         <div style="font-weight:700;color:#0f172a;font-size:0.82rem;margin-bottom:0.2rem;"><i class="bi bi-pie-chart-fill me-1" style="color:#1a3a6b;"></i>My Reviews</div>
-        <div style="font-size:0.68rem;color:#94a3b8;margin-bottom:0.85rem;">Approval breakdown</div>
+        <div style="font-size:0.68rem;color:#94a3b8;margin-bottom:0.85rem;">Evaluation completion</div>
         <?php if ($total_reviewed > 0): ?>
         <div style="height:130px;"><canvas id="myReviewChart"></canvas></div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;margin-top:0.85rem;">
             <div style="background:#eff6ff;border-radius:8px;padding:0.55rem;text-align:center;">
                 <div style="font-size:1.25rem;font-weight:800;color:#1a3a6b;line-height:1;"><?= $total_approved ?></div>
-                <div style="font-size:0.63rem;color:#64748b;margin-top:2px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;">Approved</div>
+                <div style="font-size:0.63rem;color:#64748b;margin-top:2px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;">Complete</div>
             </div>
             <div style="background:#f8fafc;border-radius:8px;padding:0.55rem;text-align:center;">
                 <div style="font-size:1.25rem;font-weight:800;color:#475569;line-height:1;"><?= max(0,$total_reviewed-$total_approved) ?></div>
@@ -215,15 +216,17 @@ foreach ($kpi as [$label, $val, $icon, $accent, $link]):
         <?php if ($inprogress): foreach ($inprogress as $ip):
             $wait = (int)$ip['days_waiting'];
             $approved = ($ip['my_decision'] ?? '') === 'approved';
+            [$due_label, $due_color, $due_bg] = getEvaluationDeadlineLabel($ip['evaluation_deadline'] ?? null);
         ?>
         <div style="display:flex;align-items:center;gap:0.85rem;padding:0.75rem 1rem;border-bottom:1px solid #f8fafc;">
             <div style="flex:1;min-width:0;">
                 <div style="font-weight:600;font-size:0.83rem;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"><?= htmlspecialchars(formatDisplayName($ip)) ?></div>
                 <div style="font-size:0.7rem;color:#94a3b8;margin-top:1px;display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap;">
                     <span><?= sanitize($ip['campus_name']) ?></span>
-                    <span style="color:#e2e8f0;">·</span>
+                    <span style="color:#e2e8f0;">|</span>
                     <span style="color:<?= $wait >= 5 ? '#dc2626' : ($wait >= 3 ? '#d97706' : '#64748b') ?>;font-weight:600;"><?= $wait ?>d waiting</span>
-                    <span style="color:#e2e8f0;">·</span>
+                    <span style="background:<?= $due_bg ?>;color:<?= $due_color ?>;border:1px solid #e2e8f0;border-radius:20px;padding:1px 7px;font-size:0.65rem;font-weight:700;"><?= htmlspecialchars($due_label) ?></span>
+                    <span style="color:#e2e8f0;">|</span>
                     <span style="color:#1e4d8c;font-weight:700;"><?= number_format((float)$ip['weighted_score'], 2) ?> pts</span>
                 </div>
             </div>
@@ -231,7 +234,7 @@ foreach ($kpi as [$label, $val, $icon, $accent, $link]):
                 <span style="font-size:0.62rem;font-weight:700;padding:2px 8px;border-radius:20px;
                              background:<?= $approved ? '#dbeafe' : '#f1f5f9' ?>;
                              color:<?= $approved ? '#1e4d8c' : '#475569' ?>;">
-                    <?= $approved ? 'Approved' : 'Pending' ?>
+                    <?= $approved ? 'Evaluation Complete' : 'Pending' ?>
                 </span>
                 <a href="?page=review_application&id=<?= $ip['application_id'] ?>"
                    style="padding:0.28rem 0.75rem;border-radius:6px;background:#1a3a6b;color:#fff;font-size:0.71rem;font-weight:600;text-decoration:none;">
@@ -251,12 +254,14 @@ foreach ($kpi as [$label, $val, $icon, $accent, $link]):
         <div id="tab-revision" class="ck-panel" style="display:none;padding:0;overflow-y:auto;max-height:290px;">
         <?php if ($revision_apps): foreach ($revision_apps as $rv):
             $wait = (int)$rv['days_waiting'];
+            [$due_label, $due_color, $due_bg] = getEvaluationDeadlineLabel($rv['evaluation_deadline'] ?? null);
         ?>
         <div style="display:flex;align-items:center;gap:0.85rem;padding:0.75rem 1rem;border-bottom:1px solid #f8fafc;">
             <div style="flex:1;min-width:0;">
                 <div style="font-weight:600;font-size:0.83rem;color:#0f172a;"><?= htmlspecialchars(formatDisplayName($rv)) ?></div>
                 <div style="font-size:0.7rem;color:#94a3b8;margin-top:1px;">
-                    <?= sanitize($rv['campus_name']) ?> · <span style="color:<?= $wait >= 5 ? '#dc2626' : '#64748b' ?>;font-weight:600;"><?= $wait ?>d waiting</span>
+                    <?= sanitize($rv['campus_name']) ?> | <span style="color:<?= $wait >= 5 ? '#dc2626' : '#64748b' ?>;font-weight:600;"><?= $wait ?>d waiting</span>
+                    <span style="background:<?= $due_bg ?>;color:<?= $due_color ?>;border:1px solid #e2e8f0;border-radius:20px;padding:1px 7px;font-size:0.65rem;font-weight:700;"><?= htmlspecialchars($due_label) ?></span>
                 </div>
             </div>
             <a href="?page=review_application&id=<?= $rv['application_id'] ?>"
@@ -276,12 +281,14 @@ foreach ($kpi as [$label, $val, $icon, $accent, $link]):
         <div id="tab-queue" class="ck-panel" style="display:none;padding:0;overflow-y:auto;max-height:290px;">
         <?php if ($queue): foreach ($queue as $q):
             $wait = (int)$q['days_waiting'];
+            [$due_label, $due_color, $due_bg] = getEvaluationDeadlineLabel($q['evaluation_deadline'] ?? null);
         ?>
         <div style="display:flex;align-items:center;gap:0.85rem;padding:0.75rem 1rem;border-bottom:1px solid #f8fafc;">
             <div style="flex:1;min-width:0;">
                 <div style="font-weight:600;font-size:0.83rem;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"><?= htmlspecialchars(formatDisplayName($q)) ?></div>
                 <div style="font-size:0.7rem;color:#94a3b8;margin-top:1px;">
-                    <?= sanitize($q['campus_name']) ?> · <span style="color:<?= $wait >= 5 ? '#dc2626' : '#64748b' ?>;font-weight:600;"><?= $wait ?>d waiting</span>
+                    <?= sanitize($q['campus_name']) ?> | <span style="color:<?= $wait >= 5 ? '#dc2626' : '#64748b' ?>;font-weight:600;"><?= $wait ?>d waiting</span>
+                    <span style="background:<?= $due_bg ?>;color:<?= $due_color ?>;border:1px solid #e2e8f0;border-radius:20px;padding:1px 7px;font-size:0.65rem;font-weight:700;"><?= htmlspecialchars($due_label) ?></span>
                 </div>
             </div>
             <a href="?page=review_application&id=<?= $q['application_id'] ?>"
@@ -326,7 +333,7 @@ foreach ($kpi as [$label, $val, $icon, $accent, $link]):
             <td style="padding:0.65rem 1rem;font-weight:600;color:#0f172a;"><?= htmlspecialchars(formatDisplayName($r)) ?></td>
             <td style="padding:0.65rem 0.75rem;color:#64748b;"><?= sanitize($r['campus_name']) ?></td>
             <td style="padding:0.65rem 0.75rem;"><?= statusBadge($r['status']) ?></td>
-            <td style="padding:0.65rem 0.75rem;color:#94a3b8;font-size:0.75rem;"><?= $r['reviewed_at'] ? date('M d, Y', strtotime($r['reviewed_at'])) : '—' ?></td>
+            <td style="padding:0.65rem 0.75rem;color:#94a3b8;font-size:0.75rem;"><?= $r['reviewed_at'] ? date('M d, Y', strtotime($r['reviewed_at'])) : ' - ' ?></td>
         </tr>
         <?php endforeach; ?>
         </tbody>
@@ -364,7 +371,7 @@ document.addEventListener('DOMContentLoaded', function () {
     new Chart(document.getElementById('myReviewChart'), {
         type: 'doughnut',
         data: {
-            labels: ['Approved', 'Other'],
+            labels: ['Complete', 'Other'],
             datasets: [{
                 data: [<?= $total_approved ?>, <?= max(0, $total_reviewed - $total_approved) ?>],
                 backgroundColor: ['#1a3a6b', '#e2e8f0'],
@@ -391,7 +398,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 ctx.font = 'bold 1.2rem sans-serif'; ctx.fillStyle = '#0f172a';
                 ctx.fillText(pct + '%', cx, cy - 6);
                 ctx.font = '0.6rem sans-serif'; ctx.fillStyle = '#94a3b8';
-                ctx.fillText('approved', cx, cy + 9);
+                ctx.fillText('complete', cx, cy + 9);
                 ctx.restore();
             }
         }]

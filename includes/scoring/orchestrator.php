@@ -1,6 +1,6 @@
 <?php
 /**
- * SFRMIS Master Orchestrator — DBM-CHED Joint Circular No. 01, s. 2026
+ * SFRMIS Master Orchestrator  -  DBM-CHED Joint Circular No. 01, s. 2026
  *
  * Validates eligibility, routes to KRA scorer modules, aggregates results,
  * runs auto sub-rank / quota gate / committee routing, and persists flags.
@@ -37,7 +37,7 @@ class Orchestrator
      */
     public static function run(\PDO $pdo, int $application_id): array
     {
-        // ── Load application + faculty ───────────────────────────────
+        // -- Load application + faculty -------------------------------
         $app = $pdo->prepare("
             SELECT a.*, u.rank AS current_rank, u.user_id AS faculty_user_id,
                    u.first_name, u.last_name, u.employee_id,
@@ -58,7 +58,7 @@ class Orchestrator
         $current_rank   = $app['current_rank'] ?? '';
         $faculty_id     = (int)$app['faculty_user_id'];
 
-        // ── Load all KRA submissions ─────────────────────────────────
+        // -- Load all KRA submissions ---------------------------------
         $subs_stmt = $pdo->prepare("
             SELECT s.*, GROUP_CONCAT(ef.original_filename ORDER BY ef.evidence_id SEPARATOR '|||') AS evidence_names
             FROM kra_submissions s
@@ -75,16 +75,16 @@ class Orchestrator
             $subs_by_cat[$s['kra_category']][] = $s;
         }
 
-    // ── STEP 1: Evaluation period check ──────────────────────────
+    // -- STEP 1: Evaluation period check --------------------------
     $eval_ok = self::checkEvaluationPeriod($app);
 
-        // ── STEP 2: Double-counting check ────────────────────────────
+        // -- STEP 2: Double-counting check ----------------------------
         $double_flags = self::checkDoubleCounting($all_subs);
 
-        // ── STEP 3: Admin duty exclusion ─────────────────────────────
+        // -- STEP 3: Admin duty exclusion -----------------------------
         $admin_flags = self::checkAdminDutyExclusion($subs_by_cat);
 
-        // ── STEP 4: Professor gate (hard gate — runs BEFORE scoring) ─
+        // -- STEP 4: Professor gate (hard gate  -  runs BEFORE scoring) -
         $prof_gate = AutoSubrank::professorGate($pdo, $app, $subs_by_cat);
 
         $notes = [];
@@ -96,18 +96,18 @@ class Orchestrator
                      ]));
         }
 
-        // ── STEP 4: Route to KRA scorers ────────────────────────────
+        // -- STEP 4: Route to KRA scorers ----------------------------
         KRA1Scorer::setPdo($pdo);   // provides DB access for CONFIG_MENTORSHIP_POINTS lookup
         $kra1 = KRA1Scorer::score($subs_by_cat['Instruction'] ?? []);
         $kra2 = KRA2Scorer::score($subs_by_cat['Research'] ?? []);
         $kra3 = KRA3Scorer::score($subs_by_cat['Extension'] ?? []);
         $kra4 = KRA4Scorer::score($subs_by_cat['Professional Development'] ?? []);
 
-        // ── STEP 5: Aggregate ────────────────────────────────────────
+        // -- STEP 5: Aggregate ----------------------------------------
         $grand_total = $kra1['subtotal'] + $kra2['subtotal'] + $kra3['subtotal'] + $kra4['subtotal'];
         // No global cap per JC01 s.2026 (GRAND_TOTAL_CAP = null/unset)
 
-        // ── STEP 5a: PASS 1 — weighted score using the CURRENT rank's weights ──
+        // -- STEP 5a: PASS 1  -  weighted score using the CURRENT rank's weights --
         // Look up the bracket, get the initial increment, apply it to get the
         // Initial Reclassified Rank. This pass never sees Auto Sub Rank.
         $weights_pass1          = self::getKraWeights($current_rank);
@@ -121,7 +121,7 @@ class Orchestrator
         $sub_rank_increment_pass1 = self::getSubRankIncrement($weighted_score_pass1);
         $initial_reclassified_rank = self::computeTargetRank($current_rank, $sub_rank_increment_pass1);
 
-        // ── STEP 5b: PASS 2 — recompute using the Initial Reclassified Rank's
+        // -- STEP 5b: PASS 2  -  recompute using the Initial Reclassified Rank's
         // weight row (NOT the original rank), since the weight table itself
         // changes once the rank changes. A different result vs. Pass 1 is
         // expected, not an error.
@@ -138,17 +138,17 @@ class Orchestrator
         // the Initial Reclassified Rank (not the original current rank).
         $reclassified_rank = self::computeTargetRank($initial_reclassified_rank, $sub_rank_increment_pass2);
 
-        // ── STEP 6: Auto Sub Rank ─────────────────────────────────────
+        // -- STEP 6: Auto Sub Rank -------------------------------------
         // Score-based increment (Steps 5a/5b above) and Auto Sub Rank
         // (doctorate or prestigious award) are two SEPARATE mechanisms that
-        // both apply — never alternatives, and never blended into the Pass 1
+        // both apply  -  never alternatives, and never blended into the Pass 1
         // / Pass 2 weight lookups above. They are added together only here,
         // on top of the already-final Reclassified Rank, to get Final Rank.
         $auto_subrank = AutoSubrank::compute($pdo, $app, $kra4, $weighted_score_pass2, $sub_rank_increment_pass2);
         $auto_bump    = $auto_subrank['bonus_increment']; // +0, +1, or +2
         $final_rank   = self::computeTargetRank($reclassified_rank, $auto_bump);
 
-        // ── Back-compat aliases for the rest of this method / DB persistence.
+        // -- Back-compat aliases for the rest of this method / DB persistence.
         // "weighted_score" / "sub_rank_increment" / "target_rank" keep meaning
         // Pass 2's fully-recomputed values and the combined final rank, so
         // existing callers/columns that read these keys are unaffected.
@@ -156,7 +156,7 @@ class Orchestrator
         $sub_rank_increment  = $sub_rank_increment_pass2 + $auto_bump;
         $bumped_base_rank    = $reclassified_rank; // kept for the code below that still references this name
 
-        // ── STEP 7: Self-assessment summary ─────────────────────────
+        // -- STEP 7: Self-assessment summary -------------------------
         $pending_docs   = array_merge(
             $kra1['pending_documentation'],
             $kra2['pending_documentation'],
@@ -170,22 +170,22 @@ class Orchestrator
             $kra4['config_incomplete']
         );
 
-        // ── Quota gate — EXCLUDED from CHMSU-FT pilot scope ──────────
+        // -- Quota gate  -  EXCLUDED from CHMSU-FT pilot scope ----------
         // Real-time quota tracking requires external HR/plantilla data not available
         // in this system. The quota gate is flagged but not enforced.
         $quota_gate = ['applies' => false, 'rank_requested' => '', 'cohort_status' => 'excluded',
                        'note' => 'Real-time quota tracking excluded from CHMSU-FT pilot scope. '
                                . 'Phase II Professorial Accreditation and IEC/REC/EAC/NCC governance '
-                               . 'approvals are outside this system\'s boundary.'];
+                               . 'final decisions are outside this system\'s boundary.'];
 
-        // ── Committee routing ────────────────────────────────────────
+        // -- Committee routing ----------------------------------------
         // target_rank = Final Rank = Reclassified Rank + Auto Sub Rank, already
         // computed above as $final_rank (Step 4 of the spec: the two mechanisms
         // are added together, not blended into the two-pass weight lookups).
         $target_rank     = $final_rank;
         $committee_route = AutoSubrank::routeCommittee($target_rank);
 
-        // ── Persist results to DB ─────────────────────────────────────
+        // -- Persist results to DB -------------------------------------
         $workflow = self::mapWorkflowStatus($app['status'] ?? 'draft');
 
         self::persist($pdo, $application_id, [
@@ -201,12 +201,12 @@ class Orchestrator
             'orchestrator_flags'    => json_encode(array_merge($admin_flags, $notes)),
         ]);
 
-        // ── Document completeness check ──────────────────────────────
-        // Presence/upload check only — no authenticity or accuracy verification.
+        // -- Document completeness check ------------------------------
+        // Presence/upload check only  -  no authenticity or accuracy verification.
         // Those are performed exclusively by human checkers.
         $doc_check = self::checkDocumentCompleteness($pdo, $application_id, $all_subs);
 
-        // ── Pre-evaluation summary ────────────────────────────────────
+        // -- Pre-evaluation summary ------------------------------------
         $pre_eval = [
             'eligible'           => $eval_ok && !($prof_gate['applies'] && $prof_gate['disqualified']),
             'documents_present'  => $doc_check['all_present'],
@@ -215,7 +215,7 @@ class Orchestrator
             'completeness_pct'   => $doc_check['completeness_pct'],
         ];
 
-        // ── ISS structured data ───────────────────────────────────────
+        // -- ISS structured data ---------------------------------------
         $faculty_for_iss = $app;
         $faculty_for_iss['full_name']    = trim(($app['first_name'] ?? '') . ' ' . ($app['last_name'] ?? ''));
         $faculty_for_iss['current_rank'] = $current_rank;
@@ -239,7 +239,7 @@ class Orchestrator
             'sub_rank_increment'           => $sub_rank_increment,
         ]);
 
-        // ── OSS row (this applicant's contribution to the OSS) ────────
+        // -- OSS row (this applicant's contribution to the OSS) --------
         $oss_row = [
             'applicant_id'       => $application_id,
             'full_name'          => $app['first_name'] . ' ' . $app['last_name'],
@@ -253,7 +253,7 @@ class Orchestrator
             'committee_route'    => $committee_route,
         ];
 
-        // ── Return full schema ───────────────────────────────────────
+        // -- Return full schema ---------------------------------------
         return [
             'applicant_id'          => $application_id,
             'evaluation_period_ok'  => $eval_ok,
@@ -288,7 +288,7 @@ class Orchestrator
         ];
     }
 
-    // ── STEP 1: Evaluation period ────────────────────────────────────
+    // -- STEP 1: Evaluation period ------------------------------------
     private static function checkEvaluationPeriod(array $app): bool
     {
         // Cycle timing is controlled entirely by the admin opening/closing the cycle.
@@ -296,15 +296,15 @@ class Orchestrator
         // 'open' and 'closed' are both valid (closed means submissions ended,
         // not that the evaluation is void). Only 'archived' cycles are out-of-scope.
         $cycle_status = $app['cycle_status'] ?? null;
-        if ($cycle_status === null) return true;        // no cycle attached — assume ok
+        if ($cycle_status === null) return true;        // no cycle attached  -  assume ok
         return $cycle_status !== 'archived';
     }
 
-    // ── STEP 2: Double-counting check ───────────────────────────────
+    // -- STEP 2: Double-counting check -------------------------------
     private static function checkDoubleCounting(array $all_subs): array
     {
         $flags = [];
-        // Build map of (criterion_key or title) → [categories seen in]
+        // Build map of (criterion_key or title) -> [categories seen in]
         $title_map = [];
         foreach ($all_subs as $s) {
             $parts = explode('|||', $s['remarks'] ?? '');
@@ -326,20 +326,20 @@ class Orchestrator
             $has_kra2 = in_array('Research', $unique_cats);
             $has_kra4 = in_array('Professional Development', $unique_cats);
             if (count($unique_cats) === 2 && $has_kra2 && $has_kra4) {
-                // This is the allowed exception — do not flag, just note it
+                // This is the allowed exception  -  do not flag, just note it
                 continue;
             }
 
             $flags[] = [
                 'title'      => $title,
                 'categories' => $unique_cats,
-                'message'    => "Document appears in multiple KRA categories — flag for manual review before scoring proceeds.",
+                'message'    => "Document appears in multiple KRA categories  -  flag for manual review before scoring proceeds.",
             ];
         }
         return $flags;
     }
 
-    // ── STEP 3: Admin duty exclusion ────────────────────────────────
+    // -- STEP 3: Admin duty exclusion --------------------------------
     private static function checkAdminDutyExclusion(array $subs_by_cat): array
     {
         $flags = [];
@@ -366,14 +366,14 @@ class Orchestrator
                 if (str_contains($subtype, 'd-') || str_contains($subtype, 'bonus') || str_contains($subtype, 'designation')) continue;
                 // MOA/linkage entries linked to admin role need checker review
                 if (str_contains($subtype, 'moa') || str_contains($subtype, 'linkage')) {
-                    $flags[] = 'Admin duty exclusion: MOA/linkage entry may be part of administrative designation — flag for checker review. Submission ID ' . $s['submission_id'];
+                    $flags[] = 'Admin duty exclusion: MOA/linkage entry may be part of administrative designation  -  flag for evaluator review. Submission ID ' . $s['submission_id'];
                 }
             }
         }
         return $flags;
     }
 
-    // ── KRA weights by rank ──────────────────────────────────────────
+    // -- KRA weights by rank ------------------------------------------
     public static function getKraWeights(string $rank): array
     {
         if (preg_match('/^Instructor/i', $rank))
@@ -389,7 +389,7 @@ class Orchestrator
         return ['Instruction'=>0.60,'Research'=>0.10,'Extension'=>0.20,'Professional Development'=>0.10];
     }
 
-    // ── Sub-rank brackets per JC01 ───────────────────────────────────
+    // -- Sub-rank brackets per JC01 -----------------------------------
     public static function getSubRankIncrement(float $score): int
     {
         if ($score >= 91) return 6;
@@ -401,7 +401,7 @@ class Orchestrator
         return 0;
     }
 
-    // ── Target rank after increment ──────────────────────────────────
+    // -- Target rank after increment ----------------------------------
     public static function computeTargetRank(string $current_rank, int $increment): string
     {
         if ($increment === 0) return $current_rank;
@@ -412,21 +412,21 @@ class Orchestrator
         return $all_ranks[$target_idx];
     }
 
-    // ── workflow_status mapping ───────────────────────────────────────
+    // -- workflow_status mapping ---------------------------------------
     /**
      * Maps the DB application status to the 4-state workflow_status enum
      * defined in the CHMSU-FT pilot system spec.
      *
-     * draft                 → 'draft'
-     * submitted             → 'local_checker_review'
-     * under_review          → 'local_checker_review'
-     * needs_revision        → 'local_checker_review'
-     * rejected (returned)   → 'local_checker_review'  (awaiting resubmission)
-     * talisay_review        → 'main_checker_review'
-     * approved              → 'completed'
-     * reclassified          → 'completed'
-     * admin_rejected        → 'completed'             (final decision)
-     * edit_requested        → 'local_checker_review'
+     * draft                 -> 'draft'
+     * submitted             -> 'local_checker_review'
+     * under_review          -> 'local_checker_review'
+     * needs_revision        -> 'local_checker_review'
+     * rejected (returned)   -> 'local_checker_review'  (awaiting resubmission)
+     * talisay_review        -> 'main_checker_review'
+     * approved              -> 'completed'
+     * reclassified          -> 'completed'
+     * admin_rejected        -> 'completed'             (final decision)
+     * edit_requested        -> 'local_checker_review'
      */
     public static function mapWorkflowStatus(string $db_status): string
     {
@@ -445,7 +445,7 @@ class Orchestrator
         };
     }
 
-    // ── Document completeness check ────────────────────────────────────
+    // -- Document completeness check ------------------------------------
     /**
      * Checks whether all KRA submissions have at least one evidence file attached.
      * Constraint: presence check only. Authenticity, validity, and accuracy
@@ -491,11 +491,11 @@ class Orchestrator
             'entries_missing_files' => count($missing),
             'missing_entries'       => $missing,
             'completeness_pct'      => $pct,
-            'note'                  => 'Presence check only — authenticity and accuracy are verified exclusively by human checkers. No automated document parsing or AI verification is performed.',
+            'note'                  => 'Presence check only - authenticity and accuracy are reviewed exclusively by human evaluators. No automated document parsing or AI review is performed.',
         ];
     }
 
-    // ── ISS structured data builder ────────────────────────────────────
+    // -- ISS structured data builder ------------------------------------
     /**
      * Builds the Individual Score Sheet data structure.
      * This mirrors the PDF ISS but as a machine-readable array so it can
@@ -526,7 +526,7 @@ class Orchestrator
                            'crit_a' => $kra4['criterion_a'], 'crit_b' => $kra4['criterion_b'],
                            'crit_c' => $kra4['criterion_c'], 'crit_d_bonus' => $kra4['criterion_d_bonus']],
             ],
-            // Capped raw points per KRA — this is what Table 1 of the ISS PDF
+            // Capped raw points per KRA  -  this is what Table 1 of the ISS PDF
             // multiplies against each rank tier's weight row.
             'kra_raw_points' => [
                 'kra1' => $kra1['subtotal'],
@@ -536,7 +536,7 @@ class Orchestrator
             ],
             'grand_total'        => $kra1['subtotal'] + $kra2['subtotal'] + $kra3['subtotal'] + $kra4['subtotal'],
 
-            // ── Rank-weighted scoring / reclassification breakdown ──────────
+            // -- Rank-weighted scoring / reclassification breakdown ----------
             // Table 1 uses getKraWeights() for every tier (see kra_pdf_render.php);
             // the fields below are the specific values for THIS applicant's
             // two-pass recompute and Auto Sub Rank combination (Steps 1-4 of spec).
@@ -575,7 +575,7 @@ class Orchestrator
         ];
     }
 
-    // ── Persist orchestrator results ─────────────────────────────────
+    // -- Persist orchestrator results ---------------------------------
     private static function persist(\PDO $pdo, int $app_id, array $data): void
     {
         // Ensure columns exist (runtime migration)

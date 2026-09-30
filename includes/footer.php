@@ -1,6 +1,6 @@
     <footer class="mt-5 py-4 text-center">
         <p style="margin:0;font-size:0.78rem;color:#94a3b8;">
-            &copy; <?= date('Y') ?> SUCFRMS &mdash; SUC Faculty Reclassification Management System. All rights reserved.
+            &copy; <?= date('Y') ?> SUCFRMS - SUC Faculty Reclassification Management System. All rights reserved.
         </p>
     </footer>
 
@@ -51,7 +51,7 @@
     <script src="assets/js/analytics.js"></script>
     <?php renderConfirmModal(); ?>
 
-    <!-- ── Help FAB (floating bottom-right) ── -->
+    <!-- -- Help FAB (floating bottom-right) -- -->
     <?php if (isset($_SESSION['user_id'])): ?>
     <div style="position:fixed;bottom:1.5rem;right:1.5rem;z-index:100001;">
 
@@ -79,7 +79,7 @@
             $is_checker  = in_array($role, ['checker','talisay_checker']);
             $is_admin    = $role === 'admin';
 
-            // ── Section label helper ─────────────────────────────
+            // -- Section label helper -----------------------------
             $sectionLabel = function(string $label) {
                 return '<div style="padding:0.4rem 1rem 0.25rem;font-size:0.62rem;font-weight:700;
                                     text-transform:uppercase;letter-spacing:0.07em;color:#94a3b8;">'
@@ -114,7 +114,7 @@
             <?php echo $item('index.php?page=apply', 'bi-pencil-square', 'My KRA Entries'); ?>
             <?php endif; ?>
             <?php if ($is_checker): ?>
-            <?php echo $sectionLabel('Checker'); ?>
+            <?php echo $sectionLabel('Evaluator'); ?>
             <?php echo $item('index.php?page=review_queue', 'bi-inbox', 'Review Queue'); ?>
             <?php echo $item('index.php?page=all_applications', 'bi-files', 'All Applications'); ?>
             <?php endif; ?>
@@ -156,7 +156,7 @@
     </script>
     <?php endif; ?>
 
-    <!-- ── Help Tooltip System ── -->
+    <!-- -- Help Tooltip System -- -->
     <style>
     .help-btn {
         display: inline-flex;

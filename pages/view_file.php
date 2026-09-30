@@ -20,7 +20,7 @@ if (empty($file) || strpos($file, '..') !== false || strpos($file, "\0") !== fal
 }
 
 // Security: only allow files from known upload directories
-if (!preg_match('#^(uploads/(kra[1-4]|avatars|pre_eval/kra[1-4])|includes/apply/uploads/kra[1-4])/.+$#', $file)) {
+if (!preg_match('#^(uploads/(kra[1-4]|avatars|appeals|pre_eval/kra[1-4])|includes/apply/uploads/kra[1-4])/.+$#', $file)) {
     http_response_code(400);
     die('Invalid file path');
 }
@@ -46,7 +46,7 @@ $finfo = finfo_open(FILEINFO_MIME_TYPE);
 $mime  = finfo_file($finfo, $real);
 finfo_close($finfo);
 
-// Look up original filename from DB (kra_evidence_files or pre_eval_files)
+// Look up original filename from DB (kra_evidence_files, pre_eval_files, or appeal_attachments)
 $original_filename = basename($real); // fallback to stored name
 $rel_file = str_replace(DIRECTORY_SEPARATOR, '/', ltrim(str_replace($root, '', $real), DIRECTORY_SEPARATOR));
 try {
@@ -57,6 +57,11 @@ try {
         $fn2 = $pdo->prepare("SELECT original_filename FROM pre_eval_files WHERE file_path = ? LIMIT 1");
         $fn2->execute([$rel_file]);
         $row = $fn2->fetch();
+    }
+    if (!$row) {
+        $fn3 = $pdo->prepare("SELECT original_filename FROM appeal_attachments WHERE file_path = ? LIMIT 1");
+        $fn3->execute([$rel_file]);
+        $row = $fn3->fetch();
     }
     if ($row && !empty($row['original_filename'])) {
         $original_filename = $row['original_filename'];
@@ -100,7 +105,7 @@ if (isset($_GET['raw'])) {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title><?= htmlspecialchars($fname) ?> &mdash; Evidence Viewer</title>
+  <title><?= htmlspecialchars($fname) ?> - Evidence Viewer</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -180,7 +185,7 @@ if (isset($_GET['raw'])) {
     </div>
     <div class="toolbar-actions">
       <a href="<?= htmlspecialchars($img_url) ?>" download="<?= htmlspecialchars($fname) ?>" class="btn btn-secondary">
-        â¬‡ Download
+        Download Download
       </a>
       <button onclick="window.close()" class="btn btn-secondary">&#10005; Close</button>
     </div>

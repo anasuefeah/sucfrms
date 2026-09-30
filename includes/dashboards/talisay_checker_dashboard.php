@@ -13,14 +13,14 @@ $my_approved_stmt->execute([$uid]); $my_approved = (int)$my_approved_stmt->fetch
 $total_reviewed_stmt = $pdo->prepare("SELECT COUNT(*) FROM application_checker_reviews WHERE checker_id = ? AND decision IN ('approved','rejected')");
 $total_reviewed_stmt->execute([$uid]); $total_reviewed = (int)$total_reviewed_stmt->fetchColumn();
 
-$queue_stmt = $pdo->prepare("SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, u.rank, COALESCE(camp.campus_name,'—') AS campus_name, c.cycle_name, DATEDIFF(NOW(), a.submitted_at) AS days_waiting FROM applications a JOIN users u ON a.user_id = u.user_id LEFT JOIN campuses camp ON u.campus_id = camp.campus_id JOIN cycles c ON a.cycle_id = c.cycle_id WHERE a.status = 'talisay_review' AND a.user_id != ? AND NOT EXISTS (SELECT 1 FROM application_checker_reviews r WHERE r.application_id = a.application_id AND r.checker_id = ? AND r.decision IN ('approved','rejected')) ORDER BY a.submitted_at ASC LIMIT 10");
+$queue_stmt = $pdo->prepare("SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, u.rank, COALESCE(camp.campus_name,' - ') AS campus_name, c.cycle_name, c.evaluation_deadline, DATEDIFF(NOW(), a.submitted_at) AS days_waiting FROM applications a JOIN users u ON a.user_id = u.user_id LEFT JOIN campuses camp ON u.campus_id = camp.campus_id JOIN cycles c ON a.cycle_id = c.cycle_id WHERE a.status = 'talisay_review' AND a.user_id != ? AND NOT EXISTS (SELECT 1 FROM application_checker_reviews r WHERE r.application_id = a.application_id AND r.checker_id = ? AND r.decision IN ('approved','rejected')) ORDER BY a.submitted_at ASC LIMIT 10");
 $queue_stmt->execute([$uid, $uid]); $queue = $queue_stmt->fetchAll();
 
-$recent_stmt = $pdo->prepare("SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, COALESCE(camp.campus_name,'—') AS campus_name FROM applications a JOIN users u ON a.user_id = u.user_id LEFT JOIN campuses camp ON u.campus_id = camp.campus_id JOIN application_checker_reviews r ON r.application_id = a.application_id AND r.checker_id = ? WHERE r.decision IN ('approved','rejected') ORDER BY r.decided_at DESC LIMIT 5");
+$recent_stmt = $pdo->prepare("SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, COALESCE(camp.campus_name,' - ') AS campus_name FROM applications a JOIN users u ON a.user_id = u.user_id LEFT JOIN campuses camp ON u.campus_id = camp.campus_id JOIN application_checker_reviews r ON r.application_id = a.application_id AND r.checker_id = ? WHERE r.decision IN ('approved','rejected') ORDER BY r.decided_at DESC LIMIT 5");
 $recent_stmt->execute([$uid]); $recent = $recent_stmt->fetchAll();
 ?>
 
-<!-- ── Header ── -->
+<!-- -- Header -- -->
 <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;margin-bottom:1.5rem;">
     <div style="display:flex;align-items:center;gap:1rem;">
         <?php
@@ -44,12 +44,12 @@ $recent_stmt->execute([$uid]); $recent = $recent_stmt->fetchAll();
         <?php endif; ?>
         <div>
             <div style="font-size:1.05rem;font-weight:700;color:#1a3a6b;">
-                Welcome back, <?= sanitize($_SESSION['full_name'] ?? 'Talisay Checker') ?>
+                Welcome back, <?= sanitize($_SESSION['full_name'] ?? 'ITC Evaluator') ?>
             </div>
             <div style="font-size:0.75rem;color:#94a3b8;margin-top:3px;display:flex;align-items:center;gap:0.5rem;">
                 <i class="bi bi-calendar3"></i><?= date('l, F j, Y') ?>
                 &nbsp;&middot;&nbsp;
-                <span style="background:#f0f4fb;color:#1a3a6b;font-size:0.65rem;font-weight:700;border-radius:4px;padding:1px 7px;border:1px solid #dbeafe;">Talisay Checker</span>
+                <span style="background:#f0f4fb;color:#1a3a6b;font-size:0.65rem;font-weight:700;border-radius:4px;padding:1px 7px;border:1px solid #dbeafe;">ITC Evaluator</span>
             </div>
         </div>
     </div>
@@ -68,7 +68,7 @@ $recent_stmt->execute([$uid]); $recent = $recent_stmt->fetchAll();
     </a>
 </div>
 
-<!-- ── Cycle banner ── -->
+<!-- -- Cycle banner -- -->
 <?php if ($cycle): ?>
 <div style="background:linear-gradient(135deg,#4c1d95,#1a3a6b);border-radius:14px;
             padding:1.1rem 1.4rem;margin-bottom:1.5rem;
@@ -96,12 +96,12 @@ $recent_stmt->execute([$uid]); $recent = $recent_stmt->fetchAll();
 </div>
 <?php endif; ?>
 
-<!-- ── KPI Cards ── -->
+<!-- -- KPI Cards -- -->
 <?php
 $kpi = [
     ['Awaiting My Review',  $pending,             'bi-inbox-fill',          $pending>0?'#334155':'#94a3b8',   $pending>0?'#f8fafc':'#f8fafc', $pending>0?'#e2e8f0':'#e2e8f0', '?page=review_queue'],
-    ['In Talisay Review',   $total_talisay_review,'bi-building-up',         '#1a3a6b','#f0f4fb','#dbeafe', '?page=review_queue'],
-    ['I Approved',          $my_approved,         'bi-check-circle-fill',   '#1e4d8c','#eff6ff','#dbeafe', '?page=review_queue'],
+    ['In ITC Review',       $total_talisay_review,'bi-building-up',         '#1a3a6b','#f0f4fb','#dbeafe', '?page=review_queue'],
+    ['Evaluation Complete', $my_approved,         'bi-check-circle-fill',   '#1e4d8c','#eff6ff','#dbeafe', '?page=review_queue'],
     ['Total Reviewed',      $total_reviewed,      'bi-check2-all',          '#1e4d8c','#eff6ff','#dbeafe', '?page=review_queue'],
 ];
 ?>
@@ -133,12 +133,12 @@ $kpi = [
 <?php endforeach; ?>
 </div>
 
-<!-- ── Pending queue ── -->
+<!-- -- Pending queue -- -->
 <div class="neon-card" style="padding:0;overflow:hidden;margin-bottom:1.25rem;">
     <div style="padding:0.9rem 1.25rem;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;justify-content:space-between;">
         <div>
             <div style="font-weight:700;color:#1a3a6b;font-size:0.88rem;">
-                <i class="bi bi-inbox-fill me-2" style="color:#1a3a6b;"></i>Pending Talisay Review
+                <i class="bi bi-inbox-fill me-2" style="color:#1a3a6b;"></i>Pending ITC Review
             </div>
             <div style="font-size:0.7rem;color:#94a3b8;margin-top:1px;">Applications awaiting your final decision</div>
         </div>
@@ -160,6 +160,7 @@ $kpi = [
             $wait=(int)$q['days_waiting']; $wc=$wait>=5?'#334155':($wait>=3?'#475569':'#64748b');
             $score=(float)$q['weighted_score'];
             $sc=$score>=71?'#1e4d8c':($score>=41?'#1e4d8c':'#334155');
+            [$due_label, $due_color, $due_bg] = getEvaluationDeadlineLabel($q['evaluation_deadline'] ?? null);
         ?>
         <tr style="border-bottom:1px solid #f0f4fb;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background=''">
             <td style="padding:0.75rem 1rem;">
@@ -174,6 +175,9 @@ $kpi = [
             </td>
             <td style="padding:0.75rem 0.75rem;">
                 <span style="color:<?= $wc ?>;font-weight:600;font-size:0.82rem;"><?= $wait ?>d</span>
+                <div style="margin-top:0.2rem;">
+                    <span style="background:<?= $due_bg ?>;color:<?= $due_color ?>;border:1px solid #e2e8f0;border-radius:20px;padding:1px 7px;font-size:0.65rem;font-weight:700;"><?= htmlspecialchars($due_label) ?></span>
+                </div>
             </td>
             <td style="padding:0.75rem 0.75rem;text-align:center;">
                 <a href="?page=review_application&id=<?= $q['application_id'] ?>"
@@ -189,13 +193,13 @@ $kpi = [
     <?php else: ?>
     <div style="text-align:center;padding:3rem;color:#94a3b8;">
         <i class="bi bi-check2-circle" style="font-size:2.5rem;color:#dbeafe;display:block;margin-bottom:0.75rem;"></i>
-        <div style="font-size:0.88rem;font-weight:600;">No applications pending Talisay review.</div>
-        <div style="font-size:0.78rem;margin-top:0.3rem;">Check back when campus checkers forward applications.</div>
+        <div style="font-size:0.88rem;font-weight:600;">No applications pending ITC review.</div>
+        <div style="font-size:0.78rem;margin-top:0.3rem;">Check back when the Subcommittee forwards applications.</div>
     </div>
     <?php endif; ?>
 </div>
 
-<!-- ── Recently reviewed ── -->
+<!-- -- Recently reviewed -- -->
 <?php if ($recent): ?>
 <div class="neon-card" style="padding:0;overflow:hidden;">
     <div style="padding:0.9rem 1.25rem;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;justify-content:space-between;">

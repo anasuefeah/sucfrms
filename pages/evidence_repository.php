@@ -1,6 +1,6 @@
 <?php
 /**
- * Evidence Repository — standalone page.
+ * Evidence Repository  -  standalone page.
  * Faculty store, organise, and manage evidence files across all KRA categories.
  */
 if (session_status() === PHP_SESSION_NONE) session_start();
@@ -12,9 +12,7 @@ if (($_SESSION['role'] ?? '') !== 'faculty') {
     header('Location: ../index.php'); exit;
 }
 
-if (!empty($_SESSION['force_pw_change'])) {
-    header('Location: change_password.php'); exit;
-}
+unset($_SESSION['force_pw_change']);
 
 $uid = $_SESSION['user_id'];
 
@@ -55,13 +53,13 @@ $total_size  = array_sum(array_column($stats, 'total_size'));
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>SUCFRMS — Evidence Repository</title>
+<title>SUCFRMS  -  Evidence Repository</title>
 <link href="../assets/vendor/bootstrap-icons/bootstrap-icons.min.css" rel="stylesheet">
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
 body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f3f8;min-height:100vh;color:#1e293b;}
 
-/* ── Navbar ── */
+/* -- Navbar -- */
 .pnav{background:#1a3a6b;height:52px;display:flex;align-items:center;padding:0 24px;gap:10px;position:sticky;top:0;z-index:200;box-shadow:0 2px 8px rgba(0,0,0,.2);}
 .pnav-logo{width:30px;height:30px;border-radius:50%;object-fit:cover;border:1.5px solid rgba(255,255,255,.3);flex-shrink:0;}
 .pnav-title{color:#fff;font-size:.85rem;font-weight:600;flex:1;letter-spacing:.01em;}
@@ -81,14 +79,14 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f3f8;min-height:100vh
 .pnav-dd-body a.out{color:#dc2626;}
 .pnav-dd-body a.out i{color:#dc2626;}
 
-/* ── Page wrapper ── */
+/* -- Page wrapper -- */
 .pg{max-width:1100px;margin:0 auto;padding:24px 20px 60px;}
 
-/* ── Back link ── */
+/* -- Back link -- */
 .back-link{display:inline-flex;align-items:center;gap:6px;font-size:.8rem;color:#475569;text-decoration:none;margin-bottom:16px;transition:color .15s;}
 .back-link:hover{color:#1a3a6b;}
 
-/* ── Page header ── */
+/* -- Page header -- */
 .page-hd{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;margin-bottom:20px;}
 .page-hd-left{display:flex;align-items:center;gap:12px;}
 .page-hd-icon{width:44px;height:44px;border-radius:10px;background:#1a3a6b;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
@@ -96,13 +94,13 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f3f8;min-height:100vh
 .page-hd h2{font-size:1.15rem;font-weight:700;color:#0f172a;margin:0;}
 .page-hd p{font-size:.78rem;color:#64748b;margin:2px 0 0;}
 
-/* ── Primary button ── */
+/* -- Primary button -- */
 .btn-p{display:inline-flex;align-items:center;gap:6px;background:#1a3a6b;color:#fff;border:none;border-radius:8px;padding:.5rem 1.1rem;font-size:.82rem;font-weight:600;cursor:pointer;transition:background .15s;}
 .btn-p:hover{background:#1e4d8c;}
 .btn-s{display:inline-flex;align-items:center;gap:5px;background:#f1f5f9;color:#475569;border:1px solid #e2e8f0;border-radius:7px;padding:.4rem .9rem;font-size:.8rem;font-weight:500;cursor:pointer;transition:background .15s;}
 .btn-s:hover{background:#e2e8f0;}
 
-/* ── KRA stat cards ── */
+/* -- KRA stat cards -- */
 .stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:20px;}
 .stat-card{display:flex;align-items:center;gap:12px;background:#fff;border:2px solid transparent;border-radius:10px;padding:12px 14px;cursor:pointer;transition:all .15s;box-shadow:0 1px 4px rgba(0,0,0,.06);}
 .stat-card:hover{border-color:var(--cc);box-shadow:0 2px 10px rgba(0,0,0,.1);}
@@ -112,7 +110,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f3f8;min-height:100vh
 .stat-count{font-size:1.2rem;font-weight:800;color:var(--cc);line-height:1;}
 .stat-size{font-size:.68rem;color:#94a3b8;margin-top:1px;}
 
-/* ── Upload panel ── */
+/* -- Upload panel -- */
 .upload-panel{display:none;background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:20px;margin-bottom:20px;box-shadow:0 2px 10px rgba(0,0,0,.06);}
 .upload-panel.show{display:block;}
 .uf-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;}
@@ -128,7 +126,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f3f8;min-height:100vh
 .prog-bar{display:none;height:5px;background:#e2e8f0;border-radius:3px;overflow:hidden;margin-bottom:8px;}
 .prog-fill{height:100%;background:#1a3a6b;width:0%;transition:width .3s;}
 
-/* ── Toolbar ── */
+/* -- Toolbar -- */
 .toolbar{display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;}
 .search-box{display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:.4rem .85rem;flex:1;min-width:200px;}
 .search-box i{color:#94a3b8;font-size:.9rem;flex-shrink:0;}
@@ -139,7 +137,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f3f8;min-height:100vh
 .view-btn:hover{background:#f1f5f9;}
 .view-btn.active{background:#1a3a6b;color:#fff;}
 
-/* ── Grid view ── */
+/* -- Grid view -- */
 .grid-view{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:14px;margin-bottom:16px;}
 .file-card-grid{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:16px 14px 12px;position:relative;transition:box-shadow .15s;display:flex;flex-direction:column;gap:6px;}
 .file-card-grid:hover{box-shadow:0 4px 16px rgba(0,0,0,.1);}
@@ -151,7 +149,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f3f8;min-height:100vh
 .fc-cat-badge{display:inline-block;font-size:.65rem;font-weight:700;padding:2px 8px;border-radius:20px;border:1px solid;width:fit-content;}
 .fc-meta{font-size:.68rem;color:#94a3b8;}
 
-/* ── List view ── */
+/* -- List view -- */
 .list-view{display:flex;flex-direction:column;gap:6px;margin-bottom:16px;}
 .file-card-list{display:flex;align-items:center;gap:12px;background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;transition:box-shadow .15s;}
 .file-card-list:hover{box-shadow:0 2px 8px rgba(0,0,0,.08);}
@@ -164,13 +162,13 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f3f8;min-height:100vh
 .fl-del{background:none;border:none;color:#94a3b8;cursor:pointer;font-size:.9rem;padding:.3rem;border-radius:6px;transition:all .15s;flex-shrink:0;}
 .fl-del:hover{color:#dc2626;background:#fef2f2;}
 
-/* ── Empty state ── */
+/* -- Empty state -- */
 .empty-state{text-align:center;padding:60px 20px;color:#94a3b8;}
 .empty-state i{font-size:3rem;display:block;margin-bottom:12px;}
 .empty-state h3{font-size:.95rem;font-weight:600;color:#475569;margin-bottom:6px;}
 .empty-state p{font-size:.82rem;}
 
-/* ── Status bar ── */
+/* -- Status bar -- */
 .status-bar{display:flex;justify-content:space-between;font-size:.72rem;color:#94a3b8;padding-top:8px;border-top:1px solid #e2e8f0;}
 </style>
 </head>
@@ -214,7 +212,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f3f8;min-height:100vh
             <div class="page-hd-icon"><i class="bi bi-folder2-open"></i></div>
             <div>
                 <h2>Evidence Repository</h2>
-                <p>Store and organise your KRA evidence files. <?= $total_files ?> file<?= $total_files!=1?'s':'' ?> · <?= $total_size>1048576?number_format($total_size/1048576,1).'MB':round($total_size/1024).'KB' ?> used</p>
+                <p>Store and organise your KRA evidence files. <?= $total_files ?> file<?= $total_files!=1?'s':'' ?> | <?= $total_size>1048576?number_format($total_size/1048576,1).'MB':round($total_size/1024).'KB' ?> used</p>
             </div>
         </div>
         <button class="btn-p" onclick="toggleUpload()">
@@ -225,10 +223,10 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f3f8;min-height:100vh
     <!-- KRA stat cards (act as filters) -->
     <?php
     $cat_cfg = [
-        'Instruction'              => ['label'=>'KRA I — Instruction',        'color'=>'#1e4d8c', 'bg'=>'#eff6ff'],
-        'Research'                 => ['label'=>'KRA II — Research',           'color'=>'#1a3a6b', 'bg'=>'#f0f4fb'],
-        'Extension'                => ['label'=>'KRA III — Extension',         'color'=>'#1e4d8c', 'bg'=>'#f0fdfa'],
-        'Professional Development' => ['label'=>'KRA IV — Prof. Development',  'color'=>'#475569', 'bg'=>'#f8fafc'],
+        'Instruction'              => ['label'=>'KRA I  -  Instruction',        'color'=>'#1e4d8c', 'bg'=>'#eff6ff'],
+        'Research'                 => ['label'=>'KRA II  -  Research',           'color'=>'#1a3a6b', 'bg'=>'#f0f4fb'],
+        'Extension'                => ['label'=>'KRA III  -  Extension',         'color'=>'#1e4d8c', 'bg'=>'#f0fdfa'],
+        'Professional Development' => ['label'=>'KRA IV  -  Prof. Development',  'color'=>'#475569', 'bg'=>'#f8fafc'],
         'Auto Sub Rank'            => ['label'=>'Auto Sub Rank',               'color'=>'#1a3a6b', 'bg'=>'#f0f4fb'],
         'Position Requirements'    => ['label'=>'Position Requirements',       'color'=>'#475569', 'bg'=>'#f8fafc'],
     ];
@@ -274,7 +272,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f3f8;min-height:100vh
              ondrop="handleDrop(event)">
             <i class="bi bi-cloud-arrow-up"></i>
             <p>Click or drag & drop files here</p>
-            <small>PDF, JPG, PNG, DOC, DOCX — max 50MB each</small>
+            <small>PDF, JPG, PNG, DOC, DOCX  -  max 50MB each</small>
         </div>
         <input type="file" id="fileInput" style="display:none" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx" multiple onchange="uploadFiles(this.files)">
         <div class="prog-bar" id="progBar"><div class="prog-fill" id="progFill"></div></div>
@@ -292,8 +290,8 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f3f8;min-height:100vh
         <select class="sort-sel" onchange="doSort(this.value)">
             <option value="date_desc">Newest first</option>
             <option value="date_asc">Oldest first</option>
-            <option value="name_asc">Name A–Z</option>
-            <option value="name_desc">Name Z–A</option>
+            <option value="name_asc">Name A-Z</option>
+            <option value="name_desc">Name Z-A</option>
             <option value="size_desc">Largest first</option>
         </select>
         <div class="view-btns">
@@ -472,7 +470,7 @@ function gridCard(f){
             <div class="fc-name" title="${esc(f.original_filename)}">${esc(truncate(f.original_filename,28))}</div>
         </a>
         <span class="fc-cat-badge" style="color:${cc};background:${cbg};border-color:${cc}44;">${cl}</span>
-        <div class="fc-meta">${sz} · ${d}</div>
+        <div class="fc-meta">${sz} | ${d}</div>
         ${f.description?`<div class="fc-meta" style="font-style:italic;">${esc(f.description)}</div>`:''}
     </div>`;
 }
@@ -488,7 +486,7 @@ function listRow(f){
         <div class="fl-icon" style="color:${cc}">${ic}</div>
         <div class="fl-info">
             <a href="../${esc(f.file_path)}" target="_blank" class="fl-name" title="${esc(f.original_filename)}">${esc(f.original_filename)}</a>
-            <div class="fl-meta">${sz} · ${d}${f.description?' · <em>'+esc(f.description)+'</em>':''}</div>
+            <div class="fl-meta">${sz} | ${d}${f.description?' | <em>'+esc(f.description)+'</em>':''}</div>
         </div>
         <span class="fl-cat" style="color:${cc};background:${cbg};border-color:${cc}44;">${cl}</span>
         <button class="fl-del" onclick="delFile(${f.file_id})" title="Delete"><i class="bi bi-trash"></i></button>
@@ -523,7 +521,7 @@ function fileIcon(name){
     return '<i class="bi bi-file-earmark"></i>';
 }
 function fmtSize(b){ return b>1048576?(b/1048576).toFixed(1)+'MB':Math.round(b/1024)+'KB'; }
-function truncate(s,n){ return s.length>n?s.slice(0,n)+'…':s; }
+function truncate(s,n){ return s.length>n?s.slice(0,n)+'...':s; }
 function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
 // Init

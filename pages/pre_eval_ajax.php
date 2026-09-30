@@ -5,16 +5,16 @@
  * Scoring uses the SAME KRA scorer modules as the official reclassification
  * pipeline (KRA1Scorer, KRA2Scorer, KRA3Scorer, KRA4Scorer).
  * The only difference from a live application run is that checkers are not
- * involved — no professor gate, no double-counting enforcement, no evaluation-
- * period exclusion. Everything else — point values, sub-caps, income tiers,
- * co-contributor halving, ISR/CSR cross-validation, auto sub-rank triggers —
+ * involved  -  no professor gate, no double-counting enforcement, no evaluation-
+ * period exclusion. Everything else  -  point values, sub-caps, income tiers,
+ * co-contributor halving, ISR/CSR cross-validation, auto sub-rank triggers  - 
  * must be identical so faculty get an accurate preview.
  */
 if (session_status() === PHP_SESSION_NONE) session_start();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/functions.php';
 
-// ── Load official KRA scorer modules ──────────────────────────
+// -- Load official KRA scorer modules --------------------------
 $_scoring_dir = __DIR__ . '/../includes/scoring/';
 foreach (['kra1_scorer.php','kra2_scorer.php','kra3_scorer.php','kra4_scorer.php'] as $_sf) {
     if (file_exists($_scoring_dir . $_sf)) require_once $_scoring_dir . $_sf;
@@ -36,7 +36,7 @@ header('Content-Type: application/json');
 $uid    = $_SESSION['user_id'];
 $action = $_REQUEST['action'] ?? '';
 
-// ── Runtime migration ──────────────────────────────────────────
+// -- Runtime migration ------------------------------------------
 try { $pdo->query("SELECT entry_id FROM pre_eval_entries LIMIT 1"); }
 catch (\Exception $e) {
     $pdo->exec("CREATE TABLE IF NOT EXISTS pre_eval_entries (
@@ -69,7 +69,7 @@ catch (\Exception $e) {
 }
 
 /**
- * Per-entry score computation — delegates to the official scorer modules,
+ * Per-entry score computation  -  delegates to the official scorer modules,
  * exactly as kra_ajax.php does for live applications.
  * This replaces the old divergent inline peComputeScore() function.
  */
@@ -107,10 +107,10 @@ function peComputeScore(string $cat, string $remarks): float {
  * full orchestrator DB run.
  *
  * Returns the same shape as computeWeightedScore() plus:
- *   kra1_detail, kra2_detail, kra3_detail, kra4_detail  — per-criterion breakdowns
- *   has_doctorate, has_national_award                   — trigger flags
- *   auto_subrank                                        — bump detection result
- *   pending_documentation, config_incomplete            — scorer flags
+ *   kra1_detail, kra2_detail, kra3_detail, kra4_detail   -  per-criterion breakdowns
+ *   has_doctorate, has_national_award                    -  trigger flags
+ *   auto_subrank                                         -  bump detection result
+ *   pending_documentation, config_incomplete             -  scorer flags
  */
 function peAggregateScores(\PDO $pdo, int $uid, string $rank): array
 {
@@ -135,7 +135,7 @@ function peAggregateScores(\PDO $pdo, int $uid, string $rank): array
         $by_cat[$row['kra_category']][] = $row;
     }
 
-    // ── Run official scorers ────────────────────────────────────
+    // -- Run official scorers ------------------------------------
     $kra1 = class_exists('\Scoring\KRA1Scorer')
         ? \Scoring\KRA1Scorer::score($by_cat['Instruction'] ?? [])
         : ['subtotal'=>0,'criterion_a'=>0,'criterion_b'=>0,'criterion_c'=>0,'cap'=>100,'pending_documentation'=>[],'config_incomplete'=>[]];
@@ -152,10 +152,10 @@ function peAggregateScores(\PDO $pdo, int $uid, string $rank): array
         ? \Scoring\KRA4Scorer::score($by_cat['Professional Development'] ?? [])
         : ['subtotal'=>0,'criterion_a'=>0,'criterion_b'=>0,'criterion_c'=>0,'criterion_d_bonus'=>0,'cap'=>100,'has_doctorate'=>false,'has_national_award'=>false,'pending_documentation'=>[],'config_incomplete'=>[]];
 
-    // ── Auto sub-rank trigger detection ────────────────────────
+    // -- Auto sub-rank trigger detection ------------------------
     // Mirrors AutoSubrank::compute() logic without the DB-heavy first-doctorate
     // historical check (pre-eval cannot know prior approved applications).
-    // We give benefit of the doubt — if a doctorate is present, treat as first.
+    // We give benefit of the doubt  -  if a doctorate is present, treat as first.
     $has_doctorate    = $kra4['has_doctorate']     ?? false;
     $has_nat_award    = $kra4['has_national_award'] ?? false;
 
@@ -189,7 +189,7 @@ function peAggregateScores(\PDO $pdo, int $uid, string $rank): array
         $auto_triggers[] = 'award';
     }
 
-    // ── Apply auto bump to base rank, then recompute weighted score ─
+    // -- Apply auto bump to base rank, then recompute weighted score -
     $bumped_rank   = $rank;
     if ($auto_bump > 0) {
         $all_ranks   = facultyRanks();
@@ -210,14 +210,14 @@ function peAggregateScores(\PDO $pdo, int $uid, string $rank): array
     );
     $sub_rank     = getSubRankIncrement($weighted);
 
-    // ── Potential rank ──────────────────────────────────────────
+    // -- Potential rank ------------------------------------------
     $all_ranks    = facultyRanks();
     $bumped_idx   = array_search($bumped_rank, $all_ranks);
     $target_rank  = ($bumped_idx !== false && $sub_rank > 0)
         ? $all_ranks[min($bumped_idx + $sub_rank, count($all_ranks) - 1)]
         : ($sub_rank === 0 ? $rank : $bumped_rank);
 
-    // ── Merge pending/config flags ──────────────────────────────
+    // -- Merge pending/config flags ------------------------------
     $pending  = array_merge(
         $kra1['pending_documentation'],
         $kra2['pending_documentation'],
@@ -291,7 +291,7 @@ function peAggregateScores(\PDO $pdo, int $uid, string $rank): array
     ];
 }
 
-// ── Helper: upload a file ──────────────────────────────────────
+// -- Helper: upload a file --------------------------------------
 function peUploadFile(array $file, string $cat, int $kra_num): array|false {
     if ($file['error'] !== 0) return false;
     $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
@@ -310,8 +310,8 @@ function peUploadFile(array $file, string $cat, int $kra_num): array|false {
 
 $valid_cats = ['Instruction','Research','Extension','Professional Development'];
 
-// ── Eligibility gate (server-side enforcement) ────────────────
-// Presence check only — authenticity verified by human checkers.
+// -- Eligibility gate (server-side enforcement) ----------------
+// Presence check only  -  authenticity verified by human checkers.
 function checkPreEvalEligibility(\PDO $pdo, int $uid): array {
     $fac = $pdo->prepare("SELECT rank FROM users WHERE user_id=?");
     $fac->execute([$uid]);
@@ -328,7 +328,7 @@ function checkPreEvalEligibility(\PDO $pdo, int $uid): array {
     return ['eligible'=>true,'reason'=>''];
 }
 
-// ── GET: entries ───────────────────────────────────────────────
+// -- GET: entries -----------------------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && $action === 'get_entries') {
     $cat = $_GET['cat'] ?? '';
     if (!in_array($cat, $valid_cats)) { echo json_encode(['ok'=>false,'error'=>'Invalid category']); exit; }
@@ -373,7 +373,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && $action === 'get_entries') {
     exit;
 }
 
-// ── GET: all repository files (for cross-KRA repository) ──────
+// -- GET: all repository files (for cross-KRA repository) ------
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && $action === 'get_all_files') {
     $stmt = $pdo->prepare("SELECT file_id, kra_category, original_filename, file_path, file_size_bytes, description, uploaded_at FROM pre_eval_files WHERE user_id=? AND entry_id IS NULL ORDER BY uploaded_at DESC");
     $stmt->execute([$uid]);
@@ -381,7 +381,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && $action === 'get_all_files') {
     exit;
 }
 
-// ── GET: repository files ──────────────────────────────────────
+// -- GET: repository files --------------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && $action === 'get_files') {
     $cat = $_GET['cat'] ?? '';
     if (!in_array($cat, $valid_cats)) { echo json_encode(['ok'=>false,'error'=>'Invalid category']); exit; }
@@ -391,19 +391,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && $action === 'get_files') {
     exit;
 }
 
-// ── GET: score summary ─────────────────────────────────────────
+// -- GET: score summary -----------------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && $action === 'get_score') {
     $rankRow = $pdo->prepare("SELECT rank FROM users WHERE user_id=?");
     $rankRow->execute([$uid]);
     $rank = (string)($rankRow->fetchColumn() ?? '');
 
-    // ── Use the official scorer modules with proper sub-caps ───
-    // This is the same logic the orchestrator uses — the only difference
+    // -- Use the official scorer modules with proper sub-caps ---
+    // This is the same logic the orchestrator uses  -  the only difference
     // is checker involvement (none here) and the first-doctorate DB check
     // (benefit of the doubt given; noted in auto_subrank.note).
     $agg = peAggregateScores($pdo, $uid, $rank);
 
-    // ── Document completeness — presence only ──────────────────
+    // -- Document completeness  -  presence only ------------------
     $total_entries_q = $pdo->prepare("SELECT COUNT(*) FROM pre_eval_entries WHERE user_id=?");
     $total_entries_q->execute([$uid]);
     $total_entries = (int)$total_entries_q->fetchColumn();
@@ -414,7 +414,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && $action === 'get_score') {
     $with_files_q->execute([$uid]);
     $with_files = (int)$with_files_q->fetchColumn();
 
-    // ── Workflow status — advisory only at pre-eval stage ──────
+    // -- Workflow status  -  advisory only at pre-eval stage ------
     $workflow = 'draft';
     $active_cycle = getActiveCycle($pdo);
     if ($active_cycle) {
@@ -473,7 +473,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && $action === 'get_score') {
     exit;
 }
 
-// ── POST: preview score ────────────────────────────────────────
+// -- POST: preview score ----------------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'preview_score') {
     $cat     = $_POST['cat']     ?? '';
     $remarks = trim($_POST['remarks'] ?? '');
@@ -482,7 +482,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'preview_score') {
     exit;
 }
 
-// ── POST: save entry ───────────────────────────────────────────
+// -- POST: save entry -------------------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'save_entry') {
     $gate = checkPreEvalEligibility($pdo, $uid);
     if (!$gate['eligible']) {
@@ -534,7 +534,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'save_entry') {
     exit;
 }
 
-// ── POST: attach file to existing entry ───────────────────────
+// -- POST: attach file to existing entry -----------------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'attach_file') {
     $entry_id = intval($_POST['entry_id'] ?? 0);
     $cat      = $_POST['cat'] ?? '';
@@ -558,7 +558,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'attach_file') {
     exit;
 }
 
-// ── POST: delete entry ─────────────────────────────────────────
+// -- POST: delete entry -----------------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'delete_entry') {
     $eid = intval($_POST['entry_id'] ?? 0);
     $chk = $pdo->prepare("SELECT entry_id FROM pre_eval_entries WHERE entry_id=? AND user_id=?");
@@ -576,7 +576,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'delete_entry') {
     exit;
 }
 
-// ── POST: delete ALL entries for one category (Reset tab) ──────
+// -- POST: delete ALL entries for one category (Reset tab) ------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'delete_all_entries') {
     $cat = $_POST['cat'] ?? '';
     $valid_cats_del = ['Instruction','Research','Extension','Professional Development'];
@@ -603,7 +603,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'delete_all_entries') {
     exit;
 }
 
-// ── POST: delete file ──────────────────────────────────────────
+// -- POST: delete file ------------------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'delete_file') {
     $fid = intval($_POST['file_id'] ?? 0);
     $row = $pdo->prepare("SELECT file_path FROM pre_eval_files WHERE file_id=? AND user_id=?");
@@ -618,7 +618,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'delete_file') {
     exit;
 }
 
-// ── POST: upload to repository ─────────────────────────────────
+// -- POST: upload to repository ---------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'upload_repo') {
     $cat  = $_POST['cat']  ?? '';
     $desc = trim($_POST['description'] ?? '');

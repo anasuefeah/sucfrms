@@ -10,7 +10,7 @@ if (session_status() === PHP_SESSION_NONE) session_start();
 require_once __DIR__ . '/../../config/db.php';
 require_once __DIR__ . '/../../includes/functions.php';
 
-// â”€â”€ Runtime migration: create kra_evidence_files if missing â”€â”€
+// -- Runtime migration: create kra_evidence_files if missing --
 try { $pdo->query("SELECT evidence_id FROM kra_evidence_files LIMIT 1"); }
 catch (\Exception $e) {
     $pdo->exec("CREATE TABLE IF NOT EXISTS kra_evidence_files (
@@ -26,7 +26,7 @@ catch (\Exception $e) {
     )");
 }
 
-// â”€â”€ File caps per KRA category â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- File caps per KRA category --------------------------------
 const FILE_CAPS = [
     'Instruction'              => 10,
     'Research'                 => 10,
@@ -37,7 +37,7 @@ const FILE_CAPS = [
 /**
  * Server-side KRA score computation from remarks string.
  * Routes through JC01 s.2026 KRA scorer modules.
- * Faculty cannot self-assign scores — all points are derived from structured data.
+ * Faculty cannot self-assign scores  -  all points are derived from structured data.
  */
 function computeKraScore(string $category, string $remarks): float {
     // Load scorer modules if not already loaded
@@ -76,7 +76,7 @@ function computeKraScore(string $category, string $remarks): float {
     }
 }
 
-// ── Legacy fallback scorers (retained for safety) ────────────────────────────
+// -- Legacy fallback scorers (retained for safety) ----------------------------
 function kraRemarksAreMeaningful(string $category, string $remarks): bool {
     $parts = array_map('trim', explode('|||', $remarks));
     $type = $parts[0] ?? '';
@@ -88,6 +88,9 @@ function kraRemarksAreMeaningful(string $category, string $remarks): bool {
         }
         if ($type === 'A-set-sef-sem') {
             return ($parts[3] ?? '') !== '' && ($parts[4] ?? '') !== '';
+        }
+        if ($type === 'A-set-sem' || $type === 'A-sef-sem') {
+            return ($parts[1] ?? '') !== '' && ($parts[2] ?? '') !== '' && ($parts[3] ?? '') !== '';
         }
         return str_starts_with($type, 'B|') || str_starts_with($type, 'C|')
             || in_array($type, ['B-material', 'C-thesis', 'C-mentor'], true);
@@ -129,6 +132,14 @@ function _legacyKRA1Score(string $remarks): float {
         $set = min(100, max(0, (float)($p[3] ?? 0)));
         $sef = min(100, max(0, (float)($p[4] ?? 0)));
         return round(($set / 100) * 36 + ($sef / 100) * 24, 2);
+    }
+    if ($ct === 'A-set-sem') {
+        $set = min(100, max(0, (float)($p[3] ?? 0)));
+        return round(($set / 100) * 36, 2);
+    }
+    if ($ct === 'A-sef-sem') {
+        $sef = min(100, max(0, (float)($p[3] ?? 0)));
+        return round(($sef / 100) * 24, 2);
     }
     if (str_starts_with($ct, 'B|')) {
         $flat = explode('|', $ct);
@@ -231,7 +242,7 @@ if ($app_id) {
     exit;
 }
 
-// â”€â”€ GET: fetch entries â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- GET: fetch entries ----------------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     $kra_action = $_GET['kra_action'] ?? '';
     if ($kra_action === 'get_entries') {
@@ -262,11 +273,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
     exit;
 }
 
-// â”€â”€ POST: save or delete â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- POST: save or delete --------------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $kra_action = $_POST['kra_action'] ?? '';
 
-    // â”€â”€ Save KRA entry â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // -- Save KRA entry ----------------------------------------
     if ($kra_action === 'save_kra') {
         if ($locked) {
             echo json_encode(['ok' => false, 'error' => 'Application is locked']);
@@ -295,20 +306,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
 
-        // â”€â”€ Server-side score computation (never trust client-sent score) â”€â”€
+        // -- Server-side score computation (never trust client-sent score) --
         if (!kraRemarksAreMeaningful($category, $remarks)) {
             echo json_encode(['ok' => false, 'error' => 'Please select a valid criterion and fill the required score fields before uploading or saving.']);
             exit;
         }
 
+        $remarks_parts = array_map('trim', explode('|||', $remarks));
+        $remarks_type  = $remarks_parts[0] ?? '';
+        if ($category === 'Instruction' && in_array($remarks_type, ['A-set-sem', 'A-sef-sem'], true)) {
+            $period = $remarks_parts[1] ?? '';
+            $sem    = $remarks_parts[2] ?? '';
+            $rating = $remarks_parts[3] ?? '';
+            if (!is_numeric($rating) || (float)$rating < 0 || (float)$rating > 100) {
+                echo json_encode(['ok' => false, 'error' => 'SET/SEF ratings must be percentages from 0 to 100.']);
+                exit;
+            }
+            $dup = $pdo->prepare("SELECT submission_id FROM kra_submissions
+                WHERE application_id=? AND kra_category='Instruction' AND submission_id<>?
+                  AND remarks LIKE ?
+                LIMIT 1");
+            $dup->execute([$app_id, $edit_id, $remarks_type . '|||' . $period . '|||' . $sem . '|||%']);
+            if ($dup->fetchColumn()) {
+                $label = $remarks_type === 'A-sef-sem' ? 'SEF' : 'SET';
+                echo json_encode(['ok' => false, 'error' => "{$label} already has an entry for {$period}, semester {$sem}."]);
+                exit;
+            }
+        }
+
         $points = computeKraScore($category, $remarks);
 
-        // Handle file upload — insert into kra_evidence_files (multiple files per submission)
+        // Handle file upload  -  insert into kra_evidence_files (multiple files per submission)
         $new_file_path = '';
         $new_file_name = '';
         $new_file_size = 0;
 
-        // ── Normalise uploaded files: accept single 'evidence' or array 'evidence[]' ──
+        // -- Normalise uploaded files: accept single 'evidence' or array 'evidence[]' --
         $uploaded_files = [];
         foreach (['evidence', 'evidence[]'] as $field) {
             if (!empty($_FILES[$field]['name'])) {
@@ -364,7 +397,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $new_file_name = $files_to_insert[0]['name'] ?? '';
         $new_file_size = $files_to_insert[0]['size'] ?? 0;
 
-        // No single-entry categories &mdash; all KRAs now support multiple entries
+        // No single-entry categories - all KRAs now support multiple entries
         // (Instruction has Criterion A, B, C as separate rows)
         $single_entry_cats = [];
 
@@ -377,11 +410,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $entry_flagged = ($existing['revision_status'] ?? '') === 'needs_revision';
                 // Reject edits to an already-verified entry unless it is flagged for revision
                 if (!empty($existing['verified']) && !$entry_flagged) {
-                    echo json_encode(['ok' => false, 'error' => 'This entry has already been verified by a checker and can no longer be edited.']);
+                    echo json_encode(['ok' => false, 'error' => 'This entry has already been marked acceptable by an evaluator and can no longer be edited.']);
                     exit;
                 }
                 if ($entry_flagged) {
-                    // Fixing a flagged entry clears the flag immediately — no need to wait for resubmit
+                    // Fixing a flagged entry clears the flag immediately  -  no need to wait for resubmit
                     $pdo->prepare("UPDATE kra_submissions SET computed_points=?, remarks=?, verified=0, submitted_at=NOW(),
                             revision_status='ok', revision_note=NULL, revision_by=NULL, revision_at=NULL
                         WHERE submission_id=?")
@@ -416,7 +449,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($existing) {
                 $entry_flagged = ($existing['revision_status'] ?? '') === 'needs_revision';
                 if (!empty($existing['verified']) && !$entry_flagged) {
-                    echo json_encode(['ok' => false, 'error' => 'This entry has already been verified by a checker and can no longer be edited.']);
+                    echo json_encode(['ok' => false, 'error' => 'This entry has already been marked acceptable by an evaluator and can no longer be edited.']);
                     exit;
                 }
                 if ($entry_flagged) {
@@ -487,7 +520,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
-    // â”€â”€ Delete KRA entry â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // -- Delete KRA entry --------------------------------------
     if ($kra_action === 'delete_kra') {
         if ($locked) {
             echo json_encode(['ok' => false, 'error' => 'Application is locked']);
@@ -521,7 +554,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
-    // â”€â”€ Delete single evidence file â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // -- Delete single evidence file ---------------------------
     if ($kra_action === 'delete_evidence') {
         if ($locked) {
             echo json_encode(['ok' => false, 'error' => 'Application is locked']);
@@ -552,4 +585,3 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 echo json_encode(['ok' => false, 'error' => 'Unknown request']);
-

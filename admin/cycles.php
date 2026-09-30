@@ -1,7 +1,7 @@
 <?php
 if (!isAdmin()) { echo '<div class="alert alert-danger">Access denied.</div>'; return; }
 
-// â”€â”€ Runtime migration: add cycle_id to scoring_criteria if missing â”€â”€
+// -- Runtime migration: add cycle_id to scoring_criteria if missing --
 try { $pdo->query("SELECT cycle_id FROM scoring_criteria LIMIT 1"); }
 catch (\Exception $e) {
     $pdo->exec("ALTER TABLE scoring_criteria ADD COLUMN cycle_id INT DEFAULT NULL AFTER criteria_id");
@@ -16,11 +16,43 @@ catch (\Exception $e) {
     try { $pdo->exec("ALTER TABLE scoring_criteria DROP INDEX uq_cycle_criterion"); } catch (\Exception $e2) {}
     try { $pdo->exec("ALTER TABLE scoring_criteria ADD UNIQUE KEY uq_cycle_pos_criterion (cycle_id, position_rank, criterion_key)"); } catch (\Exception $e2) {}
 }
-// â”€â”€ Runtime migration: add submission_deadline to cycles if missing â”€â”€
+// -- Runtime migration: add submission_deadline to cycles if missing --
 try { $pdo->query("SELECT submission_deadline FROM cycles LIMIT 1"); }
 catch (\Exception $e) {
     $pdo->exec("ALTER TABLE cycles ADD COLUMN submission_deadline DATE DEFAULT NULL AFTER end_date");
 }
+try { $pdo->query("SELECT submission_start_date FROM cycles LIMIT 1"); }
+catch (\Exception $e) {
+    try { $pdo->exec("ALTER TABLE cycles ADD COLUMN submission_start_date DATE DEFAULT NULL AFTER end_date"); } catch (\Exception $e2) {}
+    try { $pdo->exec("UPDATE cycles SET submission_start_date=start_date WHERE submission_start_date IS NULL AND start_date IS NOT NULL"); } catch (\Exception $e2) {}
+}
+try { $pdo->query("SELECT evaluation_deadline FROM cycles LIMIT 1"); }
+catch (\Exception $e) {
+    try { $pdo->exec("ALTER TABLE cycles ADD COLUMN evaluation_deadline DATE DEFAULT NULL AFTER submission_deadline"); } catch (\Exception $e2) {}
+    try { $pdo->exec("UPDATE cycles SET evaluation_deadline=end_date WHERE evaluation_deadline IS NULL AND end_date IS NOT NULL"); } catch (\Exception $e2) {}
+}
+try { $pdo->query("SELECT appeal_deadline FROM cycles LIMIT 1"); }
+catch (\Exception $e) {
+    try { $pdo->exec("ALTER TABLE cycles ADD COLUMN appeal_deadline DATE DEFAULT NULL AFTER evaluation_deadline"); } catch (\Exception $e2) {}
+}
+try {
+    $pdo->exec("CREATE TABLE IF NOT EXISTS cycle_submission_extensions (
+        extension_id INT AUTO_INCREMENT PRIMARY KEY,
+        cycle_id INT NOT NULL,
+        faculty_user_id INT DEFAULT NULL,
+        applies_to_all TINYINT(1) DEFAULT 0,
+        previous_deadline DATE NOT NULL,
+        new_deadline DATE NOT NULL,
+        reason TEXT DEFAULT NULL,
+        extended_by INT DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_cycle_extensions_cycle (cycle_id),
+        INDEX idx_cycle_extensions_faculty (faculty_user_id),
+        FOREIGN KEY (cycle_id) REFERENCES cycles(cycle_id) ON DELETE CASCADE,
+        FOREIGN KEY (faculty_user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+        FOREIGN KEY (extended_by) REFERENCES users(user_id) ON DELETE SET NULL
+    )");
+} catch (\Exception $e) {}
 // Make start_date / end_date nullable so legacy rows without dates don't cause errors
 try { $pdo->exec("ALTER TABLE cycles MODIFY start_date DATE DEFAULT NULL, MODIFY end_date DATE DEFAULT NULL"); } catch (\Exception $e2) {}
 
@@ -28,23 +60,55 @@ $kra_list        = ['Instruction','Research','Extension','Professional Developme
 $active_cycle_id = intval($_GET['cycle_id'] ?? 0);
 $active_position = trim($_GET['position'] ?? ''); // position filter within a cycle
 
-// â”€â”€ POST handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function cycleDateValid(?string $date): bool {
+    if (!$date) return false;
+    $dt = DateTime::createFromFormat('Y-m-d', $date);
+    return $dt && $dt->format('Y-m-d') === $date;
+}
+
+function validateCycleDates(?string $start, ?string $end, ?string $sub_start, ?string $sub_deadline, ?string $eval_deadline, ?string $appeal_deadline = null): array {
+    $errors = [];
+    foreach (['cycle start date'=>$start,'cycle end date'=>$end,'faculty submission start date'=>$sub_start,'faculty submission deadline'=>$sub_deadline,'evaluation deadline'=>$eval_deadline] as $label => $value) {
+        if (!cycleDateValid($value)) $errors[] = ucfirst($label) . ' is required and must be a valid date.';
+    }
+    if ($errors) return $errors;
+    if ($start >= $end) $errors[] = 'Cycle start date must be before the cycle end date.';
+    if ($sub_start < $start || $sub_start > $end) $errors[] = 'Faculty submission start date must fall inside the cycle period.';
+    if ($sub_deadline < $start || $sub_deadline > $end) $errors[] = 'Faculty submission deadline must fall inside the cycle period.';
+    if ($sub_start > $sub_deadline) $errors[] = 'Faculty submission start date cannot be after the submission deadline.';
+    if ($eval_deadline <= $sub_deadline) $errors[] = 'Evaluation deadline must be after the faculty submission deadline.';
+    if ($eval_deadline > $end) $errors[] = 'Evaluation deadline cannot be later than the cycle end date.';
+    if ($appeal_deadline !== null && $appeal_deadline !== '') {
+        if (!cycleDateValid($appeal_deadline)) $errors[] = 'Appeal deadline must be a valid date.';
+        elseif ($appeal_deadline < $sub_deadline || $appeal_deadline > $end) $errors[] = 'Appeal deadline must be after the submission deadline and inside the cycle period.';
+    }
+    return $errors;
+}
+
+// -- POST handlers ---------------------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
 
-    // â”€â”€ Cycle CRUD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // -- Cycle CRUD --------------------------------------------
     if ($action === 'create_cycle') {
         $name       = trim($_POST['cycle_name'] ?? '');
         $start_date = trim($_POST['start_date'] ?? '');
         $end_date   = trim($_POST['end_date'] ?? '');
+        $sub_start  = trim($_POST['submission_start_date'] ?? '');
         $deadline   = trim($_POST['submission_deadline'] ?? '');
-        if ($name && $start_date && $end_date && $deadline) {
+        $eval_deadline = trim($_POST['evaluation_deadline'] ?? '');
+        $appeal_deadline = trim($_POST['appeal_deadline'] ?? '') ?: null;
+        $date_errors = validateCycleDates($start_date, $end_date, $sub_start, $deadline, $eval_deadline, $appeal_deadline);
+        if (!$name) $date_errors[] = 'Cycle name is required.';
+        if ($date_errors) {
+            flashMessage('danger', implode('<br>', array_map('htmlspecialchars', $date_errors)));
+        } else {
             $pdo->exec("UPDATE cycles SET status='closed' WHERE status='open'");
-            $pdo->prepare("INSERT INTO cycles (cycle_name, start_date, end_date, submission_deadline, status, created_by) VALUES (?,?,?,?,'open',?)")
-                ->execute([$name, $start_date, $end_date, $deadline, $_SESSION['user_id']]);
+            $pdo->prepare("INSERT INTO cycles (cycle_name, start_date, end_date, submission_start_date, submission_deadline, evaluation_deadline, appeal_deadline, status, created_by) VALUES (?,?,?,?,?,?,?,'open',?)")
+                ->execute([$name, $start_date, $end_date, $sub_start, $deadline, $eval_deadline, $appeal_deadline, $_SESSION['user_id']]);
             $new_cid = (int)$pdo->lastInsertId();
 
-            // â”€â”€ Auto-seed criteria for ALL positions from global defaults â”€â”€
+            // -- Auto-seed criteria for ALL positions from global defaults --
             $globals = $pdo->query("SELECT * FROM scoring_criteria WHERE cycle_id IS NULL AND position_rank IS NULL ORDER BY criteria_id")->fetchAll();
             if ($globals) {
                 $ins = $pdo->prepare("INSERT IGNORE INTO scoring_criteria (cycle_id, position_rank, kra_category, criterion_key, criterion_label, max_points, weight_pct, description, is_active, updated_by) VALUES (?,?,?,?,?,?,?,?,?,?)");
@@ -62,8 +126,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
 
-            logAudit($pdo, $_SESSION['user_id'], 'Cycle Created', "New cycle: {$name}. Criteria seeded for all 19 positions.");
-            flashMessage('success', "Cycle <strong>{$name}</strong> created. Criteria have been seeded for all positions &mdash; customise each position's criteria below.");
+            logAudit($pdo, $_SESSION['user_id'], 'Cycle Created', "New cycle: {$name}. Period {$start_date} to {$end_date}; submissions {$sub_start} to {$deadline}; evaluation due {$eval_deadline}.");
+            ensureKraAssignmentTable($pdo);
+            $checker_ids = $pdo->query("SELECT user_id FROM users WHERE role='checker' AND status='active'")->fetchAll(PDO::FETCH_COLUMN);
+            if ($checker_ids) {
+                $assign = $pdo->prepare("INSERT IGNORE INTO checker_kra_assignments (cycle_id, checker_id, kra_category, assigned_by) VALUES (?,?,?,?)");
+                foreach ($checker_ids as $checker_id) {
+                    foreach (array_keys(kraAssignmentCategories()) as $kra) {
+                        $assign->execute([$new_cid, (int)$checker_id, $kra, $_SESSION['user_id']]);
+                    }
+                }
+            }
+            flashMessage('success', "Cycle <strong>{$name}</strong> created. Criteria have been seeded for all positions - customise each position's criteria below.");
         }
     } elseif ($action === 'update_status') {
         $cid    = intval($_POST['cycle_id']);
@@ -75,7 +149,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ->execute([$cid]);
             }
             $pdo->prepare("UPDATE cycles SET status=? WHERE cycle_id=?")->execute([$status, $cid]);
-            logAudit($pdo, $_SESSION['user_id'], 'Cycle Status Updated', "Cycle #{$cid} â†’ {$status}");
+            logAudit($pdo, $_SESSION['user_id'], 'Cycle Status Updated', "Cycle #{$cid} -> {$status}");
             flashMessage('success', $status === 'open'
                 ? 'Cycle opened. Any previously open cycle has been closed. Faculty will automatically see this new cycle.'
                 : 'Cycle status updated.');
@@ -86,12 +160,85 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $name     = trim($_POST['cycle_name'] ?? '');
         $start    = trim($_POST['start_date'] ?? '') ?: null;
         $end      = trim($_POST['end_date'] ?? '') ?: null;
+        $sub_start = trim($_POST['submission_start_date'] ?? '') ?: null;
         $deadline = trim($_POST['submission_deadline'] ?? '') ?: null;
-        if ($cid && $name) {
-            $pdo->prepare("UPDATE cycles SET cycle_name=?, start_date=?, end_date=?, submission_deadline=? WHERE cycle_id=?")
-                ->execute([$name, $start, $end, $deadline, $cid]);
-            logAudit($pdo, $_SESSION['user_id'], 'Cycle Updated', "Cycle #{$cid} updated: {$name}");
+        $eval_deadline = trim($_POST['evaluation_deadline'] ?? '') ?: null;
+        $appeal_deadline = trim($_POST['appeal_deadline'] ?? '') ?: null;
+        $date_errors = validateCycleDates($start, $end, $sub_start, $deadline, $eval_deadline, $appeal_deadline);
+        if (!$name) $date_errors[] = 'Cycle name is required.';
+        if ($date_errors) {
+            flashMessage('danger', implode('<br>', array_map('htmlspecialchars', $date_errors)));
+        } elseif ($cid) {
+            $old = $pdo->prepare("SELECT * FROM cycles WHERE cycle_id=?");
+            $old->execute([$cid]);
+            $old = $old->fetch();
+            $pdo->prepare("UPDATE cycles SET cycle_name=?, start_date=?, end_date=?, submission_start_date=?, submission_deadline=?, evaluation_deadline=?, appeal_deadline=? WHERE cycle_id=?")
+                ->execute([$name, $start, $end, $sub_start, $deadline, $eval_deadline, $appeal_deadline, $cid]);
+            $changes = [];
+            foreach (['cycle_name'=>$name,'start_date'=>$start,'end_date'=>$end,'submission_start_date'=>$sub_start,'submission_deadline'=>$deadline,'evaluation_deadline'=>$eval_deadline,'appeal_deadline'=>$appeal_deadline] as $field => $new_val) {
+                if (($old[$field] ?? null) != $new_val) $changes[] = "{$field}: " . ($old[$field] ?? 'blank') . " -> " . ($new_val ?? 'blank');
+            }
+            logAudit($pdo, $_SESSION['user_id'], 'Cycle Updated', "Cycle #{$cid} updated. " . ($changes ? implode('; ', $changes) : 'No date changes.'));
             flashMessage('success', "Cycle <strong>{$name}</strong> updated.");
+        }
+        echo "<script>window.location.href='index.php?page=cycles&cycle_id={$cid}';</script>"; exit;
+    } elseif ($action === 'extend_submission') {
+        $cid = intval($_POST['cycle_id']);
+        $new_deadline = trim($_POST['new_deadline'] ?? '');
+        $scope = $_POST['extension_scope'] ?? 'all';
+        $faculty_ids = array_map('intval', $_POST['faculty_ids'] ?? []);
+        $reason = trim($_POST['extension_reason'] ?? '');
+        $confirm_past_eval = !empty($_POST['confirm_past_eval']);
+        $cycle_row = $pdo->prepare("SELECT * FROM cycles WHERE cycle_id=?");
+        $cycle_row->execute([$cid]);
+        $cycle_row = $cycle_row->fetch();
+        $errors = [];
+        if (!$cycle_row) $errors[] = 'Selected cycle was not found.';
+        if (!cycleDateValid($new_deadline)) $errors[] = 'Extended deadline must be a valid date.';
+        if ($cycle_row && empty($cycle_row['submission_deadline'])) $errors[] = 'Set the current faculty submission deadline before adding an extension.';
+        if ($cycle_row && !empty($cycle_row['end_date']) && $new_deadline > $cycle_row['end_date']) $errors[] = 'Extended deadline cannot be later than the cycle end date.';
+        if ($cycle_row && !empty($cycle_row['evaluation_deadline']) && $new_deadline > $cycle_row['evaluation_deadline'] && !$confirm_past_eval) {
+            $errors[] = 'Extended deadline goes past the evaluation deadline. Confirm this extension or adjust the evaluation deadline first.';
+        }
+        if ($scope === 'selected' && !$faculty_ids) $errors[] = 'Please select at least one faculty member for a selected-faculty extension.';
+        if ($cycle_row && $scope === 'all') {
+            $current_effective = getEffectiveSubmissionDeadline($pdo, $cid, 0, $cycle_row['submission_deadline'] ?? null);
+            if ($current_effective && $new_deadline <= $current_effective) $errors[] = 'Extended deadline must be later than the current effective submission deadline.';
+        } elseif ($cycle_row && $scope === 'selected' && $faculty_ids) {
+            $faculty_ids = array_values(array_unique(array_filter($faculty_ids)));
+            $placeholders = implode(',', array_fill(0, count($faculty_ids), '?'));
+            $valid_fac = $pdo->prepare("SELECT user_id FROM users WHERE role='faculty' AND status='active' AND user_id IN ($placeholders)");
+            $valid_fac->execute($faculty_ids);
+            $faculty_ids = array_map('intval', $valid_fac->fetchAll(PDO::FETCH_COLUMN));
+            if (!$faculty_ids) {
+                $errors[] = 'Please select at least one active faculty account.';
+            } else {
+                foreach ($faculty_ids as $fid) {
+                    $current_effective = getEffectiveSubmissionDeadline($pdo, $cid, $fid, $cycle_row['submission_deadline'] ?? null);
+                    if ($current_effective && $new_deadline <= $current_effective) {
+                        $errors[] = 'Extended deadline must be later than the current effective deadline for every selected faculty member.';
+                        break;
+                    }
+                }
+            }
+        }
+        if ($errors) {
+            flashMessage('danger', implode('<br>', array_map('htmlspecialchars', $errors)));
+        } else {
+            $insert = $pdo->prepare("INSERT INTO cycle_submission_extensions (cycle_id, faculty_user_id, applies_to_all, previous_deadline, new_deadline, reason, extended_by) VALUES (?,?,?,?,?,?,?)");
+            if ($scope === 'all') {
+                $previous_deadline = getEffectiveSubmissionDeadline($pdo, $cid, 0, $cycle_row['submission_deadline'] ?? null);
+                $insert->execute([$cid, null, 1, $previous_deadline, $new_deadline, $reason ?: null, $_SESSION['user_id']]);
+                $who = 'all faculty';
+            } else {
+                foreach ($faculty_ids as $fid) {
+                    $previous_deadline = getEffectiveSubmissionDeadline($pdo, $cid, $fid, $cycle_row['submission_deadline'] ?? null);
+                    $insert->execute([$cid, $fid, 0, $previous_deadline, $new_deadline, $reason ?: null, $_SESSION['user_id']]);
+                }
+                $who = count($faculty_ids) . ' selected faculty';
+            }
+            logAudit($pdo, $_SESSION['user_id'], 'Submission Extended', "Cycle #{$cid}: submission deadline extended from {$cycle_row['submission_deadline']} to {$new_deadline} for {$who}. Reason: " . ($reason ?: 'N/A'));
+            flashMessage('success', "Submission deadline extended to <strong>" . htmlspecialchars(date('M j, Y', strtotime($new_deadline))) . "</strong> for {$who}.");
         }
         echo "<script>window.location.href='index.php?page=cycles&cycle_id={$cid}';</script>"; exit;
     } elseif ($action === 'delete_cycle') {
@@ -99,7 +246,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $has = $pdo->prepare("SELECT COUNT(*) FROM applications WHERE cycle_id=? AND status!='draft'");
         $has->execute([$cid]);
         if ($has->fetchColumn() > 0) {
-            flashMessage('danger', 'Cannot delete &mdash; this cycle has submitted applications.');
+            flashMessage('danger', 'Cannot delete - this cycle has submitted applications.');
             echo "<script>window.location.href='index.php?page=cycles&cycle_id={$cid}';</script>"; exit;
         }
         $pdo->prepare("DELETE FROM cycles WHERE cycle_id=?")->execute([$cid]);
@@ -107,7 +254,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         flashMessage('success', 'Cycle deleted.');
         echo "<script>window.location.href='index.php?page=cycles';</script>"; exit;
 
-    // â”€â”€ Criteria CRUD â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // -- Criteria CRUD -----------------------------------------
     } elseif ($action === 'seed_all_positions') {
         $cid = intval($_POST['target_cycle_id']);
         if ($cid) {
@@ -207,7 +354,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     echo "<script>window.location.href='index.php?page=cycles';</script>"; exit;
 }
 
-// â”€â”€ Load cycles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Load cycles -----------------------------------------------
 $cycles = $pdo->query("
     SELECT c.*, u.full_name,
         (SELECT COUNT(*) FROM applications a WHERE a.cycle_id=c.cycle_id AND a.status!='draft') as applied,
@@ -228,6 +375,33 @@ if (!$active_cycle_id) {
 $panel_cycle = null;
 foreach ($cycles as $cy) {
     if ($cy['cycle_id'] === $active_cycle_id) { $panel_cycle = $cy; break; }
+}
+
+$faculty_for_extension = [];
+$cycle_extensions = [];
+if ($panel_cycle) {
+    try {
+        $faculty_for_extension = $pdo->query("
+            SELECT user_id, first_name, middle_name, last_name, full_name, email
+            FROM users
+            WHERE role='faculty' AND status='active'
+            ORDER BY last_name, first_name, full_name
+        ")->fetchAll();
+    } catch (\Exception $e) {}
+    try {
+        $ext_stmt = $pdo->prepare("
+            SELECT e.*, u.full_name, u.first_name, u.middle_name, u.last_name,
+                   admin.full_name AS extended_by_name
+            FROM cycle_submission_extensions e
+            LEFT JOIN users u ON e.faculty_user_id = u.user_id
+            LEFT JOIN users admin ON e.extended_by = admin.user_id
+            WHERE e.cycle_id = ?
+            ORDER BY e.created_at DESC
+            LIMIT 12
+        ");
+        $ext_stmt->execute([$panel_cycle['cycle_id']]);
+        $cycle_extensions = $ext_stmt->fetchAll();
+    } catch (\Exception $e) {}
 }
 
 // Load criteria for selected cycle (always position-scoped)
@@ -297,7 +471,7 @@ $positions_missing = array_keys(array_filter($position_counts, fn($c) => $c === 
     </button>
 </div>
 
-<!-- Create Cycle (collapsible — closed by default) -->
+<!-- Create Cycle (collapsible  -  closed by default) -->
 <div class="collapse mb-4" id="createCyclePanel">
     <div class="neon-card" style="border-left:4px solid #1e4d8c;padding:0;overflow:hidden;">
         <div style="padding:0.9rem 1.25rem;border-bottom:1px solid #f1f5f9;background:#fff;">
@@ -333,20 +507,36 @@ $positions_missing = array_keys(array_filter($position_counts, fn($c) => $c === 
                     <div class="form-text">The cycle will be set to <strong>Open</strong> immediately. Close it from the status control when submissions end.</div>
                 </div>
 
-                <div class="col-sm-4">
+                <div class="col-sm-6 col-lg-3">
                     <label class="form-label fw-semibold small">Start Date <span class="text-danger">*</span></label>
                     <input type="date" name="start_date" id="cc_start" class="form-control" required style="font-size:0.9rem;">
                 </div>
 
-                <div class="col-sm-4">
+                <div class="col-sm-6 col-lg-3">
                     <label class="form-label fw-semibold small">End Date <span class="text-danger">*</span></label>
                     <input type="date" name="end_date" id="cc_end" class="form-control" required style="font-size:0.9rem;">
                 </div>
 
-                <div class="col-sm-4">
+                <div class="col-sm-6 col-lg-3">
+                    <label class="form-label fw-semibold small">Submission Start <span class="text-danger">*</span></label>
+                    <input type="date" name="submission_start_date" id="cc_sub_start" class="form-control" required style="font-size:0.9rem;">
+                </div>
+
+                <div class="col-sm-6 col-lg-3">
                     <label class="form-label fw-semibold small">Submission Deadline <span class="text-danger">*</span></label>
                     <input type="date" name="submission_deadline" id="cc_deadline" class="form-control" required style="font-size:0.9rem;">
                     <div class="form-text">Faculty cannot submit after this date.</div>
+                </div>
+
+                <div class="col-sm-6 col-lg-3">
+                    <label class="form-label fw-semibold small">Evaluation Deadline <span class="text-danger">*</span></label>
+                    <input type="date" name="evaluation_deadline" id="cc_eval_deadline" class="form-control" required style="font-size:0.9rem;">
+                </div>
+
+                <div class="col-sm-6 col-lg-3">
+                    <label class="form-label fw-semibold small">Appeal Deadline</label>
+                    <input type="date" name="appeal_deadline" id="cc_appeal_deadline" class="form-control" style="font-size:0.9rem;">
+                    <div class="form-text">Optional. Leave blank to allow appeals while the cycle is open.</div>
                 </div>
 
                 <div id="cycle_date_error" style="display:none;" class="col-12">
@@ -395,7 +585,7 @@ $positions_missing = array_keys(array_filter($position_counts, fn($c) => $c === 
                         </div>
                         <div class="small mt-1" style="color:#64748b;">
                             <?php if (!empty($c['start_date']) && !empty($c['end_date'])): ?>
-                            <?= date('Y', strtotime($c['start_date'])) ?> – <?= date('Y', strtotime($c['end_date'])) ?>
+                            <?= date('Y', strtotime($c['start_date'])) ?> - <?= date('Y', strtotime($c['end_date'])) ?>
                             <?php endif; ?>
                         </div>
                         <div class="d-flex gap-1 mt-2 flex-wrap">
@@ -409,7 +599,7 @@ $positions_missing = array_keys(array_filter($position_counts, fn($c) => $c === 
                     </div>
                     <div class="text-end" style="font-size:0.72rem;color:#94a3b8;white-space:nowrap;flex-shrink:0;">
                         <div><?= $c['applied'] ?> applied</div>
-                        <div><?= $c['reclassified'] ?> reclassified</div>
+                        <div><?= $c['reclassified'] ?> evaluation complete</div>
                     </div>
                 </div>
             </a>
@@ -447,29 +637,35 @@ $positions_missing = array_keys(array_filter($position_counts, fn($c) => $c === 
                         <div class="small text-muted mb-1" style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;font-weight:700;">Statistics</div>
                         <div style="font-size:0.85rem;color:#1e293b;">
                             <span class="me-2"><i class="bi bi-file-earmark-text me-1 text-primary"></i><?= $panel_cycle['applied'] ?> applications</span>
-                            <span><i class="bi bi-check-circle me-1 text-success"></i><?= $panel_cycle['reclassified'] ?> reclassified</span>
+                            <span><i class="bi bi-check-circle me-1 text-success"></i><?= $panel_cycle['reclassified'] ?> evaluation complete</span>
                         </div>
                         <div class="text-muted small mt-1">Created by <?= sanitize($panel_cycle['full_name'] ?? 'System') ?></div>
                     </div>
                     <div class="col-sm-6">
                         <div class="small text-muted mb-1" style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;font-weight:700;">Cycle Dates</div>
                         <div style="font-size:0.82rem;color:#1e293b;display:flex;flex-direction:column;gap:2px;">
-                            <?php if (!empty($panel_cycle['start_date'])): ?>
+                            <?php if (!empty($panel_cycle['start_date']) && !empty($panel_cycle['end_date'])): ?>
                             <div><i class="bi bi-calendar-event me-1 text-primary"></i>
-                                <span class="text-muted">Start:</span>
-                                <strong><?= date('M j, Y', strtotime($panel_cycle['start_date'])) ?></strong>
+                                <span class="text-muted">Cycle:</span>
+                                <strong><?= date('M j, Y', strtotime($panel_cycle['start_date'])) ?> to <?= date('M j, Y', strtotime($panel_cycle['end_date'])) ?></strong>
                             </div>
                             <?php endif; ?>
-                            <?php if (!empty($panel_cycle['end_date'])): ?>
-                            <div><i class="bi bi-calendar-x me-1 text-danger"></i>
-                                <span class="text-muted">End:</span>
-                                <strong><?= date('M j, Y', strtotime($panel_cycle['end_date'])) ?></strong>
+                            <div><i class="bi bi-upload me-1 text-primary"></i>
+                                <span class="text-muted">Faculty Submission:</span>
+                                <strong>
+                                    <?= !empty($panel_cycle['submission_start_date']) ? date('M j, Y', strtotime($panel_cycle['submission_start_date'])) : 'N/A' ?>
+                                    to
+                                    <?= !empty($panel_cycle['submission_deadline']) ? date('M j, Y', strtotime($panel_cycle['submission_deadline'])) : 'N/A' ?>
+                                </strong>
                             </div>
-                            <?php endif; ?>
                             <?php if (!empty($panel_cycle['submission_deadline'])): ?>
                             <div><i class="bi bi-clock me-1 text-warning"></i>
-                                <span class="text-muted">Deadline:</span>
-                                <strong><?= date('M j, Y', strtotime($panel_cycle['submission_deadline'])) ?></strong>
+                                <span class="text-muted">Evaluation Due:</span>
+                                <strong><?= !empty($panel_cycle['evaluation_deadline']) ? date('M j, Y', strtotime($panel_cycle['evaluation_deadline'])) : 'N/A' ?></strong>
+                            </div>
+                            <div><i class="bi bi-chat-square-text me-1 text-primary"></i>
+                                <span class="text-muted">Appeals Due:</span>
+                                <strong><?= !empty($panel_cycle['appeal_deadline']) ? date('M j, Y', strtotime($panel_cycle['appeal_deadline'])) : 'While cycle is open' ?></strong>
                             </div>
                             <?php endif; ?>
                             <?php if (empty($panel_cycle['start_date']) && empty($panel_cycle['end_date'])): ?>
@@ -484,6 +680,11 @@ $positions_missing = array_keys(array_filter($position_counts, fn($c) => $c === 
                             onclick="openEditCycleModal()"
                             style="border-radius:6px;">
                         <i class="bi bi-pencil me-1"></i>Edit Cycle
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-primary"
+                            onclick="openExtendSubmissionModal()"
+                            style="border-radius:6px;">
+                        <i class="bi bi-clock-history me-1"></i>Extend Submission
                     </button>
                     <form method="POST" class="d-flex gap-1" id="statusForm_<?= $panel_cycle['cycle_id'] ?>">
                         <input type="hidden" name="action" value="update_status">
@@ -509,6 +710,42 @@ $positions_missing = array_keys(array_filter($position_counts, fn($c) => $c === 
                         </button>
                     </form>
                 </div>
+                <?php if ($cycle_extensions): ?>
+                <div class="mt-3 pt-3" style="border-top:1px solid #f0f4fb;">
+                    <div class="small text-muted mb-2" style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;font-weight:700;">Extension History</div>
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle mb-0" style="font-size:0.8rem;">
+                            <thead>
+                                <tr style="color:#64748b;">
+                                    <th>Scope</th>
+                                    <th>Previous</th>
+                                    <th>New Deadline</th>
+                                    <th>Extended By</th>
+                                    <th>When</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                            <?php foreach ($cycle_extensions as $ext): ?>
+                                <tr>
+                                    <td>
+                                        <?= !empty($ext['applies_to_all'])
+                                            ? 'All Faculty'
+                                            : sanitize(formatDisplayName($ext) ?: ($ext['full_name'] ?? 'Selected Faculty')) ?>
+                                        <?php if (!empty($ext['reason'])): ?>
+                                        <div class="text-muted" style="font-size:0.72rem;"><?= sanitize($ext['reason']) ?></div>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td><?= date('M j, Y', strtotime($ext['previous_deadline'])) ?></td>
+                                    <td><strong><?= date('M j, Y', strtotime($ext['new_deadline'])) ?></strong></td>
+                                    <td><?= sanitize($ext['extended_by_name'] ?? 'Admin') ?></td>
+                                    <td><?= date('M j, Y g:i A', strtotime($ext['created_at'])) ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <?php endif; ?>
             </div>
         </div>
 
@@ -864,21 +1101,37 @@ $positions_missing = array_keys(array_filter($position_counts, fn($c) => $c === 
                     </div>
                 </div>
 
-                <!-- Submission deadline -->
+                <!-- Submission window -->
+                <div style="display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid #f1f5f9;">
+                    <div style="padding:0.75rem 1rem;border-right:1px solid #f1f5f9;">
+                        <div style="font-size:0.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:2px;">
+                            <i class="bi bi-upload me-1 text-primary"></i>Submission Start
+                        </div>
+                        <div id="rv_sub_start" style="font-size:0.85rem;font-weight:600;color:#1e293b;"></div>
+                    </div>
+                    <div style="padding:0.75rem 1rem;">
+                        <div style="font-size:0.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:2px;">
+                            <i class="bi bi-alarm me-1 text-warning"></i>Submission Deadline
+                        </div>
+                        <div id="rv_deadline" style="font-size:0.85rem;font-weight:600;color:#1e293b;"></div>
+                    </div>
+                </div>
+
+                <!-- Evaluation deadline -->
                 <div style="padding:0.75rem 1rem;background:#fffbeb;">
                     <div style="display:flex;align-items:center;gap:0.75rem;">
                         <div style="width:28px;height:28px;border-radius:7px;background:#fef3c7;
                                     display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-                            <i class="bi bi-alarm" style="color:#d97706;font-size:0.8rem;"></i>
+                            <i class="bi bi-clipboard-check" style="color:#d97706;font-size:0.8rem;"></i>
                         </div>
                         <div style="flex:1;">
-                            <div style="font-size:0.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">Submission Deadline</div>
+                            <div style="font-size:0.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">Evaluation Deadline</div>
                             <div style="display:flex;align-items:center;gap:0.75rem;margin-top:2px;flex-wrap:wrap;">
-                                <span id="rv_deadline" style="font-size:0.88rem;font-weight:700;color:#0f172a;"></span>
+                                <span id="rv_eval_deadline" style="font-size:0.88rem;font-weight:700;color:#0f172a;"></span>
                                 <span id="rv_deadline_note" style="font-size:0.72rem;font-weight:600;"></span>
                             </div>
                             <div style="font-size:0.68rem;color:#92400e;margin-top:3px;">
-                                Faculty will not be able to submit applications after this date.
+                                Evaluators and trackers use this date for due status labels.
                             </div>
                         </div>
                     </div>
@@ -961,20 +1214,35 @@ $positions_missing = array_keys(array_filter($position_counts, fn($c) => $c === 
                        value="<?= htmlspecialchars($panel_cycle['cycle_name'] ?? '') ?>">
             </div>
             <div class="row g-3 mb-3">
-                <div class="col-sm-4">
-                    <label class="form-label fw-semibold small">Start Date</label>
-                    <input type="date" name="start_date" id="ec_start" class="form-control"
+                <div class="col-sm-6">
+                    <label class="form-label fw-semibold small">Start Date <span class="text-danger">*</span></label>
+                    <input type="date" name="start_date" id="ec_start" class="form-control" required
                            value="<?= htmlspecialchars($panel_cycle['start_date'] ?? '') ?>">
                 </div>
-                <div class="col-sm-4">
-                    <label class="form-label fw-semibold small">End Date</label>
-                    <input type="date" name="end_date" id="ec_end" class="form-control"
+                <div class="col-sm-6">
+                    <label class="form-label fw-semibold small">End Date <span class="text-danger">*</span></label>
+                    <input type="date" name="end_date" id="ec_end" class="form-control" required
                            value="<?= htmlspecialchars($panel_cycle['end_date'] ?? '') ?>">
                 </div>
-                <div class="col-sm-4">
-                    <label class="form-label fw-semibold small">Submission Deadline</label>
-                    <input type="date" name="submission_deadline" id="ec_deadline" class="form-control"
+                <div class="col-sm-6">
+                    <label class="form-label fw-semibold small">Submission Start <span class="text-danger">*</span></label>
+                    <input type="date" name="submission_start_date" id="ec_sub_start" class="form-control" required
+                           value="<?= htmlspecialchars($panel_cycle['submission_start_date'] ?? '') ?>">
+                </div>
+                <div class="col-sm-6">
+                    <label class="form-label fw-semibold small">Submission Deadline <span class="text-danger">*</span></label>
+                    <input type="date" name="submission_deadline" id="ec_deadline" class="form-control" required
                            value="<?= htmlspecialchars($panel_cycle['submission_deadline'] ?? '') ?>">
+                </div>
+                <div class="col-sm-6">
+                    <label class="form-label fw-semibold small">Evaluation Deadline <span class="text-danger">*</span></label>
+                    <input type="date" name="evaluation_deadline" id="ec_eval_deadline" class="form-control" required
+                           value="<?= htmlspecialchars($panel_cycle['evaluation_deadline'] ?? '') ?>">
+                </div>
+                <div class="col-sm-6">
+                    <label class="form-label fw-semibold small">Appeal Deadline</label>
+                    <input type="date" name="appeal_deadline" id="ec_appeal_deadline" class="form-control"
+                           value="<?= htmlspecialchars($panel_cycle['appeal_deadline'] ?? '') ?>">
                 </div>
             </div>
             <div id="ec_error" style="display:none;margin-bottom:0.75rem;padding:0.5rem 0.85rem;
@@ -996,13 +1264,86 @@ $positions_missing = array_keys(array_filter($position_counts, fn($c) => $c === 
     </div>
 </div>
 
+<!-- Extend Submission Modal -->
+<?php if ($panel_cycle): ?>
+<div id="extendSubmissionModal"
+     style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.5);
+            align-items:center;justify-content:center;padding:1rem;">
+    <div style="background:#fff;border-radius:14px;width:100%;max-width:620px;
+                box-shadow:0 20px 60px rgba(0,0,0,0.2);overflow:hidden;">
+        <div style="background:linear-gradient(135deg,#1a3a6b,#1e4d8c);padding:1.1rem 1.5rem;
+                    display:flex;align-items:center;justify-content:space-between;">
+            <div style="color:#fff;font-weight:700;font-size:0.95rem;">
+                <i class="bi bi-clock-history me-2"></i>Extend Faculty Submission
+            </div>
+            <button onclick="document.getElementById('extendSubmissionModal').style.display='none'"
+                    style="background:none;border:none;color:rgba(255,255,255,0.7);font-size:1.3rem;cursor:pointer;line-height:1;"
+                    onmouseover="this.style.color='#fff'" onmouseout="this.style.color='rgba(255,255,255,0.7)'">&times;</button>
+        </div>
+        <form method="POST" id="extendSubmissionForm" style="padding:1.5rem;">
+            <input type="hidden" name="action" value="extend_submission">
+            <input type="hidden" name="cycle_id" value="<?= (int)$panel_cycle['cycle_id'] ?>">
+            <input type="hidden" name="confirm_past_eval" id="confirm_past_eval" value="0">
+            <div class="row g-3">
+                <div class="col-sm-6">
+                    <label class="form-label fw-semibold small">Current Deadline</label>
+                    <input type="text" class="form-control" readonly
+                           value="<?= !empty($panel_cycle['submission_deadline']) ? date('M j, Y', strtotime($panel_cycle['submission_deadline'])) : 'N/A' ?>">
+                </div>
+                <div class="col-sm-6">
+                    <label class="form-label fw-semibold small">New Deadline <span class="text-danger">*</span></label>
+                    <input type="date" name="new_deadline" id="ext_new_deadline" class="form-control" required>
+                </div>
+                <div class="col-12">
+                    <label class="form-label fw-semibold small">Scope <span class="text-danger">*</span></label>
+                    <select name="extension_scope" id="extension_scope" class="form-select" onchange="toggleFacultyPicker()">
+                        <option value="all">All faculty</option>
+                        <option value="selected">Selected faculty only</option>
+                    </select>
+                </div>
+                <div class="col-12" id="faculty_picker_wrap" style="display:none;">
+                    <label class="form-label fw-semibold small">Faculty</label>
+                    <select name="faculty_ids[]" class="form-select" multiple size="6">
+                        <?php foreach ($faculty_for_extension as $fac): ?>
+                        <option value="<?= (int)$fac['user_id'] ?>">
+                            <?= sanitize(formatDisplayName($fac) ?: ($fac['full_name'] ?? $fac['email'])) ?> - <?= sanitize($fac['email'] ?? '') ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                    <div class="form-text">Hold Ctrl while clicking to select multiple faculty.</div>
+                </div>
+                <div class="col-12">
+                    <label class="form-label fw-semibold small">Reason</label>
+                    <textarea name="extension_reason" class="form-control" rows="3" placeholder="Optional note for the audit trail"></textarea>
+                </div>
+            </div>
+            <div id="ext_error" style="display:none;margin-top:0.85rem;padding:0.5rem 0.85rem;
+                 background:#fef2f2;border:1px solid #fecaca;border-radius:7px;font-size:0.8rem;color:#dc2626;"></div>
+            <div style="display:flex;gap:0.75rem;justify-content:flex-end;margin-top:1.25rem;">
+                <button type="button"
+                        onclick="document.getElementById('extendSubmissionModal').style.display='none'"
+                        style="padding:0.45rem 1.1rem;border:1px solid #cbd5e1;border-radius:7px;
+                               background:#fff;font-size:0.85rem;cursor:pointer;">
+                    Cancel
+                </button>
+                <button type="button" onclick="submitExtension()"
+                        style="padding:0.45rem 1.3rem;border:none;border-radius:7px;
+                               background:#1a3a6b;color:#fff;font-size:0.85rem;font-weight:600;cursor:pointer;">
+                    <i class="bi bi-check-circle me-1"></i>Save Extension
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+<?php endif; ?>
+
 <script>
 // Cycle name dropdown population and date auto-fill removed.
 // Cycles are now created with a name only; timing is controlled by Open/Closed status.
 
-// ── Cycle Review Modal ────────────────────────────────────────────────────
+// -- Cycle Review Modal ----------------------------------------------------
 function fmtDate(val) {
-    if (!val) return '—';
+    if (!val) return ' - ';
     const d = new Date(val + 'T00:00:00');
     return d.toLocaleDateString('en-PH', { year:'numeric', month:'long', day:'numeric' });
 }
@@ -1014,7 +1355,10 @@ function openCycleReview() {
     const name     = document.getElementById('cc_name').value.trim();
     const start    = document.getElementById('cc_start').value;
     const end      = document.getElementById('cc_end').value;
+    const subStart = document.getElementById('cc_sub_start').value;
     const deadline = document.getElementById('cc_deadline').value;
+    const evalDeadline = document.getElementById('cc_eval_deadline').value;
+    const appealDeadline = document.getElementById('cc_appeal_deadline').value;
 
     // Validate date logic
     const errBox = document.getElementById('cycle_date_error');
@@ -1026,6 +1370,18 @@ function openCycleReview() {
         showErr('End date must be after the start date.');
         return;
     }
+    if (subStart && start && subStart < start) {
+        showErr('Submission start must be inside the cycle period.');
+        return;
+    }
+    if (subStart && end && subStart > end) {
+        showErr('Submission start must be inside the cycle period.');
+        return;
+    }
+    if (subStart && deadline && subStart > deadline) {
+        showErr('Submission start cannot be after the submission deadline.');
+        return;
+    }
     if (deadline && end && deadline > end) {
         showErr('Submission deadline cannot be after the end date.');
         return;
@@ -1034,16 +1390,30 @@ function openCycleReview() {
         showErr('Submission deadline cannot be before the start date.');
         return;
     }
+    if (evalDeadline && deadline && evalDeadline <= deadline) {
+        showErr('Evaluation deadline must be after the faculty submission deadline.');
+        return;
+    }
+    if (evalDeadline && end && evalDeadline > end) {
+        showErr('Evaluation deadline cannot be later than the cycle end date.');
+        return;
+    }
+    if (appealDeadline && (appealDeadline < deadline || appealDeadline > end)) {
+        showErr('Appeal deadline must be after the submission deadline and inside the cycle period.');
+        return;
+    }
 
     // Populate summary
     document.getElementById('rv_name').textContent     = name;
     document.getElementById('rv_start').textContent    = fmtDate(start);
     document.getElementById('rv_end').textContent      = fmtDate(end);
+    document.getElementById('rv_sub_start').textContent = fmtDate(subStart);
     document.getElementById('rv_deadline').textContent = fmtDate(deadline);
+    document.getElementById('rv_eval_deadline').textContent = fmtDate(evalDeadline);
 
-    // Days until deadline
+    // Days until evaluation deadline
     const today = new Date(); today.setHours(0,0,0,0);
-    const dlDate = new Date(deadline + 'T00:00:00');
+    const dlDate = new Date(evalDeadline + 'T00:00:00');
     const diff = Math.round((dlDate - today) / 86400000);
     const dlEl = document.getElementById('rv_deadline_note');
     if (diff < 0) {
@@ -1074,7 +1444,10 @@ document.addEventListener('DOMContentLoaded', function () {
     if (em) em.addEventListener('click', function(e) {
         if (e.target === this) this.style.display = 'none';
     });
-
+    const xm = document.getElementById('extendSubmissionModal');
+    if (xm) xm.addEventListener('click', function(e) {
+        if (e.target === this) this.style.display = 'none';
+    });
 
 });
 
@@ -1087,15 +1460,63 @@ function submitEditCycle() {
     const name     = document.getElementById('ec_name').value.trim();
     const start    = document.getElementById('ec_start').value;
     const end      = document.getElementById('ec_end').value;
+    const subStart = document.getElementById('ec_sub_start').value;
     const deadline = document.getElementById('ec_deadline').value;
+    const evalDeadline = document.getElementById('ec_eval_deadline').value;
+    const appealDeadline = document.getElementById('ec_appeal_deadline').value;
     const errEl    = document.getElementById('ec_error');
+    const show = (msg) => { errEl.textContent = msg; errEl.style.display = 'block'; };
 
-    if (!name) { errEl.textContent = 'Cycle name is required.'; errEl.style.display = 'block'; return; }
-    if (start && end && end < start) { errEl.textContent = 'End date must be after start date.'; errEl.style.display = 'block'; return; }
-    if (deadline && end && deadline > end) { errEl.textContent = 'Submission deadline cannot be after end date.'; errEl.style.display = 'block'; return; }
+    if (!name) { show('Cycle name is required.'); return; }
+    if (!start || !end || !subStart || !deadline || !evalDeadline) { show('All cycle date fields are required.'); return; }
+    if (start && end && end <= start) { show('End date must be after start date.'); return; }
+    if (subStart < start || subStart > end) { show('Submission start must be inside the cycle period.'); return; }
+    if (deadline < start || deadline > end) { show('Submission deadline must be inside the cycle period.'); return; }
+    if (subStart > deadline) { show('Submission start cannot be after the submission deadline.'); return; }
+    if (evalDeadline <= deadline) { show('Evaluation deadline must be after the faculty submission deadline.'); return; }
+    if (evalDeadline > end) { show('Evaluation deadline cannot be later than the cycle end date.'); return; }
+    if (appealDeadline && (appealDeadline < deadline || appealDeadline > end)) { show('Appeal deadline must be after the submission deadline and inside the cycle period.'); return; }
 
     errEl.style.display = 'none';
     document.getElementById('ec_name').closest('form').submit();
+}
+
+function openExtendSubmissionModal() {
+    const m = document.getElementById('extendSubmissionModal');
+    if (!m) return;
+    document.getElementById('confirm_past_eval').value = '0';
+    document.getElementById('ext_error').style.display = 'none';
+    m.style.display = 'flex';
+}
+
+function toggleFacultyPicker() {
+    const wrap = document.getElementById('faculty_picker_wrap');
+    const scope = document.getElementById('extension_scope').value;
+    if (wrap) wrap.style.display = scope === 'selected' ? 'block' : 'none';
+}
+
+function submitExtension() {
+    const newDeadline = document.getElementById('ext_new_deadline').value;
+    const currentDeadline = '<?= htmlspecialchars($panel_cycle['submission_deadline'] ?? '') ?>';
+    const evalDeadline = '<?= htmlspecialchars($panel_cycle['evaluation_deadline'] ?? '') ?>';
+    const endDate = '<?= htmlspecialchars($panel_cycle['end_date'] ?? '') ?>';
+    const scope = document.getElementById('extension_scope').value;
+    const errEl = document.getElementById('ext_error');
+    const show = (msg) => { errEl.textContent = msg; errEl.style.display = 'block'; };
+
+    if (!newDeadline) { show('New deadline is required.'); return; }
+    if (currentDeadline && newDeadline <= currentDeadline) { show('Extended deadline must be later than the current submission deadline.'); return; }
+    if (endDate && newDeadline > endDate) { show('Extended deadline cannot be later than the cycle end date.'); return; }
+    if (scope === 'selected') {
+        const selected = document.querySelectorAll('#faculty_picker_wrap select option:checked');
+        if (!selected.length) { show('Please select at least one faculty member.'); return; }
+    }
+    if (evalDeadline && newDeadline > evalDeadline && document.getElementById('confirm_past_eval').value !== '1') {
+        if (!confirm('The new submission deadline is past the evaluation deadline. Continue with this extension?')) return;
+        document.getElementById('confirm_past_eval').value = '1';
+    }
+    errEl.style.display = 'none';
+    document.getElementById('extendSubmissionForm').submit();
 }
 
 function showDelCrit(critId, cycleId, label) {

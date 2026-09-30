@@ -1,6 +1,6 @@
 <?php
 /**
- * Pre-Evaluation — standalone page, no sidebar.
+ * Pre-Evaluation  -  standalone page, no sidebar.
  */
 if (session_status() === PHP_SESSION_NONE) session_start();
 require_once __DIR__ . '/../config/db.php';
@@ -10,9 +10,7 @@ if (!isLoggedIn()) { header('Location: login.php'); exit; }
 if (($_SESSION['role'] ?? '') !== 'faculty') {
     header('Location: ../index.php'); exit;
 }
-if (!empty($_SESSION['force_pw_change'])) {
-    header('Location: change_password.php'); exit;
-}
+unset($_SESSION['force_pw_change']);
 
 $uid = $_SESSION['user_id'];
 
@@ -38,7 +36,7 @@ catch (\Exception $e) {
     )");
 }
 
-// -- Auto Sub Rank is fully automatic — no POST handler needed here.
+// -- Auto Sub Rank is fully automatic  -  no POST handler needed here.
 // The tab recalculates on every page view via AutoSubRankCalculator.
 
 // Faculty info
@@ -50,13 +48,13 @@ $rank        = $fac['rank']        ?? '';
 $profile_pic = $fac['profile_pic'] ?? '';
 $init        = strtoupper(substr($fac['first_name']??'U',0,1).substr($fac['last_name']??'',0,1)) ?: 'FA';
 
-// ── PRE-EVALUATION ELIGIBILITY GATE ─────────────────────────────────────────
+// -- PRE-EVALUATION ELIGIBILITY GATE -----------------------------------------
 // Constraint: verify rank readiness only. Authenticity of documents is handled
-// exclusively by human checkers at Stage 1 (local) and Stage 2 (Talisay/main).
+// exclusively by human reviewers at Stage 1 (Subcommittee) and Stage 2 (ITC).
 $eligible          = true;
 $eligibility_notes = [];
 
-// (a) Rank check — must have a recognised faculty rank to proceed
+// (a) Rank check  -  must have a recognised faculty rank to proceed
 $all_ranks = [
     'Instructor I','Instructor II','Instructor III',
     'Assistant Professor I','Assistant Professor II','Assistant Professor III','Assistant Professor IV',
@@ -72,7 +70,7 @@ if (empty($rank)) {
     $eligibility_notes[] = "Current rank '{$rank}' is not a recognised reclassification rank. Contact your administrator.";
 }
 
-// (b) Readiness check — cannot pre-evaluate if already in an active cycle with a locked application
+// (b) Readiness check  -  cannot pre-evaluate if already in an active cycle with a locked application
 $active_cycle = getActiveCycle($pdo);
 if ($active_cycle) {
     $existing_app = $pdo->prepare("SELECT status FROM applications WHERE user_id=? AND cycle_id=? LIMIT 1");
@@ -85,7 +83,7 @@ if ($active_cycle) {
     }
 }
 
-// Document completeness check — presence only, not authenticity
+// Document completeness check  -  presence only, not authenticity
 // Count entries that have at least one attached file (evidence presence only)
 $entries_with_files_q = $pdo->prepare("
     SELECT COUNT(DISTINCT pe.entry_id)
@@ -132,7 +130,7 @@ $cur     = $kra_tabs[$active_tab];
 $cur_cat = $cur['cat'];
 $kra_num = $cur['num'];
 
-// Tab entry counts — only for KRA tabs
+// Tab entry counts  -  only for KRA tabs
 $counts = [];
 $kra_slugs = ['instruction','research','extension','profdev'];
 foreach ($kra_tabs as $slug => $t) {
@@ -145,7 +143,7 @@ foreach ($kra_tabs as $slug => $t) {
     }
 }
 
-// Evidence guide — load ALL criteria for all KRA categories
+// Evidence guide  -  load ALL criteria for all KRA categories
 $all_criteria = [];
 try {
     $cg = $pdo->query("
@@ -164,7 +162,7 @@ try {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>SUCFRMS — Self-Assessment</title>
+<title>SUCFRMS  -  Self-Assessment</title>
 <link href="../assets/vendor/bootstrap-icons/bootstrap-icons.min.css" rel="stylesheet">
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
@@ -225,7 +223,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f3f8;min-height:100vh
 .tab-badge{background:#f1f5f9;color:#64748b;font-size:.6rem;font-weight:700;padding:1px 5px;border-radius:20px;}
 .tab-btn.active .tab-badge{background:#1a3a6b;color:#fff;}
 
-/* Two panels — entry only, full width */
+/* Two panels  -  entry only, full width */
 .panels{display:grid;grid-template-columns:1fr;gap:.85rem;}
 .panel{background:#fff;border:1px solid #e2e8f0;}
 .panel-hd{padding:.75rem 1rem;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;justify-content:space-between;gap:.5rem;}
@@ -293,7 +291,7 @@ textarea.fi{resize:vertical;min-height:52px;}
 .crit-item.open .crit-body{display:block;}
 .crit-evidence-label{font-size:.62rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.07em;margin-bottom:.4rem;}
 .crit-evidence-item{display:flex;align-items:flex-start;gap:.4rem;font-size:.72rem;color:#475569;line-height:1.5;margin-bottom:.3rem;}
-.crit-evidence-item::before{content:'•';color:#1a3a6b;font-weight:700;flex-shrink:0;margin-top:1px;}
+.crit-evidence-item::before{content:'*';color:#1a3a6b;font-weight:700;flex-shrink:0;margin-top:1px;}
 .drawer-empty{text-align:center;padding:2rem;color:#94a3b8;font-size:.78rem;}
 .d-tab{padding:.45rem .75rem;border:none;background:none;font-size:.72rem;font-weight:600;color:#64748b;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;}
 .d-tab:hover{color:#1a3a6b;}
@@ -320,7 +318,7 @@ textarea.fi{resize:vertical;min-height:52px;}
     .pg{flex-direction:column;}
 }
 @media(max-width:600px){
-    /* Navbar — show short name only */
+    /* Navbar  -  show short name only */
     .pnav{padding:0 12px;gap:8px;}
     .pnav-title{font-size:.75rem;}
     .pnav-name{max-width:72px;font-size:.72rem;}
@@ -328,13 +326,13 @@ textarea.fi{resize:vertical;min-height:52px;}
     /* Main area padding */
     .main{padding:.7rem .75rem 2.5rem;}
 
-    /* Page title row — stack buttons */
+    /* Page title row  -  stack buttons */
     .main > div:first-of-type{flex-direction:column;align-items:flex-start !important;}
 
-    /* Tabs — smaller font, always scrollable */
+    /* Tabs  -  smaller font, always scrollable */
     .tab-btn{font-size:.68rem;padding:.45rem .65rem;}
 
-    /* 2-column form grid → 1 column on mobile */
+    /* 2-column form grid -> 1 column on mobile */
     .fg2{grid-template-columns:1fr !important;}
 
     /* Sidebar score compact */
@@ -384,7 +382,7 @@ textarea.fi{resize:vertical;min-height:52px;}
 
 <div class="pg">
 
-<!-- ── Score sidebar ── -->
+<!-- -- Score sidebar -- -->
 <aside class="sidebar">
     <div class="sb-heading">Score Estimate</div>
 
@@ -396,7 +394,7 @@ textarea.fi{resize:vertical;min-height:52px;}
         <div class="score-sub">Weighted / 100</div>
         <div class="score-min" id="sbMinNote"
              style="color:<?= $weighted>=41?'#1e4d8c':'#334155' ?>">
-            <?= $weighted>=41?'✓ Meets minimum (41)':'✗ Below minimum (41)' ?>
+            <?= $weighted>=41?'OK Meets minimum (41)':'X Below minimum (41)' ?>
         </div>
     </div>
 
@@ -415,7 +413,7 @@ textarea.fi{resize:vertical;min-height:52px;}
         <div class="kra-bar">
             <div class="kra-bar-fill" style="width:<?= $pct ?>%;background:<?= $t['color'] ?>;"></div>
         </div>
-        <div class="kra-row-raw"><?= number_format($rpts,1) ?>/<?= $t['max'] ?> · <?= round($weights[$t['cat']]*100) ?>% wt</div>
+        <div class="kra-row-raw"><?= number_format($rpts,1) ?>/<?= $t['max'] ?> | <?= round($weights[$t['cat']]*100) ?>% wt</div>
     </div>
     <?php endforeach; ?>
     </div>
@@ -423,9 +421,9 @@ textarea.fi{resize:vertical;min-height:52px;}
     <div class="rank-box">
         <div class="rank-box-label">Rank Projection</div>
         <div style="display:flex;align-items:center;gap:3px;flex-wrap:wrap;">
-            <span class="rank-cur" id="sbCurRank"><?= sanitize($rank?:'—') ?></span>
-            <?php if ($pot_rank && $pot_rank !== $rank && $pot_rank !== '—'): ?>
-            <span class="rank-arrow">→</span>
+            <span class="rank-cur" id="sbCurRank"><?= sanitize($rank?:' - ') ?></span>
+            <?php if ($pot_rank && $pot_rank !== $rank && $pot_rank !== ' - '): ?>
+            <span class="rank-arrow">-></span>
             <span class="rank-pot" id="sbPotRank"><?= sanitize($pot_rank) ?></span>
             <?php endif; ?>
         </div>
@@ -442,21 +440,21 @@ textarea.fi{resize:vertical;min-height:52px;}
     </div>
 
     <div class="sb-note">
-        <i class="bi bi-info-circle me-1"></i>Estimate only — final scores are verified by your checker.
+        <i class="bi bi-info-circle me-1"></i>Estimate only - final scores are reviewed by your evaluator.
     </div>
 </aside>
 
-<!-- ── Main ── -->
+<!-- -- Main -- -->
 <div class="main">
 
     <a href="portal.php" class="back-link"><i class="bi bi-arrow-left"></i> Back to Portal</a>
 
     <?php if (!$eligible): ?>
-    <!-- ── Eligibility gate banner ── -->
+    <!-- -- Eligibility gate banner -- -->
     <div style="padding:.75rem 1rem;background:#fef2f2;border:1px solid #fecaca;border-left:4px solid #dc2626;border-radius:6px;margin-bottom:1rem;font-size:.8rem;color:#b91c1c;">
         <div style="font-weight:700;margin-bottom:.3rem;"><i class="bi bi-shield-x me-1"></i>Not eligible for self-assessment</div>
         <?php foreach ($eligibility_notes as $en): ?>
-        <div style="margin-top:.2rem;">• <?= htmlspecialchars($en) ?></div>
+        <div style="margin-top:.2rem;">* <?= htmlspecialchars($en) ?></div>
         <?php endforeach; ?>
     </div>
     <?php else: ?>
@@ -498,7 +496,7 @@ textarea.fi{resize:vertical;min-height:52px;}
     <?php if ($cur_cat === 'Auto Sub Rank'): ?>
     <!-- AUTO SUB RANK PANEL -->
     <?php
-    // Load saved data — kept for backward compat; new UI uses AutoSubRankCalculator directly
+    // Load saved data  -  kept for backward compat; new UI uses AutoSubRankCalculator directly
     $pea_stmt = $pdo->prepare("SELECT * FROM pre_eval_auto_sub_rank WHERE user_id=?");
     $pea_stmt->execute([$uid]);
     $pea_data = $pea_stmt->fetch() ?: [];
@@ -522,7 +520,7 @@ textarea.fi{resize:vertical;min-height:52px;}
         </div>
         <div class="panel-body">
         <?php
-        // ── Load AutoSubRankCalculator ─────────────────────────────────────
+        // -- Load AutoSubRankCalculator -------------------------------------
         if (!class_exists('\Scoring\AutoSubRankCalculator')) {
             require_once __DIR__ . '/../includes/scoring/autosubrank.php';
         }
@@ -581,7 +579,7 @@ textarea.fi{resize:vertical;min-height:52px;}
             <i class="bi bi-arrow-up-circle-fill" style="color:#16a34a;font-size:1.1rem;flex-shrink:0;"></i>
             <div>
                 <div style="font-weight:700;color:#16a34a;font-size:.88rem;">+<?= $pe_ri ?> automatic sub-rank<?= $pe_ri > 1 ? 's' : '' ?></div>
-                <div style="font-size:.72rem;color:#64748b;margin-top:2px;">System-calculated — no manual choice required</div>
+                <div style="font-size:.72rem;color:#64748b;margin-top:2px;">System-calculated  -  no manual choice required</div>
             </div>
             <?php else: ?>
             <i class="bi bi-dash-circle" style="color:#64748b;font-size:1.1rem;flex-shrink:0;"></i>
@@ -595,7 +593,7 @@ textarea.fi{resize:vertical;min-height:52px;}
         <!-- Criterion 1: Doctorate -->
         <div class="add-form" style="margin-bottom:.75rem;">
             <div style="font-size:.72rem;font-weight:700;color:#1a3a6b;text-transform:uppercase;letter-spacing:.06em;margin-bottom:.5rem;display:flex;align-items:center;gap:.5rem;">
-                <i class="bi bi-mortarboard"></i>1 — Doctorate Degree
+                <i class="bi bi-mortarboard"></i>1  -  Doctorate Degree
                 <span style="background:<?= $pe_d_color ?>18;color:<?= $pe_d_color ?>;border:1px solid <?= $pe_d_color ?>40;padding:1px 8px;border-radius:20px;font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;margin-left:auto;">
                     <?= htmlspecialchars($pe_d_label) ?>
                 </span>
@@ -617,7 +615,7 @@ textarea.fi{resize:vertical;min-height:52px;}
             <div style="font-size:.78rem;color:#64748b;padding:.4rem 0;">
                 <i class="bi bi-exclamation-circle me-1" style="color:#94a3b8;"></i>
                 No doctorate entry found.
-                <a href="?tab=profdev" style="color:#1e4d8c;font-weight:600;">Add a doctorate in Prof. Development (B-degree ≥ 40)</a>
+                <a href="?tab=profdev" style="color:#1e4d8c;font-weight:600;">Add a doctorate in Prof. Development (B-degree >= 40)</a>
             </div>
             <?php endif; ?>
         </div>
@@ -625,7 +623,7 @@ textarea.fi{resize:vertical;min-height:52px;}
         <!-- Criterion 2: Award -->
         <div class="add-form" style="margin-bottom:.75rem;">
             <div style="font-size:.72rem;font-weight:700;color:#1a3a6b;text-transform:uppercase;letter-spacing:.06em;margin-bottom:.5rem;display:flex;align-items:center;gap:.5rem;">
-                <i class="bi bi-trophy"></i>2 — National / International Award
+                <i class="bi bi-trophy"></i>2  -  National / International Award
                 <span style="background:<?= $pe_a_color ?>18;color:<?= $pe_a_color ?>;border:1px solid <?= $pe_a_color ?>40;padding:1px 8px;border-radius:20px;font-size:.65rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;margin-left:auto;">
                     <?= htmlspecialchars($pe_a_label) ?>
                 </span>
@@ -664,7 +662,7 @@ textarea.fi{resize:vertical;min-height:52px;}
     <!-- POSITION REQUIREMENTS PANEL -->
     <div class="panel">
         <div class="panel-hd">
-            <div class="panel-hd-title"><i class="bi bi-file-earmark-check me-1"></i>Position Requirements — <?= sanitize($rank ?: 'Unknown Rank') ?></div>
+            <div class="panel-hd-title"><i class="bi bi-file-earmark-check me-1"></i>Position Requirements  -  <?= sanitize($rank ?: 'Unknown Rank') ?></div>
         </div>
         <div class="panel-body">
             <?php
@@ -708,7 +706,7 @@ textarea.fi{resize:vertical;min-height:52px;}
                             <td style="padding:.7rem .75rem;text-align:center;font-weight:700;color:#64748b;">2</td>
                             <td style="padding:.7rem .75rem;font-weight:600;color:#1e293b;">
                                 Internationally Indexed Article
-                                <div style="font-size:.72rem;color:#64748b;font-weight:400;margin-top:2px;">Scopus, WoS, or ACI — published within the last 3 years</div>
+                                <div style="font-size:.72rem;color:#64748b;font-weight:400;margin-top:2px;">Scopus, WoS, or ACI  -  published within the last 3 years</div>
                             </td>
                             <td style="padding:.7rem .75rem;color:#475569;font-size:.78rem;">
                                 Published article with indexing proof (Scopus author profile, WoS record, or ACI listing). Must be within 3 years of application date. Co-authored articles are accepted.
@@ -751,7 +749,7 @@ textarea.fi{resize:vertical;min-height:52px;}
             <?php endif; ?>
 
             <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:.75rem 1rem;margin-top:.75rem;font-size:.78rem;color:#64748b;">
-                <i class="bi bi-shield-check me-1"></i>Upload these documents in the actual Reclassification application when a cycle is open — not here in Self-Assessment.
+                <i class="bi bi-shield-check me-1"></i>Upload these documents in the actual Reclassification application when a cycle is open  -  not here in Self-Assessment.
             </div>
         </div>
     </div>
@@ -763,7 +761,7 @@ textarea.fi{resize:vertical;min-height:52px;}
                 <div class="panel-hd-title"><?= $cur['label'] ?></div>
                 <div style="display:flex;gap:.4rem;align-items:center;">
                     <button class="btn-p" onclick="toggleForm()" id="addBtn"
-                            <?= !$eligible ? 'disabled title="Not eligible — see notice above" style="opacity:.45;cursor:not-allowed;"' : '' ?>>
+                            <?= !$eligible ? 'disabled title="Not eligible  -  see notice above" style="opacity:.45;cursor:not-allowed;"' : '' ?>>
                         + Add Entry
                     </button>
                     <button class="btn-p" id="resetAllBtn"
@@ -784,9 +782,9 @@ textarea.fi{resize:vertical;min-height:52px;}
                     <div class="fg">
                         <label class="fl">Criterion Type</label>
                         <select class="fi" id="critType" onchange="switchInstrForm();previewScore()">
-                            <option value="A-set-sef">A — Teaching Evaluation (SET + SEF)</option>
-                            <option value="B-material">B — Instructional Material</option>
-                            <option value="C-thesis">C — Thesis / Dissertation Advising</option>
+                            <option value="A-set-sef">A  -  Teaching Evaluation (SET + SEF)</option>
+                            <option value="B-material">B  -  Instructional Material</option>
+                            <option value="C-thesis">C  -  Thesis / Dissertation Advising</option>
                         </select>
                     </div>
                     <div id="fA">
@@ -800,16 +798,16 @@ textarea.fi{resize:vertical;min-height:52px;}
                         <div class="fg">
                             <label class="fl">Material Type</label>
                             <select class="fi" id="matType" onchange="previewScore()">
-                                <option>Textbook — Sole Author (30 pts)</option>
-                                <option>Textbook — Co-Author (30 pts)</option>
-                                <option>Textbook Chapter — Sole Author (10 pts)</option>
-                                <option>Textbook Chapter — Co-Author (10 pts)</option>
-                                <option>Manual/Module — Sole Author (16 pts)</option>
-                                <option>Manual/Module — Co-Author (16 pts)</option>
+                                <option>Textbook  -  Sole Author (30 pts)</option>
+                                <option>Textbook  -  Co-Author (30 pts)</option>
+                                <option>Textbook Chapter  -  Sole Author (10 pts)</option>
+                                <option>Textbook Chapter  -  Co-Author (10 pts)</option>
+                                <option>Manual/Module  -  Sole Author (16 pts)</option>
+                                <option>Manual/Module  -  Co-Author (16 pts)</option>
                                 <option>Multimedia Teaching Material (16 pts)</option>
                                 <option>Validated Testing Material (10 pts)</option>
-                                <option>Academic Program Dev — Lead (10 pts)</option>
-                                <option>Academic Program Dev — Contributor (5 pts)</option>
+                                <option>Academic Program Dev  -  Lead (10 pts)</option>
+                                <option>Academic Program Dev  -  Contributor (5 pts)</option>
                             </select>
                         </div>
                         <div class="fg"><label class="fl">Contribution % (co-authorship)</label><input type="number" class="fi" id="contribB" value="100" min="1" max="100" oninput="previewScore()"></div>
@@ -819,15 +817,15 @@ textarea.fi{resize:vertical;min-height:52px;}
                         <div class="fg">
                             <label class="fl">Type</label>
                             <select class="fi" id="thesisType" onchange="previewScore()">
-                                <option>Doctoral Dissertation — Adviser (10 pts)</option>
-                                <option>Master's Thesis — Adviser (8 pts)</option>
-                                <option>Undergraduate Thesis — Adviser (5 pts)</option>
-                                <option>Special Project / Capstone — Adviser (3 pts)</option>
-                                <option>Doctoral Dissertation — Panel Member (6 pts)</option>
-                                <option>Master's Thesis — Panel Member (4 pts)</option>
-                                <option>Undergraduate Thesis — Panel Member (2 pts)</option>
-                                <option>Special Project / Capstone — Panel Member (1 pt)</option>
-                                <option>Mentor: Student/Team Competition Winner (⚠ pts pending confirmation)</option>
+                                <option>Doctoral Dissertation  -  Adviser (10 pts)</option>
+                                <option>Master's Thesis  -  Adviser (8 pts)</option>
+                                <option>Undergraduate Thesis  -  Adviser (5 pts)</option>
+                                <option>Special Project / Capstone  -  Adviser (3 pts)</option>
+                                <option>Doctoral Dissertation  -  Panel Member (6 pts)</option>
+                                <option>Master's Thesis  -  Panel Member (4 pts)</option>
+                                <option>Undergraduate Thesis  -  Panel Member (2 pts)</option>
+                                <option>Special Project / Capstone  -  Panel Member (1 pt)</option>
+                                <option>Mentor: Student/Team Competition Winner (Warning pts pending confirmation)</option>
                             </select>
                         </div>
                         <div class="fg"><label class="fl">Advisee / Student Name (optional)</label><input type="text" class="fi" id="advisee" placeholder="Name of advisee"></div>
@@ -837,16 +835,16 @@ textarea.fi{resize:vertical;min-height:52px;}
                     <div class="fg">
                         <label class="fl">Output Type</label>
                         <select class="fi" id="resType" onchange="previewScore()">
-                            <option value="Book, Sole Author (100pts)">Book — Sole Author (100 pts)</option>
-                            <option value="Book, Co-Author (100pts)">Book — Co-Author (100 pts)</option>
-                            <option value="Monograph, Sole Author (100pts)">Monograph — Sole Author (100 pts)</option>
-                            <option value="Monograph, Co-Author (100pts)">Monograph — Co-Author (100 pts)</option>
-                            <option value="Indexed Journal Article, Sole Author (50pts)">Indexed Journal Article — Sole Author (50 pts)</option>
-                            <option value="Indexed Journal Article, Co-Author (50pts)">Indexed Journal Article — Co-Author (50 pts)</option>
-                            <option value="Book Chapter, Sole Author (35pts)">Book Chapter — Sole Author (35 pts)</option>
-                            <option value="Book Chapter, Co-Author (35pts)">Book Chapter — Co-Author (35 pts)</option>
-                            <option value="Research Policy/Product, Lead (35pts)">Research → Policy/Product — Lead (35 pts)</option>
-                            <option value="Research Policy/Product, Contributor (35pts)">Research → Policy/Product — Contributor (35 pts)</option>
+                            <option value="Book, Sole Author (100pts)">Book  -  Sole Author (100 pts)</option>
+                            <option value="Book, Co-Author (100pts)">Book  -  Co-Author (100 pts)</option>
+                            <option value="Monograph, Sole Author (100pts)">Monograph  -  Sole Author (100 pts)</option>
+                            <option value="Monograph, Co-Author (100pts)">Monograph  -  Co-Author (100 pts)</option>
+                            <option value="Indexed Journal Article, Sole Author (50pts)">Indexed Journal Article  -  Sole Author (50 pts)</option>
+                            <option value="Indexed Journal Article, Co-Author (50pts)">Indexed Journal Article  -  Co-Author (50 pts)</option>
+                            <option value="Book Chapter, Sole Author (35pts)">Book Chapter  -  Sole Author (35 pts)</option>
+                            <option value="Book Chapter, Co-Author (35pts)">Book Chapter  -  Co-Author (35 pts)</option>
+                            <option value="Research Policy/Product, Lead (35pts)">Research -> Policy/Product  -  Lead (35 pts)</option>
+                            <option value="Research Policy/Product, Contributor (35pts)">Research -> Policy/Product  -  Contributor (35 pts)</option>
                             <option value="Peer-Reviewed Scholarly Output (10pts)">Other Peer-Reviewed Output (10 pts)</option>
                             <option value="Local Citation (5pts)">Local Citation (5 pts each)</option>
                             <option value="International Citation (10pts)">International Citation (10 pts each)</option>
@@ -907,14 +905,14 @@ textarea.fi{resize:vertical;min-height:52px;}
                     </div>
                 </div>
 
-                <!-- Sub-cap progress bars — hidden until get_score runs -->
+                <!-- Sub-cap progress bars  -  hidden until get_score runs -->
                 <?php
                 // Sub-cap definitions per KRA (label, JS key into kra_detail, cap)
                 $subcap_defs = [
-                    'Instruction'              => [['A — Teaching Effectiveness','criterion_a',60],['B — Instructional Materials','criterion_b',30],['C — Research/Advisory','criterion_c',10]],
-                    'Research'                 => [['A — Books/Monographs','criterion_a_raw',null],['B — Articles/Chapters','criterion_b_raw',null],['C — Citations/Policy','criterion_c_raw',null]],
-                    'Extension'                => [['A — Income','criterion_a',null],['B — MOA/Linkage','criterion_b',null],['C — Outreach','criterion_c',null],['D — Bonus','criterion_d_bonus',null]],
-                    'Professional Development' => [['A — Prof. Orgs','criterion_a',20],['B — Training/Degrees','criterion_b',60],['C — Awards','criterion_c',20],['D — Bonus','criterion_d_bonus',20]],
+                    'Instruction'              => [['A  -  Teaching Effectiveness','criterion_a',60],['B  -  Instructional Materials','criterion_b',30],['C  -  Research/Advisory','criterion_c',10]],
+                    'Research'                 => [['A  -  Books/Monographs','criterion_a_raw',null],['B  -  Articles/Chapters','criterion_b_raw',null],['C  -  Citations/Policy','criterion_c_raw',null]],
+                    'Extension'                => [['A  -  Income','criterion_a',null],['B  -  MOA/Linkage','criterion_b',null],['C  -  Outreach','criterion_c',null],['D  -  Bonus','criterion_d_bonus',null]],
+                    'Professional Development' => [['A  -  Prof. Orgs','criterion_a',20],['B  -  Training/Degrees','criterion_b',60],['C  -  Awards','criterion_c',20],['D  -  Bonus','criterion_d_bonus',20]],
                 ];
                 $bars = $subcap_defs[$cur_cat] ?? [];
                 // kra_detail key in get_score JSON
@@ -930,7 +928,7 @@ textarea.fi{resize:vertical;min-height:52px;}
                         <div class="subcap-row" data-key="<?= $key ?>" data-cap="<?= $cap ?? '' ?>" data-detail="<?= $detail_key ?>">
                             <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:1px;">
                                 <span style="font-size:.65rem;color:#475569;font-weight:600;"><?= $lbl ?></span>
-                                <span class="subcap-pts" style="font-size:.65rem;font-weight:700;color:#1a3a6b;">—</span>
+                                <span class="subcap-pts" style="font-size:.65rem;font-weight:700;color:#1a3a6b;"> - </span>
                             </div>
                             <div style="height:4px;background:#e2e8f0;border-radius:3px;overflow:hidden;">
                                 <div class="subcap-fill" style="height:100%;width:0%;background:#1e4d8c;border-radius:3px;transition:width .35s ease;"></div>
@@ -971,7 +969,7 @@ textarea.fi{resize:vertical;min-height:52px;}
 </div><!-- /main -->
 </div><!-- /pg -->
 
-<!-- ── Evidence Guide Drawer ── -->
+<!-- -- Evidence Guide Drawer -- -->
 <div class="drawer-overlay" id="drawerOverlay" onclick="closeDrawer()"></div>
 <div class="drawer" id="evidenceDrawer">
 
@@ -1008,8 +1006,8 @@ textarea.fi{resize:vertical;min-height:52px;}
                     'Extension'=>'#1e4d8c','Professional Development'=>'#475569'
                 ];
                 $cat_labels = [
-                    'Instruction'=>'KRA I — Instruction','Research'=>'KRA II — Research',
-                    'Extension'=>'KRA III — Extension','Professional Development'=>'KRA IV — Prof. Development'
+                    'Instruction'=>'KRA I  -  Instruction','Research'=>'KRA II  -  Research',
+                    'Extension'=>'KRA III  -  Extension','Professional Development'=>'KRA IV  -  Prof. Development'
                 ];
                 $cc = $cat_colors[$cat] ?? '#1a3a6b';
             ?>
@@ -1060,7 +1058,7 @@ const EMPTY_STATE_INFO = <?= json_encode([
 ]) ?>;
 let attachTarget = null;
 
-// ── Nav dropdown ──────────────────────────────────────────────
+// -- Nav dropdown ----------------------------------------------
 function toggleDD(){document.getElementById('ndd').classList.toggle('open');}
 document.addEventListener('click',e=>{
     const n=document.getElementById('nu'),d=document.getElementById('ndd');
@@ -1069,7 +1067,7 @@ document.addEventListener('click',e=>{
 
 const ELIGIBLE = <?= $eligible ? 'true' : 'false' ?>;
 
-// ── Add/cancel form ───────────────────────────────────────────
+// -- Add/cancel form -------------------------------------------
 function toggleForm(){
     if (!ELIGIBLE) return; // server-side gate reflected in UI
     const f=document.getElementById('addForm');
@@ -1091,7 +1089,7 @@ function resetForm(){
     const sp=document.getElementById('scorePreview'); if(sp)sp.textContent='0.00';
 }
 
-// ── Instruction form switch ────────────────────────────────────
+// -- Instruction form switch ------------------------------------
 function switchInstrForm(){
     const t=document.getElementById('critType')?.value;
     document.getElementById('fA').style.display=t==='A-set-sef'?'block':'none';
@@ -1099,12 +1097,12 @@ function switchInstrForm(){
     document.getElementById('fC').style.display=t==='C-thesis'?'block':'none';
 }
 
-// ── ProfDev sub-options ────────────────────────────────────────
+// -- ProfDev sub-options ----------------------------------------
 const PD_OPTS={
-    'B-training':[['1','1 pt — Local'],['2','2 pts — International']],
-    'B-degree':  [['10','10 pts — Post-Master\'s/Post-Doctoral Cert.'],['20','20 pts — Additional Master\'s']],
-    'B-paper':   [['3','3 pts — Local Presentation'],['5','5 pts — International Presentation']],
-    'C-award':   [['2','2 pts — Institutional'],['3','3 pts — Local'],['4','4 pts — Regional'],['0','National/International (+1 sub-rank, 0 pts)']],
+    'B-training':[['1','1 pt  -  Local'],['2','2 pts  -  International']],
+    'B-degree':  [['10','10 pts  -  Post-Master\'s/Post-Doctoral Cert.'],['20','20 pts  -  Additional Master\'s']],
+    'B-paper':   [['3','3 pts  -  Local Presentation'],['5','5 pts  -  International Presentation']],
+    'C-award':   [['2','2 pts  -  Institutional'],['3','3 pts  -  Local'],['4','4 pts  -  Regional'],['0','National/International (+1 sub-rank, 0 pts)']],
 };
 function updatePdOpts(){
     const t=document.getElementById('pdType')?.value;
@@ -1139,7 +1137,7 @@ function updateExtOpts(){
     }
 }
 
-// ── Build remarks ──────────────────────────────────────────────
+// -- Build remarks ----------------------------------------------
 function buildRemarks(){
     if(CAT==='Instruction'){
         const t=document.getElementById('critType')?.value||'A-set-sef';
@@ -1175,7 +1173,7 @@ function buildRemarks(){
     }
 }
 
-// ── Score preview ──────────────────────────────────────────────
+// -- Score preview ----------------------------------------------
 function previewScore(){
     const r=buildRemarks();
     if(!r){document.getElementById('scorePreview').textContent='0.00';return;}
@@ -1185,7 +1183,7 @@ function previewScore(){
         }).catch(()=>{});
 }
 
-// ── Save entry ─────────────────────────────────────────────────
+// -- Save entry -------------------------------------------------
 function saveEntry(){
     const remarks=buildRemarks();
     if(!remarks){alert('Please fill in the required fields.');return;}
@@ -1201,7 +1199,7 @@ function saveEntry(){
     });
 }
 
-// ── Load entries ───────────────────────────────────────────────
+// -- Load entries -----------------------------------------------
 function loadEntries(){
     return fetch(`${AJAX}?action=get_entries&cat=${encodeURIComponent(CAT)}`)
         .then(x=>x.json()).then(d=>{
@@ -1232,9 +1230,9 @@ function entryCard(e){
     const notes=e.notes?`<div class="entry-notes">${esc(e.notes)}</div>`:'';
     const files=(e.files||[]).map(f=>`
         <a href="../${f.file_path}" target="_blank" class="file-chip" title="${esc(f.original_filename)}">
-            <i class="bi bi-paperclip" style="font-size:.6rem;"></i>${esc(f.original_filename.length>20?f.original_filename.slice(0,20)+'…':f.original_filename)}
+            <i class="bi bi-paperclip" style="font-size:.6rem;"></i>${esc(f.original_filename.length>20?f.original_filename.slice(0,20)+'...':f.original_filename)}
         </a>
-        <button class="chip-del" onclick="delFile(event,${f.file_id})" title="Remove">×</button>
+        <button class="chip-del" onclick="delFile(event,${f.file_id})" title="Remove">x</button>
     `).join('');
     return `<div class="entry-card" id="ec-${e.entry_id}">
         <div class="entry-card-top">
@@ -1252,7 +1250,8 @@ function entryCard(e){
 function fmtLabel(r){
     const p=r.split('|||');
     const t=p[0]||'';
-    if(t==='A-set-sef') return `<strong>Teaching Evaluation</strong> — SET: ${p[1]||0}%, SEF: ${p[2]||0}%`;
+    if(t==='A-set-sef') return `<strong>Teaching Evaluation</strong>  -  SET: ${p[1]||0}%, SEF: ${p[2]||0}%`;
+    if(t==='A-set-sem'||t==='A-sef-sem') return `<strong>${t==='A-sef-sem'?'SEF':'SET'} Teaching Evaluation</strong>  -  ${esc(p[1]||'')}, ${p[2]==='2'?'2nd Semester':'1st Semester'}: ${p[3]||0}%`;
     if(t==='B-material') return `<strong>Material:</strong> ${esc(p[1]||'')}`;
     if(t==='C-thesis')   return `<strong>Thesis/Dissertation:</strong> ${esc(p[1]||'')}`;
     if(['moa-linkage','income','accredit-local','accredit-intl','resource-speaker-local','resource-speaker-intl','outreach-isr-lead','outreach-isr-member','csr-satisfaction','consultant-local','consultant-intl','judge-research','judge-other'].includes(t)){
@@ -1260,12 +1259,12 @@ function fmtLabel(r){
         return `<strong>${esc(t.replaceAll('-',' '))}</strong>${p[1]?' - '+esc(p[1]):''}${value}`;
     }
     if(t==='A-org')      return `<strong>Professional Org Membership</strong>`;
-    if(t.startsWith('B-')||t.startsWith('C-')) return `<strong>${esc(p[1]||t)}</strong>${p[2]?' — '+esc(p[2])+'pts':''}`;
+    if(t.startsWith('B-')||t.startsWith('C-')) return `<strong>${esc(p[1]||t)}</strong>${p[2]?'  -  '+esc(p[2])+'pts':''}`;
     // Research / Extension
-    return `<strong>${esc(p[0])}</strong>${p[1]?' — '+esc(p[1]):''}`;
+    return `<strong>${esc(p[0])}</strong>${p[1]?'  -  '+esc(p[1]):''}`;
 }
 
-// ── Attach file to entry ───────────────────────────────────────
+// -- Attach file to entry ---------------------------------------
 function trigAttach(eid){attachTarget=eid;document.getElementById('entryFileInput').click();}
 function attachFile(input){
     if(!input.files.length||!attachTarget)return;
@@ -1281,7 +1280,7 @@ function attachFile(input){
     });
 }
 
-// ── Delete entry / file ────────────────────────────────────────
+// -- Delete entry / file ----------------------------------------
 function delEntry(eid){
     peConfirm(
         'bi-trash',
@@ -1326,7 +1325,7 @@ function confirmResetAll(){
     );
 }
 
-// ── Refresh sidebar score via AJAX (no page reload) ────────────
+// -- Refresh sidebar score via AJAX (no page reload) ------------
 function refreshScore(){
     fetch(`${AJAX}?action=get_score`).then(x=>x.json()).then(d=>{
         if(!d.ok)return;
@@ -1337,7 +1336,7 @@ function refreshScore(){
         }
         const mn=document.getElementById('sbMinNote');
         if(mn){
-            mn.textContent=d.weighted>=41?'✓ Meets minimum (41)':'✗ Below minimum (41)';
+            mn.textContent=d.weighted>=41?'OK Meets minimum (41)':'X Below minimum (41)';
             mn.style.color=d.weighted>=41?'#1e4d8c':'#334155';
         }
         // Update KRA bars
@@ -1358,7 +1357,7 @@ function refreshScore(){
             const rawTxt=row.querySelector('.kra-row-raw');
             if(pts) pts.textContent=wpts.toFixed(1)+'pt';
             if(bar) bar.style.width=pct+'%';
-            if(rawTxt) rawTxt.textContent=raw.toFixed(1)+'/'+mx+' · '+(WEIGHTS[i]||0)+'% wt';
+            if(rawTxt) rawTxt.textContent=raw.toFixed(1)+'/'+mx+' | '+(WEIGHTS[i]||0)+'% wt';
         });
 
         // Update rank projection + increment badge
@@ -1372,8 +1371,8 @@ function refreshScore(){
 
             // Show/hide arrow + pot rank
             const arrow = incWrap.querySelector('.rank-arrow');
-            if (arrow) arrow.style.display = (potRank && potRank !== curRank && potRank !== '—') ? '' : 'none';
-            if (potEl) potEl.style.display  = (potRank && potRank !== curRank && potRank !== '—') ? '' : 'none';
+            if (arrow) arrow.style.display = (potRank && potRank !== curRank && potRank !== ' - ') ? '' : 'none';
+            if (potEl) potEl.style.display  = (potRank && potRank !== curRank && potRank !== ' - ') ? '' : 'none';
 
             // Rebuild increment badge
             let badge = incWrap.querySelector('.increment-badge');
@@ -1399,7 +1398,7 @@ function refreshScore(){
             }
         }
 
-        // ── Update sub-cap criterion bars ──────────────────
+        // -- Update sub-cap criterion bars ------------------
         const bars  = document.querySelectorAll('.subcap-row');
         const barsWrap = document.getElementById('subcapBars');
         if (bars.length && d.kra_detail) {
@@ -1426,13 +1425,13 @@ function refreshScore(){
                     fillEl.style.width = pct + '%';
                     fillEl.style.background = pct >= 100 ? '#dc2626' : '#1e4d8c';
                 } else if (fillEl) {
-                    // No hard cap (Research) — show filled proportionally to 100 pts
+                    // No hard cap (Research)  -  show filled proportionally to 100 pts
                     fillEl.style.width = Math.min(100, val) + '%';
                 }
             });
         }
 
-        // ── Gap-to-threshold note in sidebar ───────────────
+        // -- Gap-to-threshold note in sidebar ---------------
         let gapEl = document.getElementById('sbGapNote');
         if (!gapEl) {
             const mn = document.getElementById('sbMinNote');
@@ -1455,10 +1454,10 @@ function refreshScore(){
     });
 }
 
-// ── Helpers ────────────────────────────────────────────────────
+// -- Helpers ----------------------------------------------------
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 
-// ── Evidence Guide Drawer ──────────────────────────────────────
+// -- Evidence Guide Drawer --------------------------------------
 let drawerCat = '';
 
 function openDrawer(){
@@ -1499,7 +1498,7 @@ function filterCriteria(){
     });
 }
 
-// ── Init ───────────────────────────────────────────────────────
+// -- Init -------------------------------------------------------
 <?php if($cur_cat==='Instruction'): ?>switchInstrForm();<?php endif; ?>
 <?php if($cur_cat==='Extension'): ?>updateExtOpts();<?php endif; ?>
 <?php if($cur_cat==='Professional Development'): ?>updatePdOpts();<?php endif; ?>
@@ -1513,7 +1512,7 @@ function refreshSelfAssessment(){
 refreshSelfAssessment();
 setInterval(refreshSelfAssessment, 5000);
 
-// ── In-page confirm modal ──────────────────────────────────────
+// -- In-page confirm modal --------------------------------------
 function peConfirm(icon, color, title, msg, btnLabel, onConfirm) {
     const m = document.getElementById('peConfirmModal');
     document.getElementById('peConfirmIcon').className       = 'bi ' + icon;
@@ -1540,7 +1539,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 </script>
 
-<!-- ── In-page Confirm Modal ─────────────────────────────────── -->
+<!-- -- In-page Confirm Modal ----------------------------------- -->
 <div id="peConfirmModal"
      style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;
             background:rgba(0,0,0,0.5);z-index:99999;overflow:hidden;

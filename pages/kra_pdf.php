@@ -52,7 +52,7 @@ $app = $app_stmt->fetch();
 if (!$app) die('No application found.');
 $app_id = $app['application_id'];
 
-// KRA filtering logic — accepts either the roman numeral (I, II, III, IV)
+// KRA filtering logic  -  accepts either the roman numeral (I, II, III, IV)
 // or the underlying category name (Instruction, Research, Extension, Professional Development),
 // since different pages in the app link with either form.
 $kra_param = $_GET['kra'] ?? 'all';
@@ -90,7 +90,7 @@ foreach ($all_subs as $s) {
 // PDF GENERATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Rank-weighted scoring / reclassification summary — only for the full,
+// Rank-weighted scoring / reclassification summary  -  only for the full,
 // all-KRA report, and always computed fresh (never cached) so it reflects
 // the latest scores, Auto Sub Rank status, and rank at the moment of export.
 $iss = null;
@@ -101,7 +101,7 @@ try {
     }
 } catch (\Throwable $e) {
         // Don't let a scoring-pipeline issue block the rest of the PDF from
-        // generating — the per-KRA breakdown pages are still useful on their
+        // generating  -  the per-KRA breakdown pages are still useful on their
         // own even if the summary page can't be computed this time.
         $iss = null;
 }

@@ -10,7 +10,7 @@ if (!$cycle) {
     echo '<div class="neon-card text-center py-5">
         <i class="bi bi-calendar-x fs-1 text-secondary mb-3 d-block"></i>
         <h5 style="color:#1a3a6b;font-weight:700;margin-bottom:0.5rem;">No Active Reclassification Cycle</h5>
-        <p class="text-muted">There is no open cycle at this time. Your account is ready &mdash; no re-registration needed.</p>
+        <p class="text-muted">There is no open cycle at this time. Your account is ready.</p>
         <p class="text-muted small">Check back when the next cycle opens.</p>
     </div>';
     return;

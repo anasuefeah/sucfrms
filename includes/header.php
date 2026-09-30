@@ -28,7 +28,7 @@ window.addEventListener('pageshow', function(e) {
 
 <nav class="navbar navbar-expand-lg navbar-dark sticky-top" style="z-index:1030;">
     <div class="container-fluid px-4">
-        <!-- Hamburger — mobile only, opens slide-out sidebar -->
+        <!-- Hamburger  -  mobile only, opens slide-out sidebar -->
         <button class="d-md-none me-2" id="mobileMenuBtn" onclick="toggleMobileSidebar()"
                 style="background:none;border:none;color:#fff;padding:0.3rem 0.4rem;cursor:pointer;
                        display:flex;align-items:center;justify-content:center;border-radius:6px;
@@ -45,7 +45,7 @@ window.addEventListener('pageshow', function(e) {
         </a>
         <?php if (isset($_SESSION['user_id']) && isset($pdo)): ?>
         <?php $_notif_count = getUnreadNotifCount($pdo, (int)$_SESSION['user_id']); ?>
-        <!-- Notification bell — always visible on ALL screen sizes, outside the collapsible nav -->
+        <!-- Notification bell  -  always visible on ALL screen sizes, outside the collapsible nav -->
         <div style="position:relative;margin-left:auto;margin-right:0.35rem;flex-shrink:0;">
             <button id="notifBellBtn" onclick="toggleNotifDropdown()"
                     style="background:none;border:none;color:#fff;cursor:pointer;padding:0.4rem 0.55rem;
@@ -89,7 +89,7 @@ window.addEventListener('pageshow', function(e) {
             }
             </style>
 
-            <!-- Notification dropdown — fixed position so it escapes any overflow clipping -->
+            <!-- Notification dropdown  -  fixed position so it escapes any overflow clipping -->
             <div id="notifDropdown"
                  style="display:none;position:fixed;top:62px;right:12px;
                         width:360px;max-width:calc(100vw - 24px);
@@ -280,6 +280,9 @@ const NOTIF_ICONS = {
     score_adjusted:       { icon: 'bi-pencil-square',     color: '#475569' },
     needs_revision:       { icon: 'bi-exclamation-triangle-fill', color: '#334155' },
     revision_resubmitted: { icon: 'bi-arrow-repeat',      color: '#1e4d8c' },
+    appeal_opened:        { icon: 'bi-chat-square-text',  color: '#1e4d8c' },
+    appeal_message:       { icon: 'bi-chat-dots',         color: '#1a3a6b' },
+    appeal_resolved:      { icon: 'bi-check2-circle',     color: '#1e4d8c' },
     approved:             { icon: 'bi-check-circle-fill', color: '#1e4d8c' },
     rejected:             { icon: 'bi-x-circle-fill',     color: '#334155' },
 };
@@ -316,7 +319,7 @@ function renderNotifs(notifs) {
         const role   = '<?= $_SESSION['role'] ?? 'faculty' ?>';
         const id     = n.application_id;
 
-        // Map notification type → correct page + anchor
+        // Map notification type -> correct page + anchor
         function notifLink(type, appId, submissionId, kraCategory) {
             if (!appId) return '#';
             const isFaculty  = role === 'faculty';
@@ -324,11 +327,11 @@ function renderNotifs(notifs) {
             const isTalisay  = role === 'talisay_checker';
 
             switch (type) {
-                // Faculty: score was adjusted → go to comparison area
+                // Faculty: score was adjusted -> go to comparison area
                 case 'score_adjusted':
                     return `index.php?page=my_application&id=${appId}#score-comparison`;
 
-                // Faculty: entry flagged for revision → deep-link straight to that KRA entry
+                // Faculty: entry flagged for revision -> deep-link straight to that KRA entry
                 case 'needs_revision':
                     if (isFaculty && submissionId) {
                         const slugMap = { 'Research': 'research', 'Extension': 'extension', 'Professional Development': 'profdev' };
@@ -353,9 +356,14 @@ function renderNotifs(notifs) {
                 case 'revision_resubmitted':
                     return `index.php?page=review_application&id=${appId}#kra-verification`;
 
-                // Talisay: forwarded from campus checker
+                // ITC: forwarded from the Subcommittee
                 case 'new_talisay_submission':
                     return `index.php?page=review_application&id=${appId}`;
+
+                case 'appeal_opened':
+                case 'appeal_message':
+                case 'appeal_resolved':
+                    return `index.php?page=appeals`;
 
                 default:
                     return isChecker || isTalisay
@@ -463,7 +471,7 @@ document.addEventListener('click', function(e) {
     }
 });
 
-// Auto-refresh badge every 30 seconds — detect new notifications
+// Auto-refresh badge every 30 seconds  -  detect new notifications
 let _lastUnreadCount = <?= $_notif_count ?>;
 setInterval(() => {
     fetch('index.php?notif_action=get_notifs')
@@ -476,7 +484,7 @@ setInterval(() => {
             const hdr    = document.getElementById('notifHeaderCount');
             if (!badge) return;
 
-            // New notification arrived — briefly highlight the bell
+            // New notification arrived  -  briefly highlight the bell
             if (unread > _lastUnreadCount) {
                 if (bell) {
                     bell.style.color = '#475569';
@@ -503,7 +511,7 @@ setInterval(() => {
         .catch(() => {});
 }, 30000);
 
-// ── Real-time dashboard poll — updates KPI numbers every 15s ──
+// -- Real-time dashboard poll  -  updates KPI numbers every 15s --
 (function() {
     const POLL_URL = 'ajax/dashboard_poll.php';
     let _lastCounts = {};
@@ -528,10 +536,10 @@ setInterval(() => {
         if (counts.faculty_status && counts.faculty_status !== _lastFacultyStatus && _lastFacultyStatus !== null) {
             const labels = {
                 under_review:   'Your application is now under review.',
-                needs_revision: 'A checker has flagged an entry for revision.',
-                approved:       'Your application has been approved!',
-                rejected:       'Your application has been returned.',
-                talisay_review: 'Your application is now in Talisay review.',
+                needs_revision: 'An evaluator has flagged an entry for revision.',
+                approved:       'Your evaluation is complete.',
+                rejected:       'Your application has been returned for revision.',
+                talisay_review: 'Your application is now in ITC review.',
             };
             const msg = labels[counts.faculty_status] || 'Your application status has changed.';
             showPollToast(msg, counts.faculty_status === 'approved' ? 'success' : 'info');
@@ -540,7 +548,7 @@ setInterval(() => {
 
         // Checker: toast if new items arrived in queue
         if (_lastCounts.checker_pending !== undefined && counts.checker_pending > _lastCounts.checker_pending) {
-            showPollToast('New application submitted — ' + counts.checker_pending + ' awaiting decision.', 'info');
+            showPollToast('New application submitted  -  ' + counts.checker_pending + ' awaiting decision.', 'info');
         }
 
         _lastCounts = counts;
@@ -621,7 +629,7 @@ document.getElementById('feedbackForm').addEventListener('submit', function(e) {
     const alert = document.getElementById('fbAlert');
     const btn   = this.querySelector('button[type=submit]');
     btn.disabled = true;
-    btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Sending…';
+    btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Sending...';
 
     const fd = new FormData();
     fd.append('subject', document.getElementById('fbSubject').value.trim());

@@ -14,6 +14,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $last_name   = trim($_POST['last_name']   ?? '');
         $campus_id   = intval($_POST['campus_id'] ?? 0);
         $rank        = trim($_POST['rank'] ?? '');
+        $suffix      = trim($_POST['suffix'] ?? '') ?: null;
+        $employee_id = trim($_POST['employee_id'] ?? ($user['employee_id'] ?? ''));
+        $faculty_status = trim($_POST['faculty_status'] ?? ($user['faculty_status'] ?? 'New Faculty'));
+        $applied_first_cycle = ($_POST['applied_first_cycle'] ?? ($user['applied_first_cycle'] ?? '0')) === '1' ? 1 : 0;
 
         $pic_path = $user['profile_pic'] ?? '';
         if ($_SESSION['role'] !== 'admin' && !empty($_FILES['profile_pic']['name'])) {
@@ -36,9 +40,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         if ($first_name && $last_name) {
-            // full_name is a GENERATED column — update only the parts
-            $pdo->prepare("UPDATE users SET first_name=?, middle_name=?, last_name=?, campus_id=?, rank=?, profile_pic=? WHERE user_id=?")
-                ->execute([$first_name, $middle_name, $last_name, $campus_id ?: null, $rank, $pic_path, $uid]);
+            // full_name is a GENERATED column  -  update only the parts
+            if ($_SESSION['role'] === 'faculty') {
+                $dupe = $pdo->prepare("SELECT user_id FROM users WHERE employee_id=? AND user_id<>?");
+                $dupe->execute([$employee_id, $uid]);
+                if ($employee_id !== '' && $dupe->fetch()) {
+                    flashMessage('danger', 'That Employee ID is already used by another account.');
+                    echo "<script>window.location.href='index.php?page=profile';</script>";
+                    exit;
+                }
+                $pdo->prepare("UPDATE users SET first_name=?, middle_name=?, last_name=?, suffix=?, employee_id=?, campus_id=?, rank=?, faculty_status=?, applied_first_cycle=?, profile_pic=? WHERE user_id=?")
+                    ->execute([$first_name, $middle_name, $last_name, $suffix, $employee_id ?: null, $campus_id ?: null, $rank, $faculty_status, $applied_first_cycle, $pic_path, $uid]);
+
+                if (isset($_POST['edu_level']) && is_array($_POST['edu_level'])) {
+                    $allowed_edu_levels = ['Bachelor','Master','Doctorate','PostDoctorate'];
+                    $edu_rows = [];
+                    foreach ($_POST['edu_level'] as $i => $level) {
+                        $level = trim((string)$level);
+                        if (!in_array($level, $allowed_edu_levels, true)) continue;
+                        $degree = trim((string)($_POST['edu_degree'][$i] ?? ''));
+                        $school = trim((string)($_POST['edu_school'][$i] ?? ''));
+                        $year = trim((string)($_POST['edu_year'][$i] ?? ''));
+                        if ($level === 'Bachelor' && ($degree === '' || $school === '' || $year === '')) {
+                            flashMessage('danger', 'Undergrad education must include name of degree, name of SUC, and year graduated.');
+                            echo "<script>window.location.href='index.php?page=profile';</script>";
+                            exit;
+                        }
+                        $edu_rows[] = [
+                            'level' => $level,
+                            'degree' => $degree !== '' ? $degree : 'N/A',
+                            'school' => $school !== '' ? $school : 'N/A',
+                            'year' => $year !== '' ? $year : 'N/A',
+                        ];
+                    }
+                    $pdo->prepare("DELETE FROM faculty_education WHERE user_id=?")->execute([$uid]);
+                    $edu_ins = $pdo->prepare("INSERT INTO faculty_education (user_id, level, degree_program, major_specialization, school_university, year_graduated, honors_units_notes) VALUES (?,?,?,?,?,?,?)");
+                    foreach ($edu_rows as $row) {
+                        $edu_ins->execute([$uid, $row['level'], $row['degree'], 'N/A', $row['school'], $row['year'], null]);
+                    }
+                }
+            } else {
+                $pdo->prepare("UPDATE users SET first_name=?, middle_name=?, last_name=?, suffix=?, profile_pic=? WHERE user_id=?")
+                    ->execute([$first_name, $middle_name, $last_name, $suffix, $pic_path, $uid]);
+            }
             // Update session with new name parts and formatted display name
             $_SESSION['first_name']  = $first_name;
             $_SESSION['middle_name'] = $middle_name ?? '';
@@ -83,7 +127,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // Build initials from first_name + last_name parts
 $initials = strtoupper(substr($user['first_name'] ?? 'U', 0, 1) . substr($user['last_name'] ?? '', 0, 1));
 try { $since = (new DateTime($user['created_at'] ?? 'now'))->format('M Y'); }
-catch(Exception $e) { $since = '&mdash;'; }
+catch(Exception $e) { $since = '-'; }
 
 // Fetch campus name
 $campus_name = '';
@@ -108,13 +152,41 @@ if ($_SESSION['role'] === 'faculty') {
     $latest_app->execute([$uid]);
     $latest = $latest_app->fetch();
 }
+
+$education = [];
+$employment = ['current' => null, 'previous' => null];
+if ($_SESSION['role'] === 'faculty') {
+    try {
+        $ed = $pdo->prepare("SELECT * FROM faculty_education WHERE user_id=? ORDER BY FIELD(level,'Bachelor','Master','Doctorate','PostDoctorate'), id");
+        $ed->execute([$uid]);
+        $education = $ed->fetchAll();
+
+        $emp = $pdo->prepare("SELECT * FROM faculty_employment WHERE user_id=? ORDER BY FIELD(type,'current','previous'), id");
+        $emp->execute([$uid]);
+        foreach ($emp->fetchAll() as $row) {
+            $employment[$row['type']] = $row;
+        }
+    } catch (\Exception $e) {}
+}
+$pfDate = fn($d) => !empty($d) ? date('M d, Y', strtotime($d)) : 'N/A';
+$pfVal = fn($v) => htmlspecialchars(trim((string)$v) !== '' ? (string)$v : 'N/A');
+$education_levels = [
+    'Bachelor' => 'Undergrad',
+    'Master' => 'Masters',
+    'Doctorate' => 'Doctorate',
+    'PostDoctorate' => 'Post-doctorate',
+];
+$education_by_level = [];
+foreach ($education as $ed_row) {
+    $education_by_level[$ed_row['level']] = $ed_row;
+}
 ?>
 
 <?php showFlash(); ?>
 
 <div class="profile-page">
 
-    <!-- â”€â”€ Banner â”€â”€ -->
+    <!-- -- Banner -- -->
     <div style="width:100%;height:160px;border-radius:14px 14px 0 0;overflow:hidden;position:relative;background:linear-gradient(135deg,#0f2952 0%,#1a3a6b 35%,#1e4d8c 65%,#1a5276 100%);">
         <!-- Subtle pattern overlay -->
         <div style="position:absolute;inset:0;opacity:0.12;background-image:
@@ -125,7 +197,7 @@ if ($_SESSION['role'] === 'faculty') {
         <div style="position:absolute;inset:0;background:linear-gradient(to bottom,rgba(0,0,0,0.0) 0%,rgba(30,77,140,0.45) 100%);"></div>
     </div>
 
-    <!-- â”€â”€ Avatar + Identity Row â”€â”€ -->
+    <!-- -- Avatar + Identity Row -- -->
     <div style="background:#fff;padding:0 2rem 1.25rem;display:flex;align-items:flex-end;gap:1.5rem;border-bottom:1px solid #e8edf5;flex-wrap:wrap;">
         <div style="flex-shrink:0;margin-top:-55px;position:relative;z-index:2;">
             <?php if (!empty($user['profile_pic'])): ?>
@@ -161,8 +233,12 @@ if ($_SESSION['role'] === 'faculty') {
                 <input type="hidden" name="first_name"  value="<?= htmlspecialchars($user['first_name']  ?? '') ?>">
                 <input type="hidden" name="middle_name" value="<?= htmlspecialchars($user['middle_name'] ?? '') ?>">
                 <input type="hidden" name="last_name"   value="<?= htmlspecialchars($user['last_name']   ?? '') ?>">
+                <input type="hidden" name="suffix"      value="<?= htmlspecialchars($user['suffix']      ?? '') ?>">
+                <input type="hidden" name="employee_id" value="<?= htmlspecialchars($user['employee_id'] ?? '') ?>">
                 <input type="hidden" name="campus_id"   value="<?= htmlspecialchars($user['campus_id']   ?? '') ?>">
                 <input type="hidden" name="rank"        value="<?= htmlspecialchars($user['rank']        ?? '') ?>">
+                <input type="hidden" name="faculty_status" value="<?= htmlspecialchars($user['faculty_status'] ?? 'New Faculty') ?>">
+                <input type="hidden" name="applied_first_cycle" value="<?= !empty($user['applied_first_cycle']) ? '1' : '0' ?>">
                 <input type="file"   id="avatarFileInput" name="profile_pic" accept=".jpg,.jpeg,.png,.gif,.webp"
                        onchange="previewAndUploadAvatar(this)">
             </form>
@@ -226,7 +302,7 @@ if ($_SESSION['role'] === 'faculty') {
                 </div>
                 <div>
                     <div style="font-size:0.62rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">Employee ID</div>
-                    <div style="font-size:0.92rem;font-weight:700;color:#0f172a;margin-top:1px;"><?= htmlspecialchars($user['employee_id'] ?? '—') ?></div>
+                    <div style="font-size:0.92rem;font-weight:700;color:#0f172a;margin-top:1px;"><?= htmlspecialchars($user['employee_id'] ?? ' - ') ?></div>
                 </div>
             </div>
 
@@ -269,7 +345,7 @@ if ($_SESSION['role'] === 'faculty') {
                 <i class="bi bi-file-earmark-text" style="color:#1e4d8c;font-size:1rem;flex-shrink:0;"></i>
                 <div>
                     <div style="font-size:0.62rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">Latest Application</div>
-                    <div style="font-size:0.85rem;font-weight:600;color:#1e293b;margin-top:1px;"><?= htmlspecialchars($latest['cycle_name'] ?? '—') ?></div>
+                    <div style="font-size:0.85rem;font-weight:600;color:#1e293b;margin-top:1px;"><?= htmlspecialchars($latest['cycle_name'] ?? ' - ') ?></div>
                 </div>
             </div>
             <div><?= statusBadge($latest['status']) ?></div>
@@ -278,10 +354,71 @@ if ($_SESSION['role'] === 'faculty') {
 
     </div>
 
+    <?php if ($_SESSION['role'] === 'faculty'): ?>
+    <div style="background:#fff;padding:1.25rem 2rem 1.5rem;border-bottom:1px solid #e8edf5;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-bottom:0.9rem;">
+            <div>
+                <div style="font-weight:700;color:#1a3a6b;font-size:0.95rem;">Faculty Details</div>
+                <div style="font-size:0.72rem;color:#94a3b8;">Education and employment information from your profile entry</div>
+            </div>
+        </div>
+
+        <div style="display:flex;gap:0.5rem;margin-bottom:1rem;overflow-x:auto;">
+            <button type="button" class="pf-detail-tab active" data-tab="edu" onclick="pfDetailTab('edu')"
+                    style="border:1px solid #1a3a6b;background:#1a3a6b;color:#fff;border-radius:8px;padding:0.45rem 0.85rem;font-size:0.78rem;font-weight:700;white-space:nowrap;">
+                Educational Attainment
+            </button>
+            <button type="button" class="pf-detail-tab" data-tab="emp" onclick="pfDetailTab('emp')"
+                    style="border:1px solid #e2e8f0;background:#f8fafc;color:#475569;border-radius:8px;padding:0.45rem 0.85rem;font-size:0.78rem;font-weight:700;white-space:nowrap;">
+                Employment History
+            </button>
+        </div>
+
+        <div id="pf-detail-edu">
+            <div style="background:#f8fafc;border:1px solid #e8edf5;border-radius:10px;padding:1rem;">
+                <?php foreach ($education_levels as $level_key => $level_label):
+                    $ed = $education_by_level[$level_key] ?? [];
+                ?>
+                <div class="pf-education-line">
+                    <div class="pf-education-level"><?= htmlspecialchars($level_label) ?></div>
+                    <div class="pf-education-fields">
+                        <div><span>Name of Degree</span><strong><?= $pfVal($ed['degree_program'] ?? '') ?></strong></div>
+                        <div><span>Name of SUC</span><strong><?= $pfVal($ed['school_university'] ?? '') ?></strong></div>
+                        <div><span>Year Graduated</span><strong><?= $pfVal($ed['year_graduated'] ?? '') ?></strong></div>
+                    </div>
+                </div>
+                <?php endforeach; ?>
+                <div class="pf-detail-row" style="border-bottom:0;margin-top:0.35rem;">
+                    <span>Applied during 1st Cycle</span>
+                    <strong><?= !empty($user['applied_first_cycle']) ? 'YES' : 'NO' ?></strong>
+                </div>
+            </div>
+        </div>
+
+        <div id="pf-detail-emp" style="display:none;">
+            <div class="pf-detail-grid">
+                <?php foreach ([['CURRENT EMPLOYMENT',$employment['current'] ?? []],['PREVIOUS EMPLOYMENT',$employment['previous'] ?? []]] as [$heading, $row]): ?>
+                <div style="background:#f8fafc;border:1px solid #e8edf5;border-radius:10px;padding:1rem;">
+                    <div style="font-size:0.68rem;font-weight:800;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;border-bottom:1px solid #e8edf5;padding-bottom:0.5rem;margin-bottom:0.2rem;"><?= $heading ?></div>
+                    <?php
+                    $items = $heading === 'CURRENT EMPLOYMENT'
+                        ? [['Faculty Rank',$row['rank'] ?? ''],['Mode of Appointment',$row['mode_of_appointment'] ?? ''],['Date of Appointment',$pfDate($row['date_of_appointment'] ?? '')],['SUC',$row['suc'] ?? ''],['Campus',$row['campus'] ?? ''],['Address',$row['address'] ?? '']]
+                        : [['Previous Rank',$row['rank'] ?? ''],['Mode of Appointment',$row['mode_of_appointment'] ?? ''],['Date of Appointment',$pfDate($row['date_of_appointment'] ?? '')],['Employment Sector',$row['employment_sector'] ?? ''],['SUC',$row['suc'] ?? ''],['Campus',$row['campus'] ?? ''],['Address',$row['address'] ?? '']];
+                    foreach ($items as [$label, $value]):
+                    ?>
+                    <div class="pf-detail-row"><span><?= $label ?></span><strong><?= $pfVal($value) ?></strong></div>
+                    <?php endforeach; ?>
+                </div>
+                <?php endforeach; ?>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+
 </div><!-- /profile-page -->
 
 
-<!-- â”€â”€ Edit Profile Modal â”€â”€ -->
+<!-- -- Edit Profile Modal -- -->
 <div id="pf-edit-modal"
      style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9999;align-items:center;justify-content:center;padding:1rem;">
     <div style="background:#fff;border-radius:12px;width:100%;max-width:640px;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.25);">
@@ -326,19 +463,33 @@ if ($_SESSION['role'] === 'faculty') {
                         <input type="text" name="last_name" class="form-control"
                                value="<?= htmlspecialchars($user['last_name'] ?? '') ?>" required>
                     </div>
+                    <div class="col-md-4">
+                        <label class="form-label">Suffix</label>
+                        <input type="text" name="suffix" class="form-control"
+                               value="<?= htmlspecialchars($user['suffix'] ?? '') ?>"
+                               placeholder="Optional">
+                    </div>
                     <div class="col-md-6">
                         <label class="form-label">Email</label>
-                        <input type="email" class="form-control" value="<?= htmlspecialchars($user['email']) ?>" disabled>
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="bi bi-lock-fill"></i></span>
+                            <input type="email" class="form-control" value="<?= htmlspecialchars($user['email']) ?>" readonly>
+                        </div>
+                        <div style="font-size:0.72rem;color:#94a3b8;margin-top:4px;">Email can only be changed by the Administrator.</div>
                     </div>
                     <div class="col-md-6">
                         <label class="form-label">Employee ID</label>
-                        <input type="text" class="form-control" value="<?= htmlspecialchars($user['employee_id']) ?>" disabled>
+                        <?php if ($_SESSION['role'] === 'faculty'): ?>
+                        <input type="text" name="employee_id" class="form-control" value="<?= htmlspecialchars($user['employee_id'] ?? '') ?>">
+                        <?php else: ?>
+                        <input type="text" class="form-control" value="<?= htmlspecialchars($user['employee_id'] ?? '') ?>" disabled>
+                        <?php endif; ?>
                     </div>
                     <?php if ($_SESSION['role'] !== 'admin'): ?>
                     <div class="col-md-6">
                         <label class="form-label">Campus</label>
                         <select name="campus_id" class="form-select">
-                            <option value="" disabled <?= empty($user['campus_id']) ? 'selected' : '' ?>>&mdash; Select Campus &mdash;</option>
+                            <option value="" disabled <?= empty($user['campus_id']) ? 'selected' : '' ?>>- Select Campus -</option>
                             <?php
                             $campuses = $pdo->query("SELECT * FROM campuses WHERE is_active=1 ORDER BY campus_name")->fetchAll();
                             foreach ($campuses as $c):
@@ -352,12 +503,58 @@ if ($_SESSION['role'] === 'faculty') {
                     <div class="col-md-6">
                         <label class="form-label">Faculty Rank</label>
                         <select name="rank" class="form-select">
-                            <option value="" disabled <?= empty($user['rank']) ? 'selected' : '' ?>>&mdash; Select Rank &mdash;</option>
+                            <option value="" disabled <?= empty($user['rank']) ? 'selected' : '' ?>>- Select Rank -</option>
                             <?php foreach (facultyRanks() as $r): ?>
                             <option value="<?= $r ?>" <?= ($user['rank'] ?? '') === $r ? 'selected' : '' ?>><?= $r ?></option>
                             <?php endforeach; ?>
                         </select>
                     </div>
+                    <?php if ($_SESSION['role'] === 'faculty'): ?>
+                    <div class="col-md-6">
+                        <label class="form-label">Faculty Status</label>
+                        <select name="faculty_status" class="form-select">
+                            <option value="Existing Faculty" <?= ($user['faculty_status'] ?? '') === 'Existing Faculty' ? 'selected' : '' ?>>Existing Faculty</option>
+                            <option value="New Faculty" <?= ($user['faculty_status'] ?? 'New Faculty') === 'New Faculty' ? 'selected' : '' ?>>New Faculty</option>
+                        </select>
+                    </div>
+                    <div class="col-12">
+                        <div style="border-top:1px solid #e8edf5;margin-top:0.4rem;padding-top:1rem;">
+                            <div style="font-size:0.72rem;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.75rem;">Educational Attainment</div>
+                            <div style="display:flex;flex-direction:column;gap:0.75rem;">
+                                <?php foreach ($education_levels as $level_key => $level_label):
+                                    $ed = $education_by_level[$level_key] ?? [];
+                                    $is_required = $level_key === 'Bachelor';
+                                ?>
+                                <div style="background:#f8fafc;border:1px solid #e8edf5;border-radius:8px;padding:0.85rem;">
+                                    <input type="hidden" name="edu_level[]" value="<?= htmlspecialchars($level_key) ?>">
+                                    <div style="font-size:0.82rem;font-weight:800;color:#1a3a6b;margin-bottom:0.6rem;"><?= htmlspecialchars($level_label) ?></div>
+                                    <div class="pf-edu-edit-grid">
+                                        <div>
+                                            <label class="form-label">Name of Degree<?= $is_required ? ' *' : '' ?></label>
+                                            <input name="edu_degree[]" class="form-control" value="<?= htmlspecialchars($ed['degree_program'] ?? '') ?>" placeholder="<?= $is_required ? 'Bachelor of Science in...' : 'N/A if none' ?>" <?= $is_required ? 'required' : '' ?>>
+                                        </div>
+                                        <div>
+                                            <label class="form-label">Name of SUC<?= $is_required ? ' *' : '' ?></label>
+                                            <input name="edu_school[]" class="form-control" value="<?= htmlspecialchars($ed['school_university'] ?? '') ?>" placeholder="<?= $is_required ? 'School / University' : 'N/A if none' ?>" <?= $is_required ? 'required' : '' ?>>
+                                        </div>
+                                        <div>
+                                            <label class="form-label">Year Graduated<?= $is_required ? ' *' : '' ?></label>
+                                            <input name="edu_year[]" class="form-control" value="<?= htmlspecialchars($ed['year_graduated'] ?? '') ?>" placeholder="<?= $is_required ? 'YYYY' : 'N/A' ?>" <?= $is_required ? 'required' : '' ?>>
+                                        </div>
+                                    </div>
+                                </div>
+                                <?php endforeach; ?>
+                            </div>
+                            <div style="margin-top:0.85rem;">
+                                <label class="form-label">Applied during 1st Cycle</label>
+                                <select name="applied_first_cycle" class="form-select" style="max-width:220px;">
+                                    <option value="0" <?= empty($user['applied_first_cycle']) ? 'selected' : '' ?>>NO</option>
+                                    <option value="1" <?= !empty($user['applied_first_cycle']) ? 'selected' : '' ?>>YES</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    <?php endif; ?>
                     <?php endif; ?>
                 </div>
                 <div class="mt-4 d-flex gap-2">
@@ -415,6 +612,70 @@ if ($_SESSION['role'] === 'faculty') {
 
     </div>
 </div>
+
+<style>
+.pf-detail-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem;
+}
+.pf-detail-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    border-bottom: 1px solid #e8edf5;
+    padding: 0.52rem 0;
+    font-size: 0.82rem;
+}
+.pf-detail-row span {
+    color: #94a3b8;
+    flex-shrink: 0;
+}
+.pf-detail-row strong {
+    color: #1e293b;
+    font-weight: 600;
+    text-align: right;
+    overflow-wrap: anywhere;
+}
+.pf-education-line {
+    display: grid;
+    grid-template-columns: 150px 1fr;
+    gap: 1rem;
+    padding: 0.75rem 0;
+    border-bottom: 1px solid #e8edf5;
+}
+.pf-education-level {
+    color: #1e293b;
+    font-weight: 800;
+    font-size: 0.86rem;
+}
+.pf-education-fields,
+.pf-edu-edit-grid {
+    display: grid;
+    grid-template-columns: 1.3fr 1.3fr 0.8fr;
+    gap: 0.75rem;
+}
+.pf-education-fields span {
+    display: block;
+    color: #94a3b8;
+    font-size: 0.76rem;
+    margin-bottom: 0.2rem;
+}
+.pf-education-fields strong {
+    display: block;
+    color: #1e293b;
+    font-size: 0.84rem;
+    font-weight: 600;
+    overflow-wrap: anywhere;
+}
+@media (max-width: 768px) {
+    .pf-detail-grid { grid-template-columns: 1fr; }
+    .pf-detail-row strong { max-width: 58%; }
+    .pf-education-line { grid-template-columns: 1fr; gap: 0.45rem; }
+    .pf-education-fields,
+    .pf-edu-edit-grid { grid-template-columns: 1fr; }
+}
+</style>
 
 <script>
 document.addEventListener('DOMContentLoaded', function () {
@@ -486,6 +747,20 @@ function pfModalTab(btn, paneId) {
 document.getElementById('pf-edit-modal').addEventListener('click', function(e) {
     if (e.target === this) this.style.display = 'none';
 });
+
+function pfDetailTab(tab) {
+    document.querySelectorAll('.pf-detail-tab').forEach(btn => {
+        const active = btn.dataset.tab === tab;
+        btn.classList.toggle('active', active);
+        btn.style.background = active ? '#1a3a6b' : '#f8fafc';
+        btn.style.borderColor = active ? '#1a3a6b' : '#e2e8f0';
+        btn.style.color = active ? '#fff' : '#475569';
+    });
+    const edu = document.getElementById('pf-detail-edu');
+    const emp = document.getElementById('pf-detail-emp');
+    if (edu) edu.style.display = tab === 'edu' ? 'block' : 'none';
+    if (emp) emp.style.display = tab === 'emp' ? 'block' : 'none';
+}
 
 function previewAndUploadAvatar(input) {
     if (!input.files || !input.files[0]) return;

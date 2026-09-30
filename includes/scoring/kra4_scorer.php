@@ -1,16 +1,16 @@
 <?php
 /**
- * KRA IV Scorer — Professional Development (100 points + 20 bonus)
+ * KRA IV Scorer  -  Professional Development (100 points + 20 bonus)
  * DBM-CHED Joint Circular No. 01, s. 2026
  *
  * Structure:
- *   Criterion A – Professional Organizations:  max 20 pts (5 per year)
- *   Criterion B – Continuing Development:      max 60 pts
+ *   Criterion A - Professional Organizations:  max 20 pts (5 per year)
+ *   Criterion B - Continuing Development:      max 60 pts
  *     - educational qualifications (no sub-cap within B)
  *     - training/conference attendance:         sub-cap 10
  *     - paper presentations:                    sub-cap 10
- *   Criterion C – Awards and Recognition:       max 20 pts
- *   Criterion D – Bonus (Newly Hired Faculty):  max 20 pts (added on top)
+ *   Criterion C - Awards and Recognition:       max 20 pts
+ *   Criterion D - Bonus (Newly Hired Faculty):  max 20 pts (added on top)
  *   KRA IV total = min(A + B + C + D, 100)
  */
 
@@ -64,18 +64,18 @@ class KRA4Scorer
             $pts      = 0.0;
 
             switch ($critType) {
-                // ── Criterion A: Professional Organizations ──────────
+                // -- Criterion A: Professional Organizations ----------
                 case 'A-org':
                     // 5 pts per year of current active membership
                     $years = self::professionalOrgYears($parts[2] ?? 1);
                     $pts   = min(self::CAP_A, 5.0 * $years);
                     if (empty($s['evidence_names'])) {
-                        $pending[] = "KRA IV Crit A: '{$desc}' — missing membership certificate/ID and engagement certification from org head.";
+                        $pending[] = "KRA IV Crit A: '{$desc}'  -  missing membership certificate/ID and engagement certification from org head.";
                     }
                     $crit_a += $pts;
                     break;
 
-                // ── Criterion B: Educational Qualifications ──────────
+                // -- Criterion B: Educational Qualifications ----------
                 case 'B-degree':
                     $pts = match(true) {
                         $subVal >= 20  => 20.0,  // additional master's
@@ -87,18 +87,18 @@ class KRA4Scorer
                     if ($subVal >= 40.0) $has_doctorate = true;
                     
                     if (empty($s['evidence_names'])) {
-                        $pending[] = "KRA IV Crit B: Educational qualification '{$desc}' — missing transcript of records / diploma / certificate.";
+                        $pending[] = "KRA IV Crit B: Educational qualification '{$desc}'  -  missing transcript of records / diploma / certificate.";
                     }
                     $crit_b_edu += $pts;
                     break;
 
-                // ── Criterion B: Training/Conference/Workshop ────────
+                // -- Criterion B: Training/Conference/Workshop --------
                 case 'B-training':
                     $pts_each = str_contains(strtolower($desc), 'intl') || $subVal >= 2 ? 2.0 : 1.0;
-                    // International capacity-building in PH: must have ≥3 countries represented
+                    // International capacity-building in PH: must have >=3 countries represented
                     if ($pts_each === 2.0 && str_contains(strtolower($desc), 'philippines')) {
                         if (empty($parts[3]) || (int)$parts[3] < 3) {
-                            $config_i[] = "KRA IV Crit B: '{$desc}' — international activity in PH requires ≥3 countries represented among speakers/participants to qualify at international rate.";
+                            $config_i[] = "KRA IV Crit B: '{$desc}'  -  international activity in PH requires >=3 countries represented among speakers/participants to qualify at international rate.";
                             $pts_each = 1.0; // downgrade to local rate
                         }
                     }
@@ -107,7 +107,7 @@ class KRA4Scorer
                     $virtual = str_contains(strtolower($desc), 'virtual') || str_contains(strtolower($desc), 'online');
                     $min_hrs = $virtual ? 8 : 6;
                     if ($hours > 0 && $hours < $min_hrs) {
-                        $config_i[] = "KRA IV Crit B: '{$desc}' — minimum {$min_hrs} training hours required (" . ($virtual ? '8 virtual' : '6 in-person') . "). Only {$hours}h declared — excluded.";
+                        $config_i[] = "KRA IV Crit B: '{$desc}'  -  minimum {$min_hrs} training hours required (" . ($virtual ? '8 virtual' : '6 in-person') . "). Only {$hours}h declared  -  excluded.";
                         break;
                     }
                     if ($train_total + $pts_each <= self::CAP_B_TRAINING) {
@@ -117,12 +117,12 @@ class KRA4Scorer
                         $config_i[] = "KRA IV Crit B: Training/conference sub-cap (10 pts) reached. '{$desc}' excluded.";
                     }
                     if (empty($s['evidence_names'])) {
-                        $pending[] = "KRA IV Crit B: '{$desc}' — missing certificate of participation.";
+                        $pending[] = "KRA IV Crit B: '{$desc}'  -  missing certificate of participation.";
                     }
                     $crit_b_train += $pts;
                     break;
 
-                // ── Criterion B: Paper Presentations ────────────────
+                // -- Criterion B: Paper Presentations ----------------
                 case 'B-paper':
                     $pts_each = $subVal >= 5 ? 5.0 : 3.0;
                     $is_intl  = ($pts_each === 5.0);
@@ -130,7 +130,7 @@ class KRA4Scorer
                     if ($is_intl) {
                         $countries = (int)($parts[3] ?? 0);
                         if ($countries < 3) {
-                            $config_i[] = "KRA IV Crit B: Paper '{$desc}' — international rate requires ≥3 countries represented among speakers/participants. Downgrading to local rate.";
+                            $config_i[] = "KRA IV Crit B: Paper '{$desc}'  -  international rate requires >=3 countries represented among speakers/participants. Downgrading to local rate.";
                             $pts_each = 3.0;
                         }
                     }
@@ -141,16 +141,16 @@ class KRA4Scorer
                         $config_i[] = "KRA IV Crit B: Paper presentation sub-cap (10 pts) reached. '{$desc}' excluded.";
                     }
                     if (empty($s['evidence_names'])) {
-                        $pending[] = "KRA IV Crit B: Paper '{$desc}' — missing acceptance letter/certificate + research director certification (not derived from student thesis/dissertation) + governing/President approval to present.";
+                        $pending[] = "KRA IV Crit B: Paper '{$desc}'  -  missing acceptance letter/certificate + research director certification (not derived from student thesis/dissertation) + governing/President approval to present.";
                     }
                     $crit_b_paper += $pts;
                     break;
 
-                // ── Criterion C: Awards & Recognition ───────────────
+                // -- Criterion C: Awards & Recognition ---------------
                 case 'C-award':
                     // Only 3 confirmed tiers per JC01 evidence table
                     $pts = match(true) {
-                        $subVal >= 4  => 4.0,   // national (and international — see below)
+                        $subVal >= 4  => 4.0,   // national (and international  -  see below)
                         $subVal >= 3  => 3.0,   // local/regional
                         $subVal >= 2  => 2.0,   // institutional
                         default       => 0.0,
@@ -158,23 +158,23 @@ class KRA4Scorer
                     // International award: no distinct tier in source table.
                     // Per JC01 gap note: default to national rate (4) and flag explicitly.
                     if ($subVal === 0.0) {
-                        // 0-pts award = national/international → triggers auto sub-rank only
+                        // 0-pts award = national/international -> triggers auto sub-rank only
                         $has_nat_award = true;
-                        $config_i[] = "KRA IV Crit C: '{$desc}' — national/international award triggers +1 automatic sub-rank (JC01 Art. IV). No KRA IV points awarded here; sub-rank handled by Auto Sub-Rank module.";
+                        $config_i[] = "KRA IV Crit C: '{$desc}'  -  national/international award triggers +1 automatic sub-rank (JC01 Art. IV). No KRA IV points awarded here; sub-rank handled by Auto Sub-Rank module.";
                         break;
                     }
                     // International award stored at national rate (4) with explicit flag
                     if (str_contains(strtolower($desc), 'international') && $pts === 4.0) {
-                        $config_i[] = "KRA IV Crit C: '{$desc}' — international award defaulted to national rate (4 pts) per JC01 known gap (no distinct international tier in confirmed points table). Flag for committee review.";
+                        $config_i[] = "KRA IV Crit C: '{$desc}'  -  international award defaulted to national rate (4 pts) per JC01 known gap (no distinct international tier in confirmed points table). Flag for committee review.";
                     }
-                    // Only the HIGHEST award per event/competition — do not sum multiple placements
+                    // Only the HIGHEST award per event/competition  -  do not sum multiple placements
                     if (empty($s['evidence_names'])) {
-                        $pending[] = "KRA IV Crit C: '{$desc}' — missing award certificate and picture of plaque/trophy/medal.";
+                        $pending[] = "KRA IV Crit C: '{$desc}'  -  missing award certificate and picture of plaque/trophy/medal.";
                     }
                     $crit_c += $pts;
                     break;
 
-                // ── Criterion D: Bonus for Newly Hired Faculty ───────
+                // -- Criterion D: Bonus for Newly Hired Faculty -------
                 case 'D-prior-academic':
                     $years = max(1, (float)($parts[2] ?? 1));
                     $role  = strtolower($parts[1] ?? '');
@@ -182,7 +182,7 @@ class KRA4Scorer
                     elseif (str_contains($role, 'vp') || str_contains($role, 'vice') || str_contains($role, 'dean') || str_contains($role, 'director')) $pts = 4.0 * $years;
                     elseif (str_contains($role, 'dept') || str_contains($role, 'head') || str_contains($role, 'program')) $pts = 3.0 * $years;
                     else $pts = 2.0 * $years;  // faculty member
-                    if (empty($s['evidence_names'])) $pending[] = "KRA IV Crit D: '{$desc}' — missing service record / certificate of employment / appointment order.";
+                    if (empty($s['evidence_names'])) $pending[] = "KRA IV Crit D: '{$desc}'  -  missing service record / certificate of employment / appointment order.";
                     $crit_d += $pts;
                     break;
 
@@ -192,7 +192,7 @@ class KRA4Scorer
                     if (str_contains($role, 'managerial') || str_contains($role, 'supervisor')) $pts = 4.0 * $years;
                     elseif (str_contains($role, 'technical') || str_contains($role, 'skilled'))  $pts = 3.0 * $years;
                     else $pts = 2.0 * $years;  // support/admin staff
-                    if (empty($s['evidence_names'])) $pending[] = "KRA IV Crit D: '{$desc}' — missing service record / certificate of employment / appointment order for industry experience.";
+                    if (empty($s['evidence_names'])) $pending[] = "KRA IV Crit D: '{$desc}'  -  missing service record / certificate of employment / appointment order for industry experience.";
                     $crit_d += $pts;
                     break;
 
@@ -214,12 +214,12 @@ class KRA4Scorer
         $crit_c = min(self::CAP_C, $crit_c);
         $crit_d = min(self::CAP_D, $crit_d);
 
-        // ── Doctorate auto sub-rank points ───────────────────────────────────
+        // -- Doctorate auto sub-rank points -----------------------------------
         // AutoSubRankCalculator determines mode automatically:
-        //   triggered       → 0 pts (doctorate used for +1 rank instead)
-        //   points_only     → 40 pts added to education score
-        //   blocked_historical → 40 pts (historical trigger, reverts to points)
-        //   not_eligible    → 0 pts (no doctorate present or rank ineligible)
+        //   triggered       -> 0 pts (doctorate used for +1 rank instead)
+        //   points_only     -> 40 pts added to education score
+        //   blocked_historical -> 40 pts (historical trigger, reverts to points)
+        //   not_eligible    -> 0 pts (no doctorate present or rank ineligible)
         if ($has_doctorate) {
             global $pdo;
             $doctorate_pts = 0.0;
@@ -242,7 +242,7 @@ class KRA4Scorer
                 if ($asr_app_id > 0 && class_exists('\Scoring\AutoSubRankCalculator')) {
                     $doctorate_pts = \Scoring\AutoSubRankCalculator::getDoctoratePoints($pdo, $asr_app_id);
                 } else {
-                    // Fallback: no app context — default to points_only (safe)
+                    // Fallback: no app context  -  default to points_only (safe)
                     $doctorate_pts = \Scoring\AutoSubRankCalculator::DOCTORATE_POINTS;
                 }
             }

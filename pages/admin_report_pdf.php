@@ -63,24 +63,17 @@ foreach ($kra_q->fetchAll() as $k) $kra_avgs[$k['kra_category']] = round($k['avg
 $generated_at = date('M d, Y h:i A');
 $admin_name   = $_SESSION['full_name'] ?? 'Administrator';
 
-// â”€â”€ FPDF class â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- FPDF class -------------------------------------------------
 class AdminReport_PDF extends FPDF {
     public $cyc_name   = '';
     public $generated  = '';
     public $admin_name = '';
 
     function Header() {
-        $this->SetFont('Times','B',12);
-        $this->SetTextColor(30,58,138);
-        $this->SetXY(10,8);
-        $this->Cell(0,5,'State Universities and Colleges',0,1,'C');
-        $this->SetFont('Times','',8.5);
-        $this->SetTextColor(80,80,80);
-        $this->SetX(10);
-        $this->Cell(0,4,'SUC Faculty Reclassification Management System',0,1,'C');
         $this->SetFillColor(30,58,138);
         $this->SetTextColor(255,255,255);
         $this->SetFont('Times','B',12);
+        $this->SetY(8);
         $this->SetX(10);
         $this->Cell(0,7,'ADMIN REPORT',0,1,'C',true);
         $this->SetFont('Times','',7.5);
@@ -128,7 +121,7 @@ class AdminReport_PDF extends FPDF {
     }
 }
 
-// â”€â”€ Build PDF â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Build PDF --------------------------------------------------
 $pdf = new AdminReport_PDF('L','mm','A4');
 $pdf->AliasNbPages();
 $pdf->cyc_name   = $selected_cycle['cycle_name'] ?? 'All Cycles';
@@ -138,26 +131,30 @@ $pdf->SetMargins(10,38,10);
 $pdf->SetAutoPageBreak(true,12);
 $pdf->AddPage();
 
-// â”€â”€ Summary stats â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Summary stats ----------------------------------------------
 $pdf->SectionBar('SUMMARY STATISTICS');
 $pdf->Ln(1);
 
 $stats = [
     ['Total Faculty',   $total_faculty],
     ['Applications',    count($apps)],
-    ['Reclassified',    $status_counts['reclassified'] ?? 0],
-    ['Approved',        $status_counts['approved'] ?? 0],
+    ['Evaluation Complete', $status_counts['reclassified'] ?? 0],
+    ['Evaluation Complete', $status_counts['approved'] ?? 0],
     ['Pending Review',  ($status_counts['submitted']??0)+($status_counts['under_review']??0)],
-    ['Rejected',        ($status_counts['rejected']??0)+($status_counts['admin_rejected']??0)],
+    ['Returned for Revision', ($status_counts['rejected']??0)+($status_counts['admin_rejected']??0)],
 ];
 $sw = 44; $sx = 10; $sy = $pdf->GetY();
 foreach ($stats as $i => [$lbl,$val]) {
     $pdf->StatBox($lbl, (string)$val, $sx + $i*$sw, $sy, $sw);
 }
 $pdf->SetY($sy + 14);
+$pdf->SetFont('Times','I',7.5);
+$pdf->SetTextColor(80,80,80);
+$pdf->Cell(0, 5, 'Scores and recommended ranks are for further committee review and are not final decisions.', 0, 1, 'C');
+$pdf->SetTextColor(0,0,0);
 $pdf->Ln(3);
 
-// â”€â”€ KRA Averages â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- KRA Averages -----------------------------------------------
 $pdf->SectionBar('AVERAGE KRA SCORES - ' . ($selected_cycle['cycle_name'] ?? 'All Cycles'));
 $pdf->Ln(1);
 
@@ -191,7 +188,7 @@ foreach ($kra_avgs as $cat => $avg) {
 $pdf->SetY($ky + 17);
 $pdf->Ln(3);
 
-// â”€â”€ Applications table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Applications table -----------------------------------------
 $pdf->SectionBar('APPLICATIONS (' . count($apps) . ')');
 
 $cols = [

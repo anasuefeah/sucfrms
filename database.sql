@@ -1,5 +1,5 @@
-﻿-- ============================================================
--- SUCFRMS — Faculty Reclassification Management Information System
+-- ============================================================
+-- SUCFRMS  -  Faculty Reclassification Management Information System
 -- Full Schema + Seed Data
 -- Compatible with MySQL 5.7+ / MariaDB 10.3+
 -- ============================================================
@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS users (
     first_name  VARCHAR(100) NOT NULL,
     middle_name VARCHAR(100) DEFAULT NULL,
     last_name   VARCHAR(100) NOT NULL,
+    suffix      VARCHAR(30) DEFAULT NULL,
     -- full_name is a generated column for convenience (search, display, PDF)
     -- Format: "Last, First M." for regular users; just "last_name" when first_name is empty (e.g. system accounts)
     full_name   VARCHAR(310) GENERATED ALWAYS AS (
@@ -54,8 +55,42 @@ CREATE TABLE IF NOT EXISTS users (
     rank        VARCHAR(100),
     employee_id VARCHAR(50) UNIQUE,
     profile_pic VARCHAR(255) DEFAULT NULL,
+    profile_completed TINYINT(1) DEFAULT 0,
+    email_locked TINYINT(1) DEFAULT 1,
+    faculty_status ENUM('Existing Faculty','New Faculty') DEFAULT 'New Faculty',
+    applied_first_cycle TINYINT(1) DEFAULT 0,
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (campus_id) REFERENCES campuses(campus_id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS faculty_education (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    level ENUM('Bachelor','Master','Doctorate','PostDoctorate') NOT NULL,
+    degree_program VARCHAR(255) NOT NULL,
+    major_specialization VARCHAR(255) NOT NULL,
+    school_university VARCHAR(255) NOT NULL,
+    year_graduated VARCHAR(20) NOT NULL,
+    honors_units_notes VARCHAR(255) DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_faculty_education_user (user_id),
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS faculty_employment (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    type ENUM('current','previous') NOT NULL,
+    rank VARCHAR(100) NOT NULL,
+    mode_of_appointment VARCHAR(100) NOT NULL,
+    date_of_appointment DATE DEFAULT NULL,
+    employment_sector VARCHAR(150) DEFAULT NULL,
+    suc VARCHAR(255) NOT NULL,
+    campus VARCHAR(255) NOT NULL,
+    address TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_faculty_employment_user_type (user_id, type),
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
 
 -- ============================================================
@@ -66,11 +101,31 @@ CREATE TABLE IF NOT EXISTS cycles (
     cycle_name          VARCHAR(100) NOT NULL,
     start_date          DATE NOT NULL,
     end_date            DATE NOT NULL,
+    submission_start_date DATE DEFAULT NULL,
     submission_deadline DATE DEFAULT NULL,
+    evaluation_deadline DATE DEFAULT NULL,
+    appeal_deadline DATE DEFAULT NULL,
     status              ENUM('open','closed','archived') DEFAULT 'open',
     created_by          INT DEFAULT NULL,
     created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (created_by) REFERENCES users(user_id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS cycle_submission_extensions (
+    extension_id INT AUTO_INCREMENT PRIMARY KEY,
+    cycle_id INT NOT NULL,
+    faculty_user_id INT DEFAULT NULL,
+    applies_to_all TINYINT(1) DEFAULT 0,
+    previous_deadline DATE NOT NULL,
+    new_deadline DATE NOT NULL,
+    reason TEXT DEFAULT NULL,
+    extended_by INT DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_cycle_extensions_cycle (cycle_id),
+    INDEX idx_cycle_extensions_faculty (faculty_user_id),
+    FOREIGN KEY (cycle_id) REFERENCES cycles(cycle_id) ON DELETE CASCADE,
+    FOREIGN KEY (faculty_user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    FOREIGN KEY (extended_by) REFERENCES users(user_id) ON DELETE SET NULL
 );
 
 -- ============================================================
@@ -141,7 +196,79 @@ CREATE TABLE IF NOT EXISTS kra_evidence_files (
 );
 
 -- ============================================================
--- 8. SCORING CRITERIA
+-- 8. CHECKER KRA ASSIGNMENTS
+-- ============================================================
+CREATE TABLE IF NOT EXISTS checker_kra_assignments (
+    assignment_id INT AUTO_INCREMENT PRIMARY KEY,
+    cycle_id INT NOT NULL,
+    checker_id INT NOT NULL,
+    kra_category ENUM('Instruction','Research','Extension','Professional Development') NOT NULL,
+    assigned_by INT DEFAULT NULL,
+    assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_checker_cycle_kra (cycle_id, checker_id, kra_category),
+    INDEX idx_cka_cycle_kra (cycle_id, kra_category),
+    INDEX idx_cka_checker_cycle (checker_id, cycle_id),
+    FOREIGN KEY (cycle_id) REFERENCES cycles(cycle_id) ON DELETE CASCADE,
+    FOREIGN KEY (checker_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    FOREIGN KEY (assigned_by) REFERENCES users(user_id) ON DELETE SET NULL
+);
+
+-- ============================================================
+-- 9. APPEALS
+-- ============================================================
+CREATE TABLE IF NOT EXISTS appeals (
+    appeal_id INT AUTO_INCREMENT PRIMARY KEY,
+    application_id INT NOT NULL,
+    submission_id INT NOT NULL,
+    faculty_id INT NOT NULL,
+    checker_id INT NOT NULL,
+    cycle_id INT NOT NULL,
+    appeal_type ENUM('flag','score_change') NOT NULL,
+    original_score DECIMAL(6,2) DEFAULT NULL,
+    changed_score DECIMAL(6,2) DEFAULT NULL,
+    checker_remark TEXT DEFAULT NULL,
+    reason TEXT NOT NULL,
+    status ENUM('open','under_review','resolved') DEFAULT 'open',
+    outcome ENUM('upheld','revised','dismissed') DEFAULT NULL,
+    is_read_by_faculty TINYINT(1) DEFAULT 1,
+    is_read_by_checker TINYINT(1) DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    resolved_at TIMESTAMP NULL,
+    resolved_by INT DEFAULT NULL,
+    INDEX idx_appeals_submission_status (submission_id, status),
+    INDEX idx_appeals_faculty (faculty_id, status),
+    INDEX idx_appeals_checker (checker_id, status),
+    FOREIGN KEY (application_id) REFERENCES applications(application_id) ON DELETE CASCADE,
+    FOREIGN KEY (submission_id) REFERENCES kra_submissions(submission_id) ON DELETE CASCADE,
+    FOREIGN KEY (faculty_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    FOREIGN KEY (checker_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    FOREIGN KEY (cycle_id) REFERENCES cycles(cycle_id) ON DELETE CASCADE,
+    FOREIGN KEY (resolved_by) REFERENCES users(user_id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS appeal_messages (
+    message_id INT AUTO_INCREMENT PRIMARY KEY,
+    appeal_id INT NOT NULL,
+    sender_id INT NOT NULL,
+    message TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (appeal_id) REFERENCES appeals(appeal_id) ON DELETE CASCADE,
+    FOREIGN KEY (sender_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS appeal_attachments (
+    attachment_id INT AUTO_INCREMENT PRIMARY KEY,
+    message_id INT NOT NULL,
+    file_path VARCHAR(255) NOT NULL,
+    original_filename VARCHAR(255) NOT NULL,
+    file_size_bytes INT DEFAULT 0,
+    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (message_id) REFERENCES appeal_messages(message_id) ON DELETE CASCADE
+);
+
+-- ============================================================
+-- 10. SCORING CRITERIA
 -- ============================================================
 CREATE TABLE IF NOT EXISTS scoring_criteria (
     criteria_id     INT AUTO_INCREMENT PRIMARY KEY,
@@ -326,130 +453,130 @@ ON DUPLICATE KEY UPDATE
 
 -- ============================================================
 -- SEED: SCORING CRITERIA  (DBM-CHED Joint Circular No. 3, s. 2022)
--- Global defaults — copied per-position when a cycle is created.
+-- Global defaults  -  copied per-position when a cycle is created.
 -- ============================================================
 INSERT INTO scoring_criteria (kra_category, criterion_key, criterion_label, max_points, weight_pct, description) VALUES
 
--- ── KRA I: INSTRUCTION ───────────────────────────────────────
-('Instruction','kra1_a_set','Criterion A – Student Evaluation of Teaching (SET)',36.00,100.00,'Student evaluation rating using prescribed template.'),
-('Instruction','kra1_a_sef','Criterion A – Supervisor Evaluation Form (SEF)',24.00,100.00,'Supervisor\'s evaluation rating using prescribed template.'),
-('Instruction','kra1_b_textbook_sole','Criterion B – Textbook, Sole Author',30.00,100.00,'Copy of instructional material developed. Copy of evidence that the material underwent peer-review or evaluation process. Copy of approval for use in the department/institution.'),
-('Instruction','kra1_b_textbook_co','Criterion B – Textbook, Co-Author',30.00,100.00,'Copy of instructional material developed. Copy of evidence that the material underwent peer-review or evaluation process. Copy of approval for use in the department/institution. For multiple authors — certification signed by all authors indicating percentage contribution using prescribed template.'),
-('Instruction','kra1_b_chapter_sole','Criterion B – Textbook Chapter, Sole Author',10.00,100.00,'Copy of instructional material developed. Copy of evidence that the material underwent peer-review or evaluation process. Copy of approval for use in the department/institution.'),
-('Instruction','kra1_b_chapter_co','Criterion B – Textbook Chapter, Co-Author',10.00,100.00,'Copy of instructional material developed. Copy of evidence that the material underwent peer-review or evaluation process. Copy of approval for use in the department/institution. For multiple authors — certification signed by all authors indicating percentage contribution using prescribed template.'),
-('Instruction','kra1_b_manual_sole','Criterion B – Manual / Module, Sole Author',16.00,100.00,'Copy of instructional material developed. Copy of evidence that the material underwent peer-review or evaluation process. Copy of approval for use in the department/institution.'),
-('Instruction','kra1_b_manual_co','Criterion B – Manual / Module, Co-Author',16.00,100.00,'Copy of instructional material developed. Copy of evidence that the material underwent peer-review or evaluation process. Copy of approval for use in the department/institution. For multiple authors — certification signed by all authors indicating percentage contribution using prescribed template.'),
-('Instruction','kra1_b_multimedia','Criterion B – Multimedia Teaching Materials',16.00,100.00,'Copy of testing material with evidence of validation, reliability testing, and verification by authorized body.'),
-('Instruction','kra1_b_testing','Criterion B – Validated Testing Materials',10.00,100.00,'Copy of testing material with evidence of validation, reliability testing, and verification by authorized body.'),
-('Instruction','kra1_b_program_lead','Criterion B – Academic Program Dev/Revision, Lead',10.00,100.00,'Copy of certification signed by academic unit head indicating faculty role in program development/revision. Copy of governing board resolution approving the academic program.'),
-('Instruction','kra1_b_program_contrib','Criterion B – Academic Program Dev/Revision, Contributor',5.00,100.00,'Copy of certification signed by academic unit head indicating faculty role in program development/revision. Copy of governing board resolution approving the academic program.'),
-('Instruction','kra1_c_adviser_special','Criterion C – Adviser: Special Project / Capstone',3.00,100.00,'Copy of appointment/invitation as adviser. Copy of evidence that advisee passed the capstone, thesis, or dissertation.'),
-('Instruction','kra1_c_adviser_undergrad','Criterion C – Adviser: Undergraduate Thesis',5.00,100.00,'Copy of appointment/invitation as adviser. Copy of evidence that advisee passed the capstone, thesis, or dissertation.'),
-('Instruction','kra1_c_adviser_masters','Criterion C – Adviser: Master\'s Thesis',8.00,100.00,'Copy of appointment/invitation as adviser. Copy of evidence that advisee passed the capstone, thesis, or dissertation.'),
-('Instruction','kra1_c_adviser_doctoral','Criterion C – Adviser: Doctoral Dissertation',10.00,100.00,'Copy of appointment/invitation as adviser. Copy of evidence that advisee passed the capstone, thesis, or dissertation.'),
-('Instruction','kra1_c_panel_special','Criterion C – Panel Member: Special Project / Capstone',1.00,100.00,'Copy of appointment/invitation as panel member. Copy of proof of participation.'),
-('Instruction','kra1_c_panel_undergrad','Criterion C – Panel Member: Undergraduate Thesis',1.00,100.00,'Copy of appointment/invitation as panel member. Copy of proof of participation.'),
-('Instruction','kra1_c_panel_masters','Criterion C – Panel Member: Master\'s Thesis',4.00,100.00,'Copy of appointment/invitation as panel member. Copy of proof of participation.'),
-('Instruction','kra1_c_panel_doctoral','Criterion C – Panel Member: Doctoral Dissertation',6.00,100.00,'Copy of appointment/invitation as panel member. Copy of proof of participation.'),
-('Instruction','kra1_c_mentor_competition','Criterion C – Mentor: Student/Team Competition Winner',0.00,100.00,'CONFIRMED SOURCE GAP: The Points column for Mentorship Services (JC01 s.2026, Section 15 item 2, p.78) is blank in the official circular. This is not an extraction error. Set max_points to a non-zero value only after confirming with CHED-RO or your adviser. Until set, all mentorship submissions raise PENDING_DOCUMENTATION and are not scored. Hard rules regardless of point value: (1) regional/national/international competitions only — local-only excluded; (2) Champion through 3rd place only — consolation prizes excluded. Required evidence: award certificate or photo of trophy/plaque/medal, competition mechanics document, award-giving organization profile with mandate/history/prior winners list. Suggested starting point for discussion: 1 pt (matching Panel Member Special/Capstone — lowest confirmed rate in Crit C). This is a disclosed design recommendation, not a sourced value.'),
+-- -- KRA I: INSTRUCTION ---------------------------------------
+('Instruction','kra1_a_set','Criterion A - Student Evaluation of Teaching (SET)',36.00,100.00,'Student evaluation rating using prescribed template.'),
+('Instruction','kra1_a_sef','Criterion A - Supervisor Evaluation Form (SEF)',24.00,100.00,'Supervisor\'s evaluation rating using prescribed template.'),
+('Instruction','kra1_b_textbook_sole','Criterion B - Textbook, Sole Author',30.00,100.00,'Copy of instructional material developed. Copy of evidence that the material underwent peer-review or evaluation process. Copy of approval for use in the department/institution.'),
+('Instruction','kra1_b_textbook_co','Criterion B - Textbook, Co-Author',30.00,100.00,'Copy of instructional material developed. Copy of evidence that the material underwent peer-review or evaluation process. Copy of approval for use in the department/institution. For multiple authors  -  certification signed by all authors indicating percentage contribution using prescribed template.'),
+('Instruction','kra1_b_chapter_sole','Criterion B - Textbook Chapter, Sole Author',10.00,100.00,'Copy of instructional material developed. Copy of evidence that the material underwent peer-review or evaluation process. Copy of approval for use in the department/institution.'),
+('Instruction','kra1_b_chapter_co','Criterion B - Textbook Chapter, Co-Author',10.00,100.00,'Copy of instructional material developed. Copy of evidence that the material underwent peer-review or evaluation process. Copy of approval for use in the department/institution. For multiple authors  -  certification signed by all authors indicating percentage contribution using prescribed template.'),
+('Instruction','kra1_b_manual_sole','Criterion B - Manual / Module, Sole Author',16.00,100.00,'Copy of instructional material developed. Copy of evidence that the material underwent peer-review or evaluation process. Copy of approval for use in the department/institution.'),
+('Instruction','kra1_b_manual_co','Criterion B - Manual / Module, Co-Author',16.00,100.00,'Copy of instructional material developed. Copy of evidence that the material underwent peer-review or evaluation process. Copy of approval for use in the department/institution. For multiple authors  -  certification signed by all authors indicating percentage contribution using prescribed template.'),
+('Instruction','kra1_b_multimedia','Criterion B - Multimedia Teaching Materials',16.00,100.00,'Copy of testing material with evidence of validation, reliability testing, and verification by authorized body.'),
+('Instruction','kra1_b_testing','Criterion B - Validated Testing Materials',10.00,100.00,'Copy of testing material with evidence of validation, reliability testing, and verification by authorized body.'),
+('Instruction','kra1_b_program_lead','Criterion B - Academic Program Dev/Revision, Lead',10.00,100.00,'Copy of certification signed by academic unit head indicating faculty role in program development/revision. Copy of governing board resolution approving the academic program.'),
+('Instruction','kra1_b_program_contrib','Criterion B - Academic Program Dev/Revision, Contributor',5.00,100.00,'Copy of certification signed by academic unit head indicating faculty role in program development/revision. Copy of governing board resolution approving the academic program.'),
+('Instruction','kra1_c_adviser_special','Criterion C - Adviser: Special Project / Capstone',3.00,100.00,'Copy of appointment/invitation as adviser. Copy of evidence that advisee passed the capstone, thesis, or dissertation.'),
+('Instruction','kra1_c_adviser_undergrad','Criterion C - Adviser: Undergraduate Thesis',5.00,100.00,'Copy of appointment/invitation as adviser. Copy of evidence that advisee passed the capstone, thesis, or dissertation.'),
+('Instruction','kra1_c_adviser_masters','Criterion C - Adviser: Master\'s Thesis',8.00,100.00,'Copy of appointment/invitation as adviser. Copy of evidence that advisee passed the capstone, thesis, or dissertation.'),
+('Instruction','kra1_c_adviser_doctoral','Criterion C - Adviser: Doctoral Dissertation',10.00,100.00,'Copy of appointment/invitation as adviser. Copy of evidence that advisee passed the capstone, thesis, or dissertation.'),
+('Instruction','kra1_c_panel_special','Criterion C - Panel Member: Special Project / Capstone',1.00,100.00,'Copy of appointment/invitation as panel member. Copy of proof of participation.'),
+('Instruction','kra1_c_panel_undergrad','Criterion C - Panel Member: Undergraduate Thesis',1.00,100.00,'Copy of appointment/invitation as panel member. Copy of proof of participation.'),
+('Instruction','kra1_c_panel_masters','Criterion C - Panel Member: Master\'s Thesis',4.00,100.00,'Copy of appointment/invitation as panel member. Copy of proof of participation.'),
+('Instruction','kra1_c_panel_doctoral','Criterion C - Panel Member: Doctoral Dissertation',6.00,100.00,'Copy of appointment/invitation as panel member. Copy of proof of participation.'),
+('Instruction','kra1_c_mentor_competition','Criterion C - Mentor: Student/Team Competition Winner',0.00,100.00,'CONFIRMED SOURCE GAP: The Points column for Mentorship Services (JC01 s.2026, Section 15 item 2, p.78) is blank in the official circular. This is not an extraction error. Set max_points to a non-zero value only after confirming with CHED-RO or your adviser. Until set, all mentorship submissions raise PENDING_DOCUMENTATION and are not scored. Hard rules regardless of point value: (1) regional/national/international competitions only  -  local-only excluded; (2) Champion through 3rd place only  -  consolation prizes excluded. Required evidence: award certificate or photo of trophy/plaque/medal, competition mechanics document, award-giving organization profile with mandate/history/prior winners list. Suggested starting point for discussion: 1 pt (matching Panel Member Special/Capstone  -  lowest confirmed rate in Crit C). This is a disclosed design recommendation, not a sourced value.'),
 
--- ── KRA II: RESEARCH, INVENTION & CREATIVE WORK ──────────────
-('Research','kra2_a_book_sole','Criterion A – Book, Sole Author',100.00,100.00,'Copy of published research output showing author name, date, and publication title.'),
-('Research','kra2_a_book_co','Criterion A – Book, Co-Author',100.00,100.00,'Copy of published research output showing author name, date, and publication title. For multiple authors — certification from all authors showing percentage contribution using prescribed template.'),
-('Research','kra2_a_monograph_sole','Criterion A – Monograph, Sole Author',100.00,100.00,'Copy of published research output showing author name, date, and publication title.'),
-('Research','kra2_a_monograph_co','Criterion A – Monograph, Co-Author',100.00,100.00,'Copy of published research output showing author name, date, and publication title. For multiple authors — certification from all authors showing percentage contribution using prescribed template.'),
-('Research','kra2_a_journal_indexed_sole','Criterion A – Indexed Journal Article, Sole Author',50.00,100.00,'Copy of published research output showing author name, date, and publication title.'),
-('Research','kra2_a_journal_indexed_co','Criterion A – Indexed Journal Article, Co-Author',50.00,100.00,'Copy of published research output showing author name, date, and publication title. For multiple authors — certification from all authors showing percentage contribution using prescribed template.'),
-('Research','kra2_a_book_chapter_sole','Criterion A – Book Chapter, Sole Author',35.00,100.00,'Copy of published research output showing author name, date, and publication title.'),
-('Research','kra2_a_book_chapter_co','Criterion A – Book Chapter, Co-Author',35.00,100.00,'Copy of published research output showing author name, date, and publication title. For multiple authors — certification from all authors showing percentage contribution using prescribed template.'),
-('Research','kra2_a_policy_lead','Criterion A – Research Output → Project/Policy/Product, Lead',35.00,100.00,'Copy of executive summary or evidence that research was translated into project, policy, or product.'),
-('Research','kra2_a_policy_contrib','Criterion A – Research Output → Project/Policy/Product, Contributor',35.00,100.00,'Copy of executive summary or evidence that research was translated into project, policy, or product. Certification from all authors showing percentage contribution using prescribed template.'),
-('Research','kra2_a_scholarly_other','Criterion A – Other Peer-Reviewed Scholarly Output',10.00,100.00,'Copy of published research output showing author name, date, and publication title.'),
-('Research','kra2_a_citation_local','Criterion A – Local Citation (per citation, max 40 pts)',5.00,100.00,'Copy of proof that publication has been cited by other authors via citation index database.'),
-('Research','kra2_a_citation_intl','Criterion A – International Citation (per citation, max 60 pts)',10.00,100.00,'Copy of proof that publication has been cited by other authors via citation index database.'),
-('Research','kra2_b_patent_acceptance','Criterion B – Invention Patent: Acceptance',10.00,100.00,'Copy of certification from IPOPHL for acceptance.'),
-('Research','kra2_b_patent_publication','Criterion B – Invention Patent: Publication',20.00,100.00,'Copy of notice of publication from IPOPHL.'),
-('Research','kra2_b_patent_grant','Criterion B – Invention Patent: Grant',80.00,100.00,'Copy of patent/utility model/industrial design certificate issued by IPOPHL for grant. For multiple inventors — certification from all inventors indicating percentage contribution using prescribed template.'),
-('Research','kra2_b_utility_model','Criterion B – Utility Model Grant',10.00,100.00,'Copy of patent/utility model/industrial design certificate issued by IPOPHL for grant. For multiple inventors — certification from all inventors indicating percentage contribution using prescribed template.'),
-('Research','kra2_b_industrial_design','Criterion B – Industrial Design Grant',5.00,100.00,'Copy of patent/utility model/industrial design certificate issued by IPOPHL for grant. For multiple inventors — certification from all inventors indicating percentage contribution using prescribed template.'),
-('Research','kra2_b_commercialized_local','Criterion B – Commercialized Patented Product, Local',5.00,100.00,'Copy of licensing agreement, LTO, certificate of product registration from FDA or similar permits for commercialized patents.'),
-('Research','kra2_b_commercialized_intl','Criterion B – Commercialized Patented Product, International',10.00,100.00,'Copy of licensing agreement, LTO, certificate of product registration from FDA or similar permits for commercialized patents.'),
-('Research','kra2_b_software_new_sole','Criterion B – New Software Product, Sole Developer',10.00,100.00,'Copy of copyright registration certificate from IPOPHL for software products. Copy of certificate of utilization from end-users for software products.'),
-('Research','kra2_b_software_new_co','Criterion B – New Software Product, Co-Developer',10.00,100.00,'Copy of copyright registration certificate from IPOPHL for software products. Copy of certificate of utilization from end-users for software products. Certification from all developers indicating percentage contribution.'),
-('Research','kra2_b_software_updated_sole','Criterion B – Updated Software (New Functionality), Sole Developer',4.00,100.00,'Copy of copyright registration certificate from IPOPHL for software products. Copy of certificate of utilization from end-users for software products.'),
-('Research','kra2_b_software_updated_co','Criterion B – Updated Software (New Functionality), Co-Developer',2.00,100.00,'Copy of copyright registration certificate from IPOPHL for software products. Copy of certificate of utilization from end-users for software products. Certification from all developers indicating percentage contribution.'),
-('Research','kra2_b_plant_variety_sole','Criterion B – New Plant Variety/Animal Breed/Microbial Strain, Sole',10.00,100.00,'Copy of registration of new variety, breed, or strain from authorized agency. Copy of certification from farm owners/breeders that new variety or breed has been propagated.'),
-('Research','kra2_b_plant_variety_co','Criterion B – New Plant Variety/Animal Breed/Microbial Strain, Co-Developer',10.00,100.00,'Copy of registration of new variety, breed, or strain from authorized agency. Copy of certification from farm owners/breeders that new variety or breed has been propagated. Certification from all developers indicating percentage contribution.'),
-('Research','kra2_c_performance_own','Criterion C – Performance of Own Creative Work',20.00,100.00,'Copy of copyright certificate of the creative performing art work. Copy of invitation letter from reputable organizer, program, and pictures of performance.'),
-('Research','kra2_c_performance_others','Criterion C – Performance of Another\'s Creative Work',10.00,100.00,'Copy of invitation letter from reputable organizer, program, and pictures of performance.'),
-('Research','kra2_c_exhibition','Criterion C – Exhibition (Visual Arts/Architecture/Film/Multimedia)',10.00,100.00,'Copy of letter of acceptance or invitation for exhibition.'),
-('Research','kra2_c_juried_design','Criterion C – Juried or Peer-Reviewed Design',20.00,100.00,'Copy of evidence of being juried or peer-reviewed for designs.'),
-('Research','kra2_c_novel','Criterion C – Literary Publication: Novel',20.00,100.00,'Copy of published literary work for literary publications.'),
-('Research','kra2_c_short_story','Criterion C – Literary Publication: Short Story',10.00,100.00,'Copy of published literary work for literary publications.'),
-('Research','kra2_c_essay','Criterion C – Literary Publication: Essay',10.00,100.00,'Copy of published literary work for literary publications.'),
-('Research','kra2_c_poetry','Criterion C – Literary Publication: Poetry',10.00,100.00,'Copy of published literary work for literary publications.'),
+-- -- KRA II: RESEARCH, INVENTION & CREATIVE WORK --------------
+('Research','kra2_a_book_sole','Criterion A - Book, Sole Author',100.00,100.00,'Copy of published research output showing author name, date, and publication title.'),
+('Research','kra2_a_book_co','Criterion A - Book, Co-Author',100.00,100.00,'Copy of published research output showing author name, date, and publication title. For multiple authors  -  certification from all authors showing percentage contribution using prescribed template.'),
+('Research','kra2_a_monograph_sole','Criterion A - Monograph, Sole Author',100.00,100.00,'Copy of published research output showing author name, date, and publication title.'),
+('Research','kra2_a_monograph_co','Criterion A - Monograph, Co-Author',100.00,100.00,'Copy of published research output showing author name, date, and publication title. For multiple authors  -  certification from all authors showing percentage contribution using prescribed template.'),
+('Research','kra2_a_journal_indexed_sole','Criterion A - Indexed Journal Article, Sole Author',50.00,100.00,'Copy of published research output showing author name, date, and publication title.'),
+('Research','kra2_a_journal_indexed_co','Criterion A - Indexed Journal Article, Co-Author',50.00,100.00,'Copy of published research output showing author name, date, and publication title. For multiple authors  -  certification from all authors showing percentage contribution using prescribed template.'),
+('Research','kra2_a_book_chapter_sole','Criterion A - Book Chapter, Sole Author',35.00,100.00,'Copy of published research output showing author name, date, and publication title.'),
+('Research','kra2_a_book_chapter_co','Criterion A - Book Chapter, Co-Author',35.00,100.00,'Copy of published research output showing author name, date, and publication title. For multiple authors  -  certification from all authors showing percentage contribution using prescribed template.'),
+('Research','kra2_a_policy_lead','Criterion A - Research Output -> Project/Policy/Product, Lead',35.00,100.00,'Copy of executive summary or evidence that research was translated into project, policy, or product.'),
+('Research','kra2_a_policy_contrib','Criterion A - Research Output -> Project/Policy/Product, Contributor',35.00,100.00,'Copy of executive summary or evidence that research was translated into project, policy, or product. Certification from all authors showing percentage contribution using prescribed template.'),
+('Research','kra2_a_scholarly_other','Criterion A - Other Peer-Reviewed Scholarly Output',10.00,100.00,'Copy of published research output showing author name, date, and publication title.'),
+('Research','kra2_a_citation_local','Criterion A - Local Citation (per citation, max 40 pts)',5.00,100.00,'Copy of proof that publication has been cited by other authors via citation index database.'),
+('Research','kra2_a_citation_intl','Criterion A - International Citation (per citation, max 60 pts)',10.00,100.00,'Copy of proof that publication has been cited by other authors via citation index database.'),
+('Research','kra2_b_patent_acceptance','Criterion B - Invention Patent: Acceptance',10.00,100.00,'Copy of certification from IPOPHL for acceptance.'),
+('Research','kra2_b_patent_publication','Criterion B - Invention Patent: Publication',20.00,100.00,'Copy of notice of publication from IPOPHL.'),
+('Research','kra2_b_patent_grant','Criterion B - Invention Patent: Grant',80.00,100.00,'Copy of patent/utility model/industrial design certificate issued by IPOPHL for grant. For multiple inventors  -  certification from all inventors indicating percentage contribution using prescribed template.'),
+('Research','kra2_b_utility_model','Criterion B - Utility Model Grant',10.00,100.00,'Copy of patent/utility model/industrial design certificate issued by IPOPHL for grant. For multiple inventors  -  certification from all inventors indicating percentage contribution using prescribed template.'),
+('Research','kra2_b_industrial_design','Criterion B - Industrial Design Grant',5.00,100.00,'Copy of patent/utility model/industrial design certificate issued by IPOPHL for grant. For multiple inventors  -  certification from all inventors indicating percentage contribution using prescribed template.'),
+('Research','kra2_b_commercialized_local','Criterion B - Commercialized Patented Product, Local',5.00,100.00,'Copy of licensing agreement, LTO, certificate of product registration from FDA or similar permits for commercialized patents.'),
+('Research','kra2_b_commercialized_intl','Criterion B - Commercialized Patented Product, International',10.00,100.00,'Copy of licensing agreement, LTO, certificate of product registration from FDA or similar permits for commercialized patents.'),
+('Research','kra2_b_software_new_sole','Criterion B - New Software Product, Sole Developer',10.00,100.00,'Copy of copyright registration certificate from IPOPHL for software products. Copy of certificate of utilization from end-users for software products.'),
+('Research','kra2_b_software_new_co','Criterion B - New Software Product, Co-Developer',10.00,100.00,'Copy of copyright registration certificate from IPOPHL for software products. Copy of certificate of utilization from end-users for software products. Certification from all developers indicating percentage contribution.'),
+('Research','kra2_b_software_updated_sole','Criterion B - Updated Software (New Functionality), Sole Developer',4.00,100.00,'Copy of copyright registration certificate from IPOPHL for software products. Copy of certificate of utilization from end-users for software products.'),
+('Research','kra2_b_software_updated_co','Criterion B - Updated Software (New Functionality), Co-Developer',2.00,100.00,'Copy of copyright registration certificate from IPOPHL for software products. Copy of certificate of utilization from end-users for software products. Certification from all developers indicating percentage contribution.'),
+('Research','kra2_b_plant_variety_sole','Criterion B - New Plant Variety/Animal Breed/Microbial Strain, Sole',10.00,100.00,'Copy of registration of new variety, breed, or strain from authorized agency. Copy of certification from farm owners/breeders that new variety or breed has been propagated.'),
+('Research','kra2_b_plant_variety_co','Criterion B - New Plant Variety/Animal Breed/Microbial Strain, Co-Developer',10.00,100.00,'Copy of registration of new variety, breed, or strain from authorized agency. Copy of certification from farm owners/breeders that new variety or breed has been propagated. Certification from all developers indicating percentage contribution.'),
+('Research','kra2_c_performance_own','Criterion C - Performance of Own Creative Work',20.00,100.00,'Copy of copyright certificate of the creative performing art work. Copy of invitation letter from reputable organizer, program, and pictures of performance.'),
+('Research','kra2_c_performance_others','Criterion C - Performance of Another\'s Creative Work',10.00,100.00,'Copy of invitation letter from reputable organizer, program, and pictures of performance.'),
+('Research','kra2_c_exhibition','Criterion C - Exhibition (Visual Arts/Architecture/Film/Multimedia)',10.00,100.00,'Copy of letter of acceptance or invitation for exhibition.'),
+('Research','kra2_c_juried_design','Criterion C - Juried or Peer-Reviewed Design',20.00,100.00,'Copy of evidence of being juried or peer-reviewed for designs.'),
+('Research','kra2_c_novel','Criterion C - Literary Publication: Novel',20.00,100.00,'Copy of published literary work for literary publications.'),
+('Research','kra2_c_short_story','Criterion C - Literary Publication: Short Story',10.00,100.00,'Copy of published literary work for literary publications.'),
+('Research','kra2_c_essay','Criterion C - Literary Publication: Essay',10.00,100.00,'Copy of published literary work for literary publications.'),
+('Research','kra2_c_poetry','Criterion C - Literary Publication: Poetry',10.00,100.00,'Copy of published literary work for literary publications.'),
 
--- ── KRA III: EXTENSION SERVICES ──────────────────────────────
-('Extension','kra3_a_moa','Criterion A – MOA/Linkage Partnership',5.00,100.00,'Copy of MOA. Certification from the President that partnership was successfully initiated or implemented by the faculty.'),
-('Extension','kra3_a_income_below6m','Criterion A – Income Generation: Below PHP 6 Million',6.00,100.00,'Copy of implementation report or terminal activity report. Copy of financial reports showing income generated and certification from the President acknowledging faculty\'s contribution.'),
-('Extension','kra3_a_income_6to12m','Criterion A – Income Generation: PHP 6M to PHP 12M',12.00,100.00,'Copy of implementation report or terminal activity report. Copy of financial reports showing income generated and certification from the President acknowledging faculty\'s contribution.'),
-('Extension','kra3_a_income_above12m','Criterion A – Income Generation: Above PHP 12 Million',18.00,100.00,'Copy of implementation report or terminal activity report. Copy of financial reports showing income generated and certification from the President acknowledging faculty\'s contribution.'),
-('Extension','kra3_b_accreditation_local','Criterion B – Local Accreditation/QA Service',8.00,100.00,'Copy of appointment from the organization/agency. Copy of proof of engagement such as certificate of participation.'),
-('Extension','kra3_b_accreditation_intl','Criterion B – International Accreditation/QA Service',10.00,100.00,'Copy of appointment from the organization/agency. Copy of proof of engagement such as certificate of participation.'),
-('Extension','kra3_b_judge_research','Criterion B – Judging Research Awards',2.00,100.00,'Copy of appointment from the organization/agency. Copy of proof of engagement such as certificate of participation.'),
-('Extension','kra3_b_judge_competition','Criterion B – Judging Academic Competitions',1.00,100.00,'Copy of appointment from the organization/agency. Copy of proof of engagement such as certificate of participation.'),
-('Extension','kra3_b_consultant_local','Criterion B – Local Consultant/Expert Service',8.00,100.00,'Copy of contract of service or equivalent for consultancy.'),
-('Extension','kra3_b_consultant_intl','Criterion B – International Consultant/Expert Service',10.00,100.00,'Copy of contract of service or equivalent for consultancy.'),
-('Extension','kra3_b_column_occasional','Criterion B – Occasional Newspaper/Online Column',2.00,100.00,'Copy of newspaper articles or compiled articles for media writing.'),
-('Extension','kra3_b_column_regular','Criterion B – Regular Column',10.00,100.00,'Copy of newspaper articles or compiled articles for media writing.'),
-('Extension','kra3_b_tv_radio_host','Criterion B – Hosting TV/Radio/Online Program',10.00,100.00,'Copy of contract or invitation letter for TV/radio hosting.'),
-('Extension','kra3_b_technical_guest','Criterion B – Guesting as Technical Expert',1.00,100.00,'Copy of invitation letter for guesting as technical expert.'),
-('Extension','kra3_b_resource_local','Criterion B – Resource Person/Speaker, Local',2.00,100.00,'Copy of invitation letter, program, and certificate of appreciation for training/seminar conducted.'),
-('Extension','kra3_b_resource_intl','Criterion B – Resource Person/Speaker, International',3.00,100.00,'Copy of invitation letter, program, and certificate of appreciation for training/seminar conducted.'),
-('Extension','kra3_b_outreach_head','Criterion B – Head of Outreach/Extension Activity',5.00,100.00,'Copy of appointment from the organization/agency. Copy of proof of engagement such as certificate of participation.'),
-('Extension','kra3_b_outreach_participant','Criterion B – Participant in Outreach/Extension Activity',2.00,100.00,'Copy of appointment from the organization/agency. Copy of proof of engagement such as certificate of participation.'),
-('Extension','kra3_c_satisfaction','Criterion C – Client Satisfaction Rating',20.00,100.00,'Summary of satisfaction/evaluation ratings per evaluation period using prescribed template.'),
-('Extension','kra3_d_president','Criterion D (BONUS) – President / OIC President',20.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
-('Extension','kra3_d_vp','Criterion D (BONUS) – Vice-President',15.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
-('Extension','kra3_d_chancellor','Criterion D (BONUS) – Chancellor',10.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
-('Extension','kra3_d_vice_chancellor','Criterion D (BONUS) – Vice-Chancellor',8.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
-('Extension','kra3_d_campus_director','Criterion D (BONUS) – Campus Director / Administrator',8.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
-('Extension','kra3_d_faculty_regent','Criterion D (BONUS) – Faculty Regent',8.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
-('Extension','kra3_d_office_director','Criterion D (BONUS) – Office Director',6.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
-('Extension','kra3_d_univ_secretary','Criterion D (BONUS) – University / College Secretary',6.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
-('Extension','kra3_d_project_head_inst','Criterion D (BONUS) – Project Head (Institutional)',4.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
-('Extension','kra3_d_committee_chair_inst','Criterion D (BONUS) – Committee Chair (Institutional)',3.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
-('Extension','kra3_d_committee_member_inst','Criterion D (BONUS) – Committee Member (Institutional)',2.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
-('Extension','kra3_d_dean','Criterion D (BONUS) – Dean',6.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
-('Extension','kra3_d_assoc_dean','Criterion D (BONUS) – Associate Dean',5.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
-('Extension','kra3_d_college_secretary','Criterion D (BONUS) – College Secretary',3.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
-('Extension','kra3_d_dept_head','Criterion D (BONUS) – Department Head',4.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
-('Extension','kra3_d_program_chair','Criterion D (BONUS) – Program Chair / Project Head (College/Dept)',3.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
-('Extension','kra3_d_committee_chair_dept','Criterion D (BONUS) – Committee Chair (College/Dept)',2.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
-('Extension','kra3_d_committee_member_dept','Criterion D (BONUS) – Committee Member (College/Dept)',1.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
+-- -- KRA III: EXTENSION SERVICES ------------------------------
+('Extension','kra3_a_moa','Criterion A - MOA/Linkage Partnership',5.00,100.00,'Copy of MOA. Certification from the President that partnership was successfully initiated or implemented by the faculty.'),
+('Extension','kra3_a_income_below6m','Criterion A - Income Generation: Below PHP 6 Million',6.00,100.00,'Copy of implementation report or terminal activity report. Copy of financial reports showing income generated and certification from the President acknowledging faculty\'s contribution.'),
+('Extension','kra3_a_income_6to12m','Criterion A - Income Generation: PHP 6M to PHP 12M',12.00,100.00,'Copy of implementation report or terminal activity report. Copy of financial reports showing income generated and certification from the President acknowledging faculty\'s contribution.'),
+('Extension','kra3_a_income_above12m','Criterion A - Income Generation: Above PHP 12 Million',18.00,100.00,'Copy of implementation report or terminal activity report. Copy of financial reports showing income generated and certification from the President acknowledging faculty\'s contribution.'),
+('Extension','kra3_b_accreditation_local','Criterion B - Local Accreditation/QA Service',8.00,100.00,'Copy of appointment from the organization/agency. Copy of proof of engagement such as certificate of participation.'),
+('Extension','kra3_b_accreditation_intl','Criterion B - International Accreditation/QA Service',10.00,100.00,'Copy of appointment from the organization/agency. Copy of proof of engagement such as certificate of participation.'),
+('Extension','kra3_b_judge_research','Criterion B - Judging Research Awards',2.00,100.00,'Copy of appointment from the organization/agency. Copy of proof of engagement such as certificate of participation.'),
+('Extension','kra3_b_judge_competition','Criterion B - Judging Academic Competitions',1.00,100.00,'Copy of appointment from the organization/agency. Copy of proof of engagement such as certificate of participation.'),
+('Extension','kra3_b_consultant_local','Criterion B - Local Consultant/Expert Service',8.00,100.00,'Copy of contract of service or equivalent for consultancy.'),
+('Extension','kra3_b_consultant_intl','Criterion B - International Consultant/Expert Service',10.00,100.00,'Copy of contract of service or equivalent for consultancy.'),
+('Extension','kra3_b_column_occasional','Criterion B - Occasional Newspaper/Online Column',2.00,100.00,'Copy of newspaper articles or compiled articles for media writing.'),
+('Extension','kra3_b_column_regular','Criterion B - Regular Column',10.00,100.00,'Copy of newspaper articles or compiled articles for media writing.'),
+('Extension','kra3_b_tv_radio_host','Criterion B - Hosting TV/Radio/Online Program',10.00,100.00,'Copy of contract or invitation letter for TV/radio hosting.'),
+('Extension','kra3_b_technical_guest','Criterion B - Guesting as Technical Expert',1.00,100.00,'Copy of invitation letter for guesting as technical expert.'),
+('Extension','kra3_b_resource_local','Criterion B - Resource Person/Speaker, Local',2.00,100.00,'Copy of invitation letter, program, and certificate of appreciation for training/seminar conducted.'),
+('Extension','kra3_b_resource_intl','Criterion B - Resource Person/Speaker, International',3.00,100.00,'Copy of invitation letter, program, and certificate of appreciation for training/seminar conducted.'),
+('Extension','kra3_b_outreach_head','Criterion B - Head of Outreach/Extension Activity',5.00,100.00,'Copy of appointment from the organization/agency. Copy of proof of engagement such as certificate of participation.'),
+('Extension','kra3_b_outreach_participant','Criterion B - Participant in Outreach/Extension Activity',2.00,100.00,'Copy of appointment from the organization/agency. Copy of proof of engagement such as certificate of participation.'),
+('Extension','kra3_c_satisfaction','Criterion C - Client Satisfaction Rating',20.00,100.00,'Summary of satisfaction/evaluation ratings per evaluation period using prescribed template.'),
+('Extension','kra3_d_president','Criterion D (BONUS) - President / OIC President',20.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
+('Extension','kra3_d_vp','Criterion D (BONUS) - Vice-President',15.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
+('Extension','kra3_d_chancellor','Criterion D (BONUS) - Chancellor',10.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
+('Extension','kra3_d_vice_chancellor','Criterion D (BONUS) - Vice-Chancellor',8.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
+('Extension','kra3_d_campus_director','Criterion D (BONUS) - Campus Director / Administrator',8.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
+('Extension','kra3_d_faculty_regent','Criterion D (BONUS) - Faculty Regent',8.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
+('Extension','kra3_d_office_director','Criterion D (BONUS) - Office Director',6.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
+('Extension','kra3_d_univ_secretary','Criterion D (BONUS) - University / College Secretary',6.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
+('Extension','kra3_d_project_head_inst','Criterion D (BONUS) - Project Head (Institutional)',4.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
+('Extension','kra3_d_committee_chair_inst','Criterion D (BONUS) - Committee Chair (Institutional)',3.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
+('Extension','kra3_d_committee_member_inst','Criterion D (BONUS) - Committee Member (Institutional)',2.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
+('Extension','kra3_d_dean','Criterion D (BONUS) - Dean',6.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
+('Extension','kra3_d_assoc_dean','Criterion D (BONUS) - Associate Dean',5.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
+('Extension','kra3_d_college_secretary','Criterion D (BONUS) - College Secretary',3.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
+('Extension','kra3_d_dept_head','Criterion D (BONUS) - Department Head',4.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
+('Extension','kra3_d_program_chair','Criterion D (BONUS) - Program Chair / Project Head (College/Dept)',3.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
+('Extension','kra3_d_committee_chair_dept','Criterion D (BONUS) - Committee Chair (College/Dept)',2.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
+('Extension','kra3_d_committee_member_dept','Criterion D (BONUS) - Committee Member (College/Dept)',1.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
 
--- ── KRA IV: PROFESSIONAL DEVELOPMENT ─────────────────────────
-('Professional Development','kra4_a_org_membership','Criterion A – Active Professional Org Membership',5.00,100.00,'Copy of proof of membership such as certificate of membership or ID. Copy of certification of engagement, role, or assignment from the head of the organization.'),
-('Professional Development','kra4_b_postmaster_cert','Criterion B – Post-Master\'s Diploma / Certificate',10.00,100.00,'Copy of transcript of records, diploma, or certificate for educational qualifications.'),
-('Professional Development','kra4_b_postdoc_cert','Criterion B – Post-Doctoral Diploma / Certificate',10.00,100.00,'Copy of transcript of records, diploma, or certificate for educational qualifications.'),
-('Professional Development','kra4_b_additional_masters','Criterion B – Additional Master\'s Degree',20.00,100.00,'Copy of transcript of records, diploma, or certificate for educational qualifications.'),
-('Professional Development','kra4_b_doctorate','Criterion B – Doctorate / Additional Doctorate',40.00,100.00,'Copy of transcript of records, diploma, or certificate for educational qualifications.'),
-('Professional Development','kra4_b_training_local','Criterion B – Training/Conference, Local',1.00,100.00,'Copy of certificate of participation for seminars, conferences, and workshops.'),
-('Professional Development','kra4_b_training_intl','Criterion B – Training/Conference, International',2.00,100.00,'Copy of certificate of participation for seminars, conferences, and workshops.'),
-('Professional Development','kra4_b_paper_local','Criterion B – Paper Presentation, Local',3.00,100.00,'Copy of letter/certificate of acceptance for paper presentations.'),
-('Professional Development','kra4_b_paper_intl','Criterion B – Paper Presentation, International',5.00,100.00,'Copy of letter/certificate of acceptance for paper presentations.'),
-('Professional Development','kra4_c_award_institutional','Criterion C – Institutional Award',2.00,100.00,'Copy of certificate of recognition or award. Copy of picture of plaque, trophy, medal, or similar items.'),
-('Professional Development','kra4_c_award_local','Criterion C – Local Award (City/Municipality/Province)',3.00,100.00,'Copy of certificate of recognition or award. Copy of picture of plaque, trophy, medal, or similar items.'),
-('Professional Development','kra4_c_award_regional','Criterion C – Regional In-Country Award',4.00,100.00,'Copy of certificate of recognition or award. Copy of picture of plaque, trophy, medal, or similar items.'),
-('Professional Development','kra4_c_award_national','Criterion C – National Award (Triggers +1 Sub-rank)',0.00,100.00,'Copy of certificate of recognition or award. Copy of picture of plaque, trophy, medal, or similar items.'),
-('Professional Development','kra4_c_award_international','Criterion C – International Award (Triggers +1 Sub-rank)',0.00,100.00,'Copy of certificate of recognition or award. Copy of picture of plaque, trophy, medal, or similar items.'),
-('Professional Development','kra4_d_academic_president','Criterion D (BONUS, New Faculty) – Academic Service as President',5.00,100.00,'Copy of service record, certificate of employment, notice of appointment or designation for academic experience.'),
-('Professional Development','kra4_d_academic_vp_dean','Criterion D (BONUS, New Faculty) – Academic Service as VP/Dean/Director',4.00,100.00,'Copy of service record, certificate of employment, notice of appointment or designation for academic experience.'),
-('Professional Development','kra4_d_academic_dept_head','Criterion D (BONUS, New Faculty) – Academic Service as Dept/Program Head',3.00,100.00,'Copy of service record, certificate of employment, notice of appointment or designation for academic experience.'),
-('Professional Development','kra4_d_academic_faculty','Criterion D (BONUS, New Faculty) – Academic Service as Faculty Member',2.00,100.00,'Copy of service record, certificate of employment, notice of appointment or designation for academic experience.'),
-('Professional Development','kra4_d_industry_managerial','Criterion D (BONUS, New Faculty) – Industry: Managerial/Supervisory',4.00,100.00,'Copy of service record, certificate of employment, or notice of appointment for industry experience.'),
-('Professional Development','kra4_d_industry_technical','Criterion D (BONUS, New Faculty) – Industry: Technical/Skilled',3.00,100.00,'Copy of service record, certificate of employment, or notice of appointment for industry experience.'),
-('Professional Development','kra4_d_industry_support','Criterion D (BONUS, New Faculty) – Industry: Support/Administrative Staff',2.00,100.00,'Copy of service record, certificate of employment, or notice of appointment for industry experience.')
+-- -- KRA IV: PROFESSIONAL DEVELOPMENT -------------------------
+('Professional Development','kra4_a_org_membership','Criterion A - Active Professional Org Membership',5.00,100.00,'Copy of proof of membership such as certificate of membership or ID. Copy of certification of engagement, role, or assignment from the head of the organization.'),
+('Professional Development','kra4_b_postmaster_cert','Criterion B - Post-Master\'s Diploma / Certificate',10.00,100.00,'Copy of transcript of records, diploma, or certificate for educational qualifications.'),
+('Professional Development','kra4_b_postdoc_cert','Criterion B - Post-Doctoral Diploma / Certificate',10.00,100.00,'Copy of transcript of records, diploma, or certificate for educational qualifications.'),
+('Professional Development','kra4_b_additional_masters','Criterion B - Additional Master\'s Degree',20.00,100.00,'Copy of transcript of records, diploma, or certificate for educational qualifications.'),
+('Professional Development','kra4_b_doctorate','Criterion B - Doctorate / Additional Doctorate',40.00,100.00,'Copy of transcript of records, diploma, or certificate for educational qualifications.'),
+('Professional Development','kra4_b_training_local','Criterion B - Training/Conference, Local',1.00,100.00,'Copy of certificate of participation for seminars, conferences, and workshops.'),
+('Professional Development','kra4_b_training_intl','Criterion B - Training/Conference, International',2.00,100.00,'Copy of certificate of participation for seminars, conferences, and workshops.'),
+('Professional Development','kra4_b_paper_local','Criterion B - Paper Presentation, Local',3.00,100.00,'Copy of letter/certificate of acceptance for paper presentations.'),
+('Professional Development','kra4_b_paper_intl','Criterion B - Paper Presentation, International',5.00,100.00,'Copy of letter/certificate of acceptance for paper presentations.'),
+('Professional Development','kra4_c_award_institutional','Criterion C - Institutional Award',2.00,100.00,'Copy of certificate of recognition or award. Copy of picture of plaque, trophy, medal, or similar items.'),
+('Professional Development','kra4_c_award_local','Criterion C - Local Award (City/Municipality/Province)',3.00,100.00,'Copy of certificate of recognition or award. Copy of picture of plaque, trophy, medal, or similar items.'),
+('Professional Development','kra4_c_award_regional','Criterion C - Regional In-Country Award',4.00,100.00,'Copy of certificate of recognition or award. Copy of picture of plaque, trophy, medal, or similar items.'),
+('Professional Development','kra4_c_award_national','Criterion C - National Award (Triggers +1 Sub-rank)',0.00,100.00,'Copy of certificate of recognition or award. Copy of picture of plaque, trophy, medal, or similar items.'),
+('Professional Development','kra4_c_award_international','Criterion C - International Award (Triggers +1 Sub-rank)',0.00,100.00,'Copy of certificate of recognition or award. Copy of picture of plaque, trophy, medal, or similar items.'),
+('Professional Development','kra4_d_academic_president','Criterion D (BONUS, New Faculty) - Academic Service as President',5.00,100.00,'Copy of service record, certificate of employment, notice of appointment or designation for academic experience.'),
+('Professional Development','kra4_d_academic_vp_dean','Criterion D (BONUS, New Faculty) - Academic Service as VP/Dean/Director',4.00,100.00,'Copy of service record, certificate of employment, notice of appointment or designation for academic experience.'),
+('Professional Development','kra4_d_academic_dept_head','Criterion D (BONUS, New Faculty) - Academic Service as Dept/Program Head',3.00,100.00,'Copy of service record, certificate of employment, notice of appointment or designation for academic experience.'),
+('Professional Development','kra4_d_academic_faculty','Criterion D (BONUS, New Faculty) - Academic Service as Faculty Member',2.00,100.00,'Copy of service record, certificate of employment, notice of appointment or designation for academic experience.'),
+('Professional Development','kra4_d_industry_managerial','Criterion D (BONUS, New Faculty) - Industry: Managerial/Supervisory',4.00,100.00,'Copy of service record, certificate of employment, or notice of appointment for industry experience.'),
+('Professional Development','kra4_d_industry_technical','Criterion D (BONUS, New Faculty) - Industry: Technical/Skilled',3.00,100.00,'Copy of service record, certificate of employment, or notice of appointment for industry experience.'),
+('Professional Development','kra4_d_industry_support','Criterion D (BONUS, New Faculty) - Industry: Support/Administrative Staff',2.00,100.00,'Copy of service record, certificate of employment, or notice of appointment for industry experience.')
 
 ON DUPLICATE KEY UPDATE
     criterion_label = VALUES(criterion_label),
@@ -490,8 +617,8 @@ CREATE TABLE IF NOT EXISTS pre_eval_files (
 
 
 --     Powers the "Help" and "What's New" menu items.
---     category = 'help'     → general help articles
---     category = 'whats_new' → release notes / changelog entries
+--     category = 'help'     -> general help articles
+--     category = 'whats_new' -> release notes / changelog entries
 -- ============================================================
 CREATE TABLE IF NOT EXISTS help_articles (
     article_id   INT AUTO_INCREMENT PRIMARY KEY,
@@ -517,7 +644,7 @@ CREATE TABLE IF NOT EXISTS feedback_submissions (
     contact_email VARCHAR(150) DEFAULT NULL,
     subject       VARCHAR(255) DEFAULT NULL,
     message       TEXT NOT NULL,
-    rating        TINYINT UNSIGNED DEFAULT NULL COMMENT '1–5 star rating, optional',
+    rating        TINYINT UNSIGNED DEFAULT NULL COMMENT '1-5 star rating, optional',
     status        ENUM('new','read','resolved') DEFAULT 'new',
     submitted_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     resolved_by   INT DEFAULT NULL,
@@ -532,25 +659,25 @@ CREATE TABLE IF NOT EXISTS feedback_submissions (
 INSERT INTO help_articles (title, content, category, created_by) VALUES
 (
     'Getting Started with SUCFRMS',
-    'Welcome to the SUCFRMS Faculty Reclassification Management Information System.\n\n1. Log in with your institutional email and password.\n2. Navigate to "My Application" to start or continue a reclassification application.\n3. Fill in all four KRA sections (Instruction, Research, Extension, Professional Development).\n4. Upload supporting documents for each criterion.\n5. Submit your application before the cycle deadline.\n\nFor further assistance contact your campus checker or the system administrator.',
+    'Welcome to the SUCFRMS Faculty Reclassification Management Information System.\n\n1. Log in with your institutional email and password.\n2. Navigate to "My Application" to start or continue a reclassification application.\n3. Fill in all four KRA sections (Instruction, Research, Extension, Professional Development).\n4. Upload supporting documents for each criterion.\n5. Submit your application before the cycle deadline.\n\nFor further assistance contact the Subcommittee or the system administrator.',
     'help',
     NULL
 ),
 (
     'How to Submit a Reclassification Application',
-    'To submit your application:\n\n1. Open your draft application from the dashboard.\n2. Complete all required KRA entries and upload evidence files.\n3. Click "Submit Application".\n4. Your application will move to "Under Review" status.\n5. You will be notified once a checker reviews your submission.\n\nNote: You cannot edit a submitted application unless the checker requests a revision.',
+    'To submit your application:\n\n1. Open your draft application from the dashboard.\n2. Complete all required KRA entries and upload evidence files.\n3. Click "Submit Application".\n4. Your application will move to "Under Review" status.\n5. You will be notified once an evaluator reviews your submission.\n\nNote: You cannot edit a submitted application unless the evaluator requests a revision.',
     'help',
     NULL
 ),
 (
     'Understanding Your Application Status',
-    'Application statuses explained:\n\n• Draft – Not yet submitted; you can still edit.\n• Submitted – Awaiting checker review.\n• Under Review – Checker is currently reviewing.\n• Needs Revision – Checker has requested changes; you may re-edit.\n• Approved – Application endorsed by checker.\n• Reclassified – Final approval granted by admin.\n• Rejected – Application was not approved.',
+    'Application statuses explained:\n\n* Draft - Not yet submitted; you can still edit.\n* Submitted - Awaiting evaluator review.\n* Under Review - Evaluator is currently reviewing.\n* Needs Revision - Evaluator has requested changes; you may re-edit.\n* Approved - Application endorsed by evaluator.\n* Reclassified - Final approval granted by admin.\n* Rejected - Application was not approved.',
     'help',
     NULL
 ),
 (
-    'What\'s New – System Launch (v1.0)',
-    '• Initial release of SUCFRMS.\n• Faculty can submit reclassification applications online.\n• Checkers can review, approve, or request revisions.\n• Admin can manage cycles, users, and campus settings.\n• Automated tracking number generation for each application.\n• PDF export of completed applications.',
+    'What\'s New - System Launch (v1.0)',
+    '* Initial release of SUCFRMS.\n* Faculty can submit reclassification applications online.\n* Evaluators can review, approve, or request revisions.\n* Admin can manage cycles, users, and campus settings.\n* Automated tracking number generation for each application.\n* PDF export of completed applications.',
     'whats_new',
     NULL
 )
@@ -585,15 +712,15 @@ UPDATE scoring_criteria SET max_points = 6.00
 -- Admin must explicitly set this to a non-zero value after confirming with CHED-RO.
 UPDATE scoring_criteria
     SET max_points  = 0.00,
-        description = 'CONFIRMED SOURCE GAP: The Points column for Mentorship Services (JC01 s.2026, Section 15 item 2, p.78) is blank in the official circular — verified directly against the scanned page. Set max_points to a non-zero value only after confirming with CHED-RO or your adviser. Until set (max_points = 0), all mentorship submissions raise PENDING_DOCUMENTATION and are not scored. Hard rules: (1) regional/national/international only — local-only excluded; (2) Champion through 3rd place only — consolation prizes excluded. Required evidence: award certificate/photo, competition mechanics, org profile with prior winners list. Suggested discussion starting point: 1 pt (matching lowest confirmed Crit C rate — design recommendation, NOT sourced).'
+        description = 'CONFIRMED SOURCE GAP: The Points column for Mentorship Services (JC01 s.2026, Section 15 item 2, p.78) is blank in the official circular  -  verified directly against the scanned page. Set max_points to a non-zero value only after confirming with CHED-RO or your adviser. Until set (max_points = 0), all mentorship submissions raise PENDING_DOCUMENTATION and are not scored. Hard rules: (1) regional/national/international only  -  local-only excluded; (2) Champion through 3rd place only  -  consolation prizes excluded. Required evidence: award certificate/photo, competition mechanics, org profile with prior winners list. Suggested discussion starting point: 1 pt (matching lowest confirmed Crit C rate  -  design recommendation, NOT sourced).'
     WHERE criterion_key = 'kra1_c_mentor_competition'
       AND cycle_id IS NULL;
 
 -- ============================================================
--- 15. RUNTIME MIGRATION for anonymous checker identity
+-- 15. RUNTIME MIGRATION for anonymous evaluator identity
 --     checker_label holds the auto-incremented anonymous name
---     ("Checker #1", "Checker #2", ...) shown wherever a checker's
---     identity appears as text on faculty- or checker-facing pages.
+--     ("Evaluator #1", "Evaluator #2", ...) shown wherever an evaluator's
+--     identity appears as text on faculty- or evaluator-facing pages.
 --     Real name stays visible only in Manage Users (admin view).
 -- ============================================================
 ALTER TABLE users
@@ -601,10 +728,10 @@ ALTER TABLE users
 
 -- Backfill labels for any pre-existing checker/talisay_checker accounts
 -- created before this column existed.
-SET @cl_rownum = (SELECT COALESCE(MAX(CAST(SUBSTRING(checker_label, 10) AS UNSIGNED)), 0)
-                   FROM users WHERE checker_label REGEXP '^Checker #[0-9]+$');
+SET @cl_rownum = (SELECT COALESCE(MAX(CAST(SUBSTRING(checker_label, 12) AS UNSIGNED)), 0)
+                   FROM users WHERE checker_label REGEXP '^Evaluator #[0-9]+$');
 UPDATE users
-    SET checker_label = CONCAT('Checker #', (@cl_rownum := @cl_rownum + 1))
+    SET checker_label = CONCAT('Evaluator #', (@cl_rownum := @cl_rownum + 1))
     WHERE role IN ('checker','talisay_checker') AND checker_label IS NULL
     ORDER BY user_id ASC;
 

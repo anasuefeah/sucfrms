@@ -1,14 +1,14 @@
 <?php
 /**
- * KRA II Scorer — Research, Invention & Creative Work (100 points)
+ * KRA II Scorer  -  Research, Invention & Creative Work (100 points)
  * DBM-CHED Joint Circular No. 01, s. 2026
  *
  * Structure:
- *   Criterion A – Research Outputs:     internally scoreable up to 100
- *   Criterion B – Inventions:           internally scoreable up to 100
- *   Criterion C – Creative Works:       internally scoreable up to 100
+ *   Criterion A - Research Outputs:     internally scoreable up to 100
+ *   Criterion B - Inventions:           internally scoreable up to 100
+ *   Criterion C - Creative Works:       internally scoreable up to 100
  *   KRA II total = A + B + C summed FIRST, then capped at 100.
- *   (Do NOT cap A, B, C individually — sum then cap.)
+ *   (Do NOT cap A, B, C individually  -  sum then cap.)
  */
 
 namespace Scoring;
@@ -30,13 +30,13 @@ class KRA2Scorer
         'journal_indexed_co'    => 50,
         'book_chapter_sole'     => 35,
         'book_chapter_co'       => 35,
-        'policy_lead'           => 35,   // Research → Project/Policy/Product (max 2 instances = 70)
+        'policy_lead'           => 35,   // Research -> Project/Policy/Product (max 2 instances = 70)
         'policy_contrib'        => 35,
         'citation_local'        => 10,   // per cited article, max 6 = 60
         'citation_intl'         => 10,
     ];
 
-    // Invention point values (by highest stage reached — not cumulative)
+    // Invention point values (by highest stage reached  -  not cumulative)
     const INVENTION_POINTS = [
         'patent_acceptance'     => 10,
         'patent_publication'    => 20,
@@ -90,7 +90,7 @@ class KRA2Scorer
             $contrib    = min(100, max(1, (float)($parts[5] ?? 100)));
             $pts      = 0.0;
 
-            // ── Criterion A: Research Outputs ────────────────────────
+            // -- Criterion A: Research Outputs ------------------------
             if (self::isResearchOutput($label)) {
                 $base = self::resolveResearchBase($label, $config_i);
                 if ($base !== null) {
@@ -105,7 +105,7 @@ class KRA2Scorer
                             $pts = 0.0;
                         }
                     }
-                    // Citation cap: max 6 citations (60 pts) — self-citations excluded
+                    // Citation cap: max 6 citations (60 pts)  -  self-citations excluded
                     if (self::isCitation($label)) {
                         $citation_count++;
                         if ($citation_count > 6) {
@@ -117,54 +117,54 @@ class KRA2Scorer
                     // Indexing validation
                     if (self::requiresIndexing($label)) {
                         if (empty($s['evidence_names'])) {
-                            $pending[] = "KRA II Crit A: '{$developers}' — missing research director certification of indexing status at time of publication (Scopus/WoS/ACI required).";
+                            $pending[] = "KRA II Crit A: '{$developers}'  -  missing research director certification of indexing status at time of publication (Scopus/WoS/ACI required).";
                         }
                     }
 
                     if ($isCo && empty($parts[5])) {
-                        $pending[] = "KRA II Crit A: '{$developers}' — co-author entry missing Annex D (Certificate of Contribution Form_Research Output).";
+                        $pending[] = "KRA II Crit A: '{$developers}'  -  co-author entry missing Annex D (Certificate of Contribution Form_Research Output).";
                     }
                 }
                 $crit_a_raw += $pts;
             }
-            // ── Criterion B: Inventions ──────────────────────────────
+            // -- Criterion B: Inventions ------------------------------
             elseif (self::isInvention($label)) {
                 $base = self::resolveInventionBase($label, $config_i);
                 if ($base !== null) {
                     $isCo = self::isCoInventor($label);
                     $pts  = round($isCo ? $base * ($contrib / 100) : (float)$base, 2);
                     if ($isCo && empty($parts[5])) {
-                        $pending[] = "KRA II Crit B: '{$developers}' — co-inventor missing Annex F/G/H (Certificate of Contribution Form_IP).";
+                        $pending[] = "KRA II Crit B: '{$developers}'  -  co-inventor missing Annex F/G/H (Certificate of Contribution Form_IP).";
                     }
                     if (empty($s['evidence_names'])) {
-                        $pending[] = "KRA II Crit B: '{$developers}' — missing IPOPHL certification / patent certificate.";
+                        $pending[] = "KRA II Crit B: '{$developers}'  -  missing IPOPHL certification / patent certificate.";
                     }
                 }
                 $crit_b_raw += $pts;
             }
-            // ── Criterion C: Creative Works ──────────────────────────
+            // -- Criterion C: Creative Works --------------------------
             elseif (self::isCreativeWork($label)) {
                 $base = self::resolveCreativeBase($label, $config_i);
                 if ($base !== null) {
                     $isCo = self::isCoAuthor($label) || self::isCoCreator($label);
                     $pts  = round($isCo ? $base * ($contrib / 100) : (float)$base, 2);
                     if ($isCo && empty($parts[5])) {
-                        $pending[] = "KRA II Crit C: '{$developers}' — co-creator missing Annex I (Certificate of Contribution Form_Creative Works).";
+                        $pending[] = "KRA II Crit C: '{$developers}'  -  co-creator missing Annex I (Certificate of Contribution Form_Creative Works).";
                     }
                     if (empty($s['evidence_names'])) {
-                        $pending[] = "KRA II Crit C: '{$developers}' — missing copyright certificate / invitation letter / evidence of performance.";
+                        $pending[] = "KRA II Crit C: '{$developers}'  -  missing copyright certificate / invitation letter / evidence of performance.";
                     }
                 }
                 $crit_c_raw += $pts;
             }
-            // Legacy / unrecognised entry — try to extract pts from label pattern
+            // Legacy / unrecognised entry  -  try to extract pts from label pattern
             else {
                 if (preg_match('/\((\d+(?:\.\d+)?)\s*pts?\)/i', $label, $m)) {
                     $base = (float)$m[1];
                     $pts  = round($base * ($contrib / 100), 2);
                     $crit_a_raw += $pts;
                 } else {
-                    $config_i[] = "KRA II: Unrecognised entry '{$label}' — CONFIG_INCOMPLETE.";
+                    $config_i[] = "KRA II: Unrecognised entry '{$label}'  -  CONFIG_INCOMPLETE.";
                 }
             }
         }
@@ -185,7 +185,7 @@ class KRA2Scorer
         ];
     }
 
-    // ── Category detectors ───────────────────────────────────────────
+    // -- Category detectors -------------------------------------------
     private static function isResearchOutput(string $label): bool
     {
         $l = strtolower($label);
@@ -262,7 +262,7 @@ class KRA2Scorer
             || str_contains($l, 'co-producer') || str_contains($l, 'co-composer');
     }
 
-    // ── Base point resolvers ─────────────────────────────────────────
+    // -- Base point resolvers -----------------------------------------
     private static function resolveResearchBase(string $label, array &$config_i): ?float
     {
         $l = strtolower($label);
@@ -275,7 +275,7 @@ class KRA2Scorer
         if (str_contains($l, 'scholar'))                                         return 10.0;
         // Extract from label pattern
         if (preg_match('/\((\d+(?:\.\d+)?)\s*pts?\)/i', $label, $m)) return (float)$m[1];
-        $config_i[] = "KRA II Crit A: Cannot resolve base points for '{$label}' — CONFIG_INCOMPLETE.";
+        $config_i[] = "KRA II Crit A: Cannot resolve base points for '{$label}'  -  CONFIG_INCOMPLETE.";
         return null;
     }
 
@@ -293,21 +293,21 @@ class KRA2Scorer
         if (str_contains($l, 'software'))          return 10.0;
         if (str_contains($l, 'plant variety') || str_contains($l, 'animal breed') || str_contains($l, 'microbial')) return 10.0;
         if (preg_match('/\((\d+(?:\.\d+)?)\s*pts?\)/i', $label, $m)) return (float)$m[1];
-        $config_i[] = "KRA II Crit B: Cannot resolve invention base for '{$label}' — CONFIG_INCOMPLETE.";
+        $config_i[] = "KRA II Crit B: Cannot resolve invention base for '{$label}'  -  CONFIG_INCOMPLETE.";
         return null;
     }
 
     private static function resolveCreativeBase(string $label, array &$config_i): ?float
     {
         $l = strtolower($label);
-        // Performing arts — music
+        // Performing arts  -  music
         if (str_contains($l, 'composition') || str_contains($l, 'arrangement') || str_contains($l, 'production')) return 20.0;
         if (str_contains($l, 'performance') || str_contains($l, 'conducting'))                                     return 10.0;
         // Dance
         if (str_contains($l, 'choreograph'))                                     return 20.0;
         // Theatre
         if (str_contains($l, 'playwright') || str_contains($l, 'directing') || str_contains($l, 'acting') || str_contains($l, 'production design')) return 20.0;
-        // Visual arts (one shared rate) — architecture/engineering/interior nested here
+        // Visual arts (one shared rate)  -  architecture/engineering/interior nested here
         if (str_contains($l, 'visual') || str_contains($l, 'painting') || str_contains($l, 'sculpture')
             || str_contains($l, 'photograph') || str_contains($l, 'digital art')
             || str_contains($l, 'architect') || str_contains($l, 'engineer') || str_contains($l, 'interior')) return 20.0;
@@ -320,7 +320,7 @@ class KRA2Scorer
         if (str_contains($l, 'essay'))       return 2.0;
         if (str_contains($l, 'exhibition') || str_contains($l, 'juried') || str_contains($l, 'peer-reviewed design')) return 20.0;
         if (preg_match('/\((\d+(?:\.\d+)?)\s*pts?\)/i', $label, $m)) return (float)$m[1];
-        $config_i[] = "KRA II Crit C: Cannot resolve creative work base for '{$label}' — CONFIG_INCOMPLETE.";
+        $config_i[] = "KRA II Crit C: Cannot resolve creative work base for '{$label}'  -  CONFIG_INCOMPLETE.";
         return null;
     }
 

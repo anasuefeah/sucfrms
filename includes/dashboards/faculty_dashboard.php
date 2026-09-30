@@ -8,7 +8,7 @@ if (!$cycle) {
     <div class="neon-card text-center py-5">
         <i class="bi bi-calendar-x" style="font-size:2.5rem;color:#cbd5e1;display:block;margin-bottom:0.75rem;"></i>
         <h5 class="fw-bold mb-2" style="color:#1a3a6b;">No Active Reclassification Cycle</h5>
-        <p class="text-muted mb-1">There is currently no open cycle. Your account is ready &mdash; you do not need to register again.</p>
+        <p class="text-muted mb-1">There is currently no open cycle. Your account is ready.</p>
         <p class="text-muted small">When the next cycle opens, your application will be available here automatically.</p>'
         . ($last_cycle ? '<p class="text-muted small mt-2">Last cycle: <strong>' . htmlspecialchars($last_cycle['cycle_name']) . '</strong> (' . ucfirst($last_cycle['status']) . ')</p>' : '')
         . '</div>';
@@ -18,19 +18,19 @@ if (!$cycle) {
 $app    = getOrCreateApplication($pdo, $uid, $cycle['cycle_id']);
 $app_id = $app['application_id'];
 
-// â”€â”€ KRA scores â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- KRA scores ------------------------------------------------
 $score_result = getApplicationScoreSummary($pdo, (int)$app_id);
 $kra_map      = $score_result['kra_map'];
 $total        = $score_result['grand_total'];
 
-// â”€â”€ Score computation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Score computation -----------------------------------------
 $faculty_row  = $pdo->prepare("SELECT rank, full_name FROM users WHERE user_id=?");
 $faculty_row->execute([$uid]);
 $faculty_row  = $faculty_row->fetch();
 $faculty_rank = $faculty_row['rank'] ?? '';
 $raw_kra      = array_map(fn($d) => $d['pts'], $kra_map);
 
-// â”€â”€ Checker approval progress (for under_review status display) â”€â”€
+// -- Checker approval progress (for under_review status display) --
 $chk_approved = 0;
 $chk_slots    = 0;
 $chk_total    = max(1, (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role = 'checker' AND status='active'")->fetchColumn());
@@ -52,7 +52,7 @@ $weighted     = $score_result['weighted_score'];
 $inc          = $score_result['sub_rank_increment'];
 $meets_min    = $weighted >= 41;
 
-// â”€â”€ Colleagues from same campus â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Colleagues from same campus -------------------------------
 $my_campus_id = null;
 $my_campus_name = '';
 $campus_row = $pdo->prepare("SELECT u.campus_id, c.campus_name FROM users u LEFT JOIN campuses c ON u.campus_id = c.campus_id WHERE u.user_id = ?");
@@ -88,25 +88,30 @@ function colleagueStatusLabel(string $s): array {
     return match($s) {
         'draft'          => ['Draft',          '#94a3b8'],
         'submitted'      => ['Submitted',       '#1e4d8c'],
-        'under_review'   => ['Under Review',    '#1a3a6b'],
+        'under_review'   => ['Under Evaluation','#1a3a6b'],
         'needs_revision' => ['Needs Revision',  '#475569'],
-        'approved'       => ['Approved',        '#1e4d8c'],
-        'rejected'       => ['Returned',        '#64748b'],
-        'admin_rejected' => ['Rejected',        '#64748b'],
+        'approved'       => ['Evaluation Complete', '#1e4d8c'],
+        'rejected'       => ['Returned for Revision', '#64748b'],
+        'admin_rejected' => ['Evaluation Complete', '#64748b'],
         default          => ['No Application',  '#cbd5e1'],
     };
 }
 
-// â”€â”€ Deadline info â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Cycle open/closed controls submission availability — no deadline date needed.
-$deadline_passed = ($cycle['status'] ?? 'closed') !== 'open';
-$deadline_str    = '';
-$days_left       = null;
-$deadline_urgent = false;
+// -- Deadline info ---------------------------------------------
+$effective_deadline = getEffectiveSubmissionDeadline($pdo, (int)$cycle['cycle_id'], (int)$uid, $cycle['submission_deadline'] ?? null);
+$submission_start_ts = !empty($cycle['submission_start_date']) ? strtotime($cycle['submission_start_date'] . ' 00:00:00') : null;
+$deadline_ts = $effective_deadline ? strtotime($effective_deadline . ' 23:59:59') : null;
+$submission_not_open = $submission_start_ts !== null && time() < $submission_start_ts;
+$deadline_passed = ($cycle['status'] ?? 'closed') !== 'open'
+    || $submission_not_open
+    || ($deadline_ts !== null && time() > $deadline_ts);
+$deadline_str    = $effective_deadline ? date('M d, Y', strtotime($effective_deadline)) : '';
+$days_left       = $deadline_ts ? max(0, (int)ceil(($deadline_ts - time()) / 86400)) : null;
+$deadline_urgent = $days_left !== null && $days_left <= 3;
 
-// ── Score gap to next bracket ─────────────────────────────────────────────
+// -- Score gap to next bracket ---------------------------------------------
 
-// â”€â”€ Score gap to next bracket â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Score gap to next bracket ---------------------------------
 $brackets   = [[41,50,1],[51,60,2],[61,70,3],[71,80,4],[81,90,5],[91,100,6]];
 $next_bracket_gap  = null;
 $next_bracket_inc  = null;
@@ -121,7 +126,7 @@ $can_submit = !in_array($app['status'], ['submitted','under_review','approved','
               && $total > 0 && $meets_min && !$deadline_passed;
 $can_edit   = !in_array($app['status'], ['approved','admin_rejected']);
 
-// â”€â”€ KRA display config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- KRA display config ----------------------------------------
 $kra_info = [
     'Instruction'              => ['icon'=>'bi-book',        'color'=>'#1e4d8c','max'=>100, 'short'=>'KRA I',  'tab'=>'instruction'],
     'Research'                 => ['icon'=>'bi-journal-text','color'=>'#1a3a6b','max'=>100, 'short'=>'KRA II', 'tab'=>'research'],
@@ -129,7 +134,7 @@ $kra_info = [
     'Professional Development' => ['icon'=>'bi-award',       'color'=>'#1e4d8c','max'=>120, 'short'=>'KRA IV', 'tab'=>'profdev'],
 ];
 
-// â”€â”€ POST handlers (unchanged logic) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- POST handlers (unchanged logic) --------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
     if ($action === 'submit_application' && $can_submit) {
@@ -138,21 +143,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             echo "<script>window.location.href='index.php?page=dashboard';</script>"; exit;
         }
         if ($deadline_passed) {
-            flashMessage('danger', 'The cycle is no longer open for submissions.');
+            flashMessage('danger', $submission_not_open ? 'The faculty submission period is not open yet.' : 'The cycle is no longer open for submissions.');
             echo "<script>window.location.href='index.php?page=dashboard';</script>"; exit;
         }
         try { recalcApplicationScore($pdo, $app_id); } catch (\Exception $e) {}
         $new_status = !empty($app['checker_id']) ? 'under_review' : 'submitted';
         $pdo->prepare("UPDATE applications SET status=?, submitted_at=NOW() WHERE application_id=?")->execute([$new_status, $app_id]);
         logAudit($pdo, $uid, 'Application Submitted', "Application #{$app_id} submitted for {$cycle['cycle_name']}.");
-        // Notify all active campus checkers of new submission
+        // Notify all active Subcommittee reviewers of new submission
         $campus_checkers = $pdo->query("SELECT user_id FROM users WHERE role = 'checker' AND status='active'")->fetchAll(PDO::FETCH_COLUMN);
         foreach ($campus_checkers as $cid) {
             createNotif($pdo, (int)$cid, 'new_submission',
-                "New application submitted by " . ($_SESSION['full_name'] ?? 'A faculty member') . " — awaiting your review.",
+                "New application submitted by " . ($_SESSION['full_name'] ?? 'A faculty member') . "  -  awaiting your review.",
                 $app_id);
         }
-        flashMessage('success', $new_status === 'under_review' ? 'Application resubmitted to your checker.' : 'Application submitted for review.');
+        flashMessage('success', $new_status === 'under_review' ? 'Application resubmitted to your evaluator.' : 'Application submitted for review.');
         echo "<script>window.location.href='index.php?page=dashboard';</script>"; exit;
     }
     if ($action === 'resubmit_revision' && $app['status'] === 'needs_revision') {
@@ -160,31 +165,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pdo->prepare("UPDATE kra_submissions SET revision_status='ok', revision_note=NULL, revision_by=NULL, revision_at=NULL WHERE application_id=?")->execute([$app_id]);
         $pdo->prepare("UPDATE applications SET status='under_review', checker_remarks=NULL WHERE application_id=?")->execute([$app_id]);
         logAudit($pdo, $uid, 'Revision Resubmitted', "Faculty resubmitted revised entries for Application #{$app_id}");
-        // Notify campus checkers of revision compliance
+        // Notify Subcommittee reviewers of revision compliance
         $campus_checkers = $pdo->query("SELECT user_id FROM users WHERE role = 'checker' AND status='active'")->fetchAll(PDO::FETCH_COLUMN);
         foreach ($campus_checkers as $cid) {
             createNotif($pdo, (int)$cid, 'revision_resubmitted',
                 ($_SESSION['full_name'] ?? 'A faculty member') . " has resubmitted the revised KRA entries for your review.",
                 $app_id);
         }
-        flashMessage('success', 'Revised entries submitted. The checker will continue reviewing your application.');
+        flashMessage('success', 'Revised entries submitted. The evaluator will continue reviewing your application.');
         echo "<script>window.location.href='index.php?page=dashboard';</script>"; exit;
     }
 }
 ?>
 
-<!-- â”€â”€ Page header â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+<!-- -- Page header --------------------------------------------- -->
 <?php include __DIR__ . '/_notif_banner_snippet.php'; ?>
 
 <?php
-// ── Application progress steps ──
+// -- Application progress steps --
 $steps = [
     ['label'=>'Profile Complete',       'sublabel'=>'Name, rank, campus set',     'icon'=>'bi-person-check', 'done'=>!empty($_SESSION['full_name']) && !empty($faculty_rank),                                                            'link'=>null],
     ['label'=>'KRA Entries Added',      'sublabel'=>($total > 0 ? number_format($total,1).' pts total' : 'No entries yet'), 'icon'=>'bi-list-check', 'done'=>(isset($total) && $total > 0), 'link'=>'?page=apply'],
     ['label'=>'Submitted',              'sublabel'=>'Not yet submitted',          'icon'=>'bi-send',         'done'=>in_array($app['status'],['submitted','under_review','talisay_review','approved','reclassified','admin_rejected']),  'link'=>null],
-    ['label'=>'Campus Review',          'sublabel'=>'Awaiting campus checkers',   'icon'=>'bi-search',       'done'=>in_array($app['status'],['talisay_review','approved','reclassified']),                                            'link'=>null],
-    ['label'=>'Under Review by Talisay','sublabel'=>'Awaiting Talisay checkers',  'icon'=>'bi-building',     'done'=>in_array($app['status'],['approved','reclassified']),                                                              'link'=>null],
-    ['label'=>'Approved',               'sublabel'=>'Pending',                    'icon'=>'bi-check-circle', 'done'=>$app['status']==='approved'||$app['status']==='reclassified',                                                      'link'=>null],
+    ['label'=>'Under Evaluation',       'sublabel'=>'Evaluator review',           'icon'=>'bi-search',       'done'=>in_array($app['status'],['talisay_review','approved','reclassified']),                                            'link'=>null],
+    ['label'=>'Evaluation Complete',    'sublabel'=>'For committee review',       'icon'=>'bi-clipboard-check','done'=>in_array($app['status'],['approved','reclassified']),                                                              'link'=>null],
 ];
 $current_step = 0;
 foreach ($steps as $i => $s) { if ($s['done']) $current_step = $i + 1; }
@@ -239,7 +243,7 @@ foreach ($steps as $i => $s) { if ($s['done']) $current_step = $i + 1; }
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem;">
             <span style="font-size:0.7rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.07em;">
                 <i class="bi bi-signpost-split me-1"></i>Application Progress
-                <?= helpBtn('Application Progress', 'This shows where your application is in the reclassification process. Complete all steps to reach "Approved". You must have a weighted score of at least 41.00 to submit.') ?>
+                <?= helpBtn('Application Progress', 'This shows where your application is in the reclassification process. It is reviewed by the Subcommittee, then by the ITC. You must have a weighted score of at least 41.00 to submit.') ?>
             </span>
             <span style="font-size:0.7rem;color:#94a3b8;"><?= $current_step ?> of <?= count($steps) ?> steps completed</span>
         </div>
@@ -299,7 +303,7 @@ foreach ($steps as $i => $s) { if ($s['done']) $current_step = $i + 1; }
 </div>
 
 
-<!-- â”€â”€ My Campus + Weighted Score + KRA Overview row â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+<!-- -- My Campus + Weighted Score + KRA Overview row ----------- -->
 <div class="row g-3 mb-4">
 
     <!-- My Campus -->
@@ -314,7 +318,7 @@ foreach ($steps as $i => $s) { if ($s['done']) $current_step = $i + 1; }
                             MY CAMPUS
                         </div>
                         <div class="text-muted" style="font-size:0.7rem;margin-top:2px;">
-                            <?= sanitize($my_campus_name ?: '&mdash;') ?>
+                            <?= sanitize($my_campus_name ?: '-') ?>
                         </div>
                     </div>
                     <?php
@@ -365,7 +369,7 @@ foreach ($steps as $i => $s) { if ($s['done']) $current_step = $i + 1; }
                             <?= htmlspecialchars(formatDisplayName($col)) ?>
                         </div>
                         <div class="text-muted text-truncate" style="font-size:0.68rem;">
-                            <?= sanitize($col['rank'] ?? '&mdash;') ?>
+                            <?= sanitize($col['rank'] ?? '-') ?>
                         </div>
                     </div>
                     <span style="font-size:0.62rem;font-weight:500;color:<?= $scolor ?>;
@@ -445,7 +449,7 @@ foreach ($steps as $i => $s) { if ($s['done']) $current_step = $i + 1; }
                 <?php if ($next_bracket_gap !== null && $weighted > 0): ?>
                 <span style="font-size:0.72rem;color:#64748b;">
                     <?php if ($inc > 0): ?>
-                    <?= $next_bracket_gap ?> pts more â†’ +<?= $next_bracket_inc ?>
+                    <?= $next_bracket_gap ?> pts more -> +<?= $next_bracket_inc ?>
                     <?php else: ?>
                     <?= $next_bracket_gap ?> pts needed
                     <?php endif; ?>
@@ -467,7 +471,7 @@ foreach ($steps as $i => $s) { if ($s['done']) $current_step = $i + 1; }
                 <form method="POST" id="submitApplicationForm">
                     <input type="hidden" name="action" value="submit_application">
                     <button type="button" class="btn btn-primary btn-sm w-100"
-                            onclick="confirmDelete('Submit your application for checker review?','submitApplicationForm','Submit','bi-send')">
+                            onclick="confirmDelete('Submit your application for evaluator review?','submitApplicationForm','Submit','bi-send')">
                         <i class="bi bi-send me-1"></i>Submit for Review
                     </button>
                 </form>
@@ -518,7 +522,7 @@ foreach ($steps as $i => $s) { if ($s['done']) $current_step = $i + 1; }
     </div>
 </div>
 
-<!-- â”€â”€ KRA scores &mdash; compact horizontal bar chart â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+<!-- -- KRA scores - compact horizontal bar chart ---------------- -->
 <div class="neon-card mb-4">
     <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
         <div>
@@ -548,14 +552,14 @@ foreach ($steps as $i => $s) { if ($s['done']) $current_step = $i + 1; }
                 <div class="d-flex align-items-center gap-2">
                     <i class="bi <?= $info['icon'] ?>" style="font-size:0.85rem;color:<?= $empty ? '#cbd5e1' : $info['color'] ?>;"></i>
                     <span style="font-size:0.8rem;font-weight:600;color:<?= $empty ? '#94a3b8' : '#1e293b' ?>;">
-                        <?= $info['short'] ?> &mdash; <?= $kra ?>
+                        <?= $info['short'] ?> - <?= $kra ?>
                     </span>
                     <?php if ($verified): ?>
                     <span class="badge bg-success" style="font-size:0.58rem;padding:2px 6px;">
-                        <i class="bi bi-patch-check"></i> Verified
+                        <i class="bi bi-patch-check"></i> Acceptable
                     </span>
                     <?php elseif (!$empty): ?>
-                    <span class="badge bg-secondary" style="font-size:0.58rem;padding:2px 6px;">Unverified</span>
+                    <span class="badge bg-secondary" style="font-size:0.58rem;padding:2px 6px;">Not Acceptable</span>
                     <?php endif; ?>
                 </div>
                 <div class="d-flex align-items-center gap-2">
@@ -596,13 +600,13 @@ foreach ($steps as $i => $s) { if ($s['done']) $current_step = $i + 1; }
     </div>
 </div>
 
-<!-- â”€â”€ Score computation table â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+<!-- -- Score computation table --------------------------------- -->
 <?php if ($total > 0): ?>
 <div class="neon-card mb-4">
     <h6 class="mb-3" style="color:var(--blue-dark);">
         <i class="bi bi-calculator me-2"></i>Score Breakdown
         <span class="text-muted fw-normal" style="font-size:0.78rem;">
-            &mdash; weights based on <em><?= sanitize($faculty_rank ?: 'rank not set') ?></em>
+            - weights based on <em><?= sanitize($faculty_rank ?: 'rank not set') ?></em>
         </span>
     </h6>
     <div class="table-responsive">
@@ -614,12 +618,12 @@ foreach ($steps as $i => $s) { if ($s['done']) $current_step = $i + 1; }
                     <th class="text-center" style="color:#1a3a6b;">Capped</th>
                     <th class="text-center" style="color:#1a3a6b;">Weight</th>
                     <th class="text-center" style="color:#1a3a6b;">Weighted</th>
-                    <th class="text-center" style="color:#1a3a6b;">Verified</th>
+                    <th class="text-center" style="color:#1a3a6b;">Acceptable</th>
                 </tr>
             </thead>
             <tbody>
             <?php
-            $kra_labels = ['Instruction'=>'KRA I &mdash; Instruction','Research'=>'KRA II &mdash; Research','Extension'=>'KRA III &mdash; Extension','Professional Development'=>'KRA IV &mdash; Prof. Development'];
+            $kra_labels = ['Instruction'=>'KRA I - Instruction','Research'=>'KRA II - Research','Extension'=>'KRA III - Extension','Professional Development'=>'KRA IV - Prof. Development'];
             $kra_capped = ['Instruction'=>$score_result['kra1'],'Research'=>$score_result['kra2'],'Extension'=>$score_result['kra3'],'Professional Development'=>$score_result['kra4']];
             foreach ($kra_labels as $key => $label):
                 $raw  = $kra_map[$key]['pts'];
@@ -638,7 +642,7 @@ foreach ($steps as $i => $s) { if ($s['done']) $current_step = $i + 1; }
                     <?php if ($ver): ?>
                     <span class="badge bg-success" style="font-size:0.65rem;"><i class="bi bi-check"></i></span>
                     <?php else: ?>
-                    <span class="badge bg-secondary" style="font-size:0.65rem;">&mdash;</span>
+                    <span class="badge bg-secondary" style="font-size:0.65rem;">-</span>
                     <?php endif; ?>
                 </td>
             </tr>
@@ -658,7 +662,7 @@ foreach ($steps as $i => $s) { if ($s['done']) $current_step = $i + 1; }
         <div>
             <span class="text-muted small">Sub-rank increment: </span>
             <span class="badge <?= $inc > 0 ? 'bg-success' : 'bg-secondary' ?> ms-1">
-                <?= $inc > 0 ? "+{$inc} sub-rank" . ($inc > 1 ? 's' : '') : 'No reclassification (below 41)' ?>
+                <?= $inc > 0 ? "+{$inc} sub-rank" . ($inc > 1 ? 's' : '') : 'No sub-rank increment (below 41)' ?>
             </span>
             <?php if (($score_result['award_bonus'] ?? 0) > 0): ?>
             <span class="badge ms-1" style="background:#1a3a6b;font-size:0.7rem;">
@@ -668,14 +672,14 @@ foreach ($steps as $i => $s) { if ($s['done']) $current_step = $i + 1; }
         </div>
         <?php if ($inc > 0): ?>
         <div class="text-muted small">
-            <?php foreach ($brackets as [$lo,$hi,$r]) { if ($r === ($inc - ($score_result['award_bonus'] ?? 0))) { echo "Score {$lo}&ndash;{$hi} â†’ +{$r} sub-rank" . ($r>1?'s':''); break; } } ?>
+            <?php foreach ($brackets as [$lo,$hi,$r]) { if ($r === ($inc - ($score_result['award_bonus'] ?? 0))) { echo "Score {$lo}-{$hi} -> +{$r} sub-rank" . ($r>1?'s':''); break; } } ?>
         </div>
         <?php endif; ?>
     </div>
 </div>
 <?php endif; ?>
 
-<!-- â”€â”€ Chart JS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+<!-- -- Chart JS ------------------------------------------------- -->
 <script>
 document.addEventListener('DOMContentLoaded', function () {
     <?php
@@ -697,7 +701,7 @@ document.addEventListener('DOMContentLoaded', function () {
     new Chart(document.getElementById('kraOverviewChart'), {
         type: 'doughnut',
         data: {
-            labels: ['KRA I &mdash; Instruction', 'KRA II &mdash; Research', 'KRA III &mdash; Extension', 'KRA IV &mdash; Prof Dev'],
+            labels: ['KRA I - Instruction', 'KRA II - Research', 'KRA III - Extension', 'KRA IV - Prof Dev'],
             datasets: [{
                 data: <?= json_encode($contributions) ?>,
                 backgroundColor: ['#1a3a6b','#334155','#475569','#1e4d8c'],
@@ -739,7 +743,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }]
     });
     <?php else: ?>
-    // No data yet &mdash; show empty state text on canvas
+    // No data yet - show empty state text on canvas
     const canvas = document.getElementById('kraOverviewChart');
     const ctx2 = canvas.getContext('2d');
     canvas.height = 180;

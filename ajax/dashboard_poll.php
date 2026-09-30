@@ -43,7 +43,7 @@ try {
         $s->execute([$uid, $uid]);
         $data['counts']['talisay_pending'] = (int)$s->fetchColumn();
 
-        // In Talisay Review
+        // In ITC Review
         $data['counts']['talisay_total'] = (int)$pdo->query("SELECT COUNT(*) FROM applications WHERE status='talisay_review'")->fetchColumn();
 
         // I Approved

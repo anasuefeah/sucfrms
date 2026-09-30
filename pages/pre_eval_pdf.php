@@ -1,6 +1,6 @@
 <?php
 /**
- * Self-Assessment Summary PDF (FPDF) — monochrome professional style
+ * Self-Assessment Summary PDF (FPDF)  -  monochrome professional style
  */
 ob_start();
 if (session_status() === PHP_SESSION_NONE) session_start();
@@ -18,7 +18,7 @@ if (!isLoggedIn() || !isFaculty()) { ob_end_clean(); http_response_code(403); di
 
 $uid = (int)$_SESSION['user_id'];
 
-// UTF-8 → windows-1252 for FPDF
+// UTF-8 -> windows-1252 for FPDF
 function u(string $s): string {
     return iconv('UTF-8','windows-1252//TRANSLIT//IGNORE', $s);
 }
@@ -84,7 +84,7 @@ $kras = [
 $pending  = array_merge($r1['pending_documentation']??[],$r2['pending_documentation']??[],$r3['pending_documentation']??[],$r4['pending_documentation']??[]);
 $config_i = array_merge($r1['config_incomplete']??[],$r2['config_incomplete']??[],$r3['config_incomplete']??[],$r4['config_incomplete']??[]);
 
-// ── PDF class ─────────────────────────────────────────────────
+// -- PDF class -------------------------------------------------
 class PreEvalPDF extends FPDF
 {
     public string $fac_name  = '';
@@ -98,29 +98,13 @@ class PreEvalPDF extends FPDF
         $this->SetDrawColor(180,180,180);
         $this->SetLineWidth(0.2);
 
-        // Logo — positioned neatly top-left
-        $logo = __DIR__.'/../assets/images/logo.jpg';
-        if (file_exists($logo)) $this->Image($logo, 10, 8, 14, 14);
-
+        // Logo  -  positioned neatly top-left
         // Institution name block (right of logo)
-        $this->SetFont('Times','B',11);
-        $this->SetTextColor(0,0,0);
-        $this->SetXY(27, 9);
-        $this->Cell(0, 5.5, 'State Universities and Colleges', 0, 1, 'L');
-        $this->SetFont('Times', '', 7.5);
-        $this->SetTextColor(90, 90, 90);
-        $this->SetX(27);
-        $this->Cell(0, 4, 'SUC Faculty Reclassification Management System (SUCFRMS)', 0, 1, 'L');
-
-        // Horizontal rule — full width, medium weight
-        $this->SetDrawColor(0, 0, 0);
-        $this->SetLineWidth(0.6);
-        $this->Line(10, 25, 200, 25);
-
-        // Document title — centred, prominent
+        // Horizontal rule  -  full width, medium weight
+        // Document title  -  centred, prominent
         $this->SetFont('Times', 'B', 14);
         $this->SetTextColor(0, 0, 0);
-        $this->SetXY(10, 27);
+        $this->SetXY(10, 10);
         $this->Cell(0, 8, 'SELF-ASSESSMENT SUMMARY', 0, 1, 'C');
 
         // Thin rule under title
@@ -159,7 +143,7 @@ class PreEvalPDF extends FPDF
             0,0,'C');
     }
 
-    // Bold underlined section heading — no fill
+    // Bold underlined section heading  -  no fill
     function SectionHead(string $txt): void
     {
         $this->SetFont('Times','B',9);
@@ -168,7 +152,7 @@ class PreEvalPDF extends FPDF
         $this->Ln(1);
     }
 
-    // Table header — black fill, white text
+    // Table header  -  black fill, white text
     function THead(array $cols): void
     {
         $this->SetFillColor(0,0,0);
@@ -180,7 +164,7 @@ class PreEvalPDF extends FPDF
         $this->SetFillColor(255,255,255);
     }
 
-    // Plain table row — border only, no fill
+    // Plain table row  -  border only, no fill
     function TRow(array $cols, bool $shade=false): void
     {
         $this->SetFont('Times','',7.5);
@@ -190,7 +174,7 @@ class PreEvalPDF extends FPDF
     }
 }
 
-// ── Build PDF ─────────────────────────────────────────────────
+// -- Build PDF -------------------------------------------------
 $pdf = new PreEvalPDF('P','mm','A4');
 $pdf->AliasNbPages();
 $pdf->fac_name   = u($full_name);
@@ -202,7 +186,7 @@ $pdf->SetAutoPageBreak(true,14);
 $pdf->SetDrawColor(0,0,0);
 $pdf->AddPage();
 
-// ── SCORE SUMMARY ────────────────────────────────────────────
+// -- SCORE SUMMARY --------------------------------------------
 $pdf->SectionHead('SCORE SUMMARY');
 
 // Score + threshold side by side
@@ -222,7 +206,7 @@ $pdf->SetTextColor(0,0,0);
 $pdf->Ln(5);
 
 // KRA table
-$pdf->THead([[62,'KRA','L'],[24,'Raw (/100)','C'],[20,'Weight','C'],[26,'Weighted Pts','C'],[30,'Sub-rank','C'],[28,'Potential Rank','C']]);
+$pdf->THead([[62,'KRA','L'],[24,'Raw (/100)','C'],[20,'Weight','C'],[26,'Weighted Pts','C'],[30,'Sub-rank','C'],[28,'Recommended Rank','C']]);
 $shade=false;
 foreach ($kras as $k) {
     $raw = $k['raw'];
@@ -231,7 +215,7 @@ foreach ($kras as $k) {
     $pdf->TRow([[62,u('  KRA '.$k['num'].' - '.$k['label']),'L'],[24,number_format($raw,2),'C'],[20,$wt.'%','C'],[26,number_format($wpts,2),'C'],[30,'','C'],[28,'','C']],$shade);
     $shade=!$shade;
 }
-// Total row — bold, black fill
+// Total row  -  bold, black fill
 $sl = '+'.$sr.' sub-rank'.($sr!==1?'s':'');
 $pdf->SetFillColor(0,0,0);
 $pdf->SetTextColor(255,255,255);
@@ -246,7 +230,7 @@ $pdf->SetTextColor(0,0,0);
 $pdf->SetFillColor(255,255,255);
 $pdf->Ln(6);
 
-// ── CRITERION BREAKDOWNS ─────────────────────────────────────
+// -- CRITERION BREAKDOWNS -------------------------------------
 $pdf->SectionHead('CRITERION BREAKDOWNS');
 
 foreach ($kras as $k) {
@@ -257,7 +241,7 @@ foreach ($kras as $k) {
     $pdf->SetTextColor(0,0,0);
     $pdf->Cell(0,5,u('KRA '.$k['num'].' - '.strtoupper($k['label']).'  ('.number_format($k['raw'],2).' / 100 pts)'),0,1,'L');
 
-    // Criterion sub-cap rows — plain, no fill
+    // Criterion sub-cap rows  -  plain, no fill
     $pdf->SetFont('Times','',7.5);
     foreach ($k['crit'] as [$cl,$cv,$cc]) {
         $cap_str = $cc ? number_format($cv,2).' / '.$cc.' pts' : number_format($cv,2).' pts';
@@ -317,7 +301,7 @@ foreach ($kras as $k) {
     $pdf->Ln(3);
 }
 
-// ── PENDING DOCUMENTATION ────────────────────────────────────
+// -- PENDING DOCUMENTATION ------------------------------------
 if (!empty($pending)) {
     $pdf->Ln(2);
     $pdf->SectionHead('PENDING DOCUMENTATION ('.count($pending).')');
@@ -329,7 +313,7 @@ if (!empty($pending)) {
     $pdf->Ln(2);
 }
 
-// ── SCORING FLAGS ─────────────────────────────────────────────
+// -- SCORING FLAGS ---------------------------------------------
 if (!empty($config_i)) {
     $pdf->Ln(2);
     $pdf->SectionHead('SCORING FLAGS ('.count($config_i).')');
@@ -341,7 +325,7 @@ if (!empty($config_i)) {
     $pdf->Ln(2);
 }
 
-// ── DISCLAIMER ───────────────────────────────────────────────
+// -- DISCLAIMER -----------------------------------------------
 $pdf->Ln(2);
 $pdf->SetLineWidth(0.3);
 $pdf->Line(10,$pdf->GetY(),200,$pdf->GetY());
@@ -350,11 +334,11 @@ $pdf->SetFont('Times','I',7);
 $pdf->SetTextColor(80,80,80);
 $pdf->MultiCell(0,4,
     u('DISCLAIMER: This document is a self-assessment estimate generated by SUCFRMS for reference purposes only. '.
-      'Final reclassification scores and rank determinations are subject to official review and verification by '.
-      'authorised checkers and administrators. Evidence authenticity has not been verified at this stage.'),
+      'Final reclassification scores and rank determinations are subject to official review by '.
+      'authorised evaluators and administrators. Evidence authenticity has not been reviewed at this stage.'),
     0,'L');
 
-// ── Output ───────────────────────────────────────────────────
+// -- Output ---------------------------------------------------
 ob_end_clean();
 $fname = 'SelfAssessment_'.preg_replace('/[^A-Za-z0-9_]/','_',$full_name).'_'.date('Ymd').'.pdf';
 $pdf->Output('I',$fname);

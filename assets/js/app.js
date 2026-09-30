@@ -1,5 +1,5 @@
 /* =====================================================================
-   SUCFRMS — app.js
+   SUCFRMS  -  app.js
    Lightweight, dependency-free replacement for the parts of Bootstrap's
    JS bundle this app actually uses: collapse (navbar + accordion),
    dropdown, and modal (incl. a `bootstrap.Modal`-compatible shim so

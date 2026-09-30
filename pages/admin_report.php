@@ -8,16 +8,16 @@ if (!isLoggedIn() || !isAdmin()) {
     http_response_code(403); die('Access denied.');
 }
 
-// â”€â”€ Filters from query string â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Filters from query string ---------------------------------
 $cycle_id = intval($_GET['cycle_id'] ?? 0);
 $status   = trim($_GET['status'] ?? '');
 $campus   = intval($_GET['campus_id'] ?? 0);
 
-// â”€â”€ Load cycles for filter dropdown â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Load cycles for filter dropdown --------------------------
 $all_cycles  = $pdo->query("SELECT cycle_id, cycle_name, status FROM cycles ORDER BY created_at DESC")->fetchAll();
 $all_campuses = $pdo->query("SELECT campus_id, campus_name FROM campuses WHERE is_active=1 ORDER BY campus_name")->fetchAll();
 
-// â”€â”€ Active cycle fallback â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Active cycle fallback -------------------------------------
 if (!$cycle_id) {
     foreach ($all_cycles as $cy) {
         if ($cy['status'] === 'open') { $cycle_id = $cy['cycle_id']; break; }
@@ -28,7 +28,7 @@ foreach ($all_cycles as $cy) {
     if ($cy['cycle_id'] === $cycle_id) { $selected_cycle = $cy; break; }
 }
 
-// â”€â”€ Build query â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Build query -----------------------------------------------
 $where  = "WHERE u.role = 'faculty'";
 $params = [];
 if ($cycle_id) { $where .= ' AND a.cycle_id = ?'; $params[] = $cycle_id; }
@@ -39,7 +39,7 @@ if ($campus) { $where .= ' AND u.campus_id = ?'; $params[] = $campus; }
 
 $apps = $pdo->prepare("
     SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, u.employee_id, u.rank,
-           COALESCE(camp.campus_name, '&mdash;') as campus_name,
+           COALESCE(camp.campus_name, '-') as campus_name,
            c.cycle_name,
            chk.checker_label as checker_name, chk.user_id as checker_uid
     FROM applications a
@@ -53,14 +53,14 @@ $apps = $pdo->prepare("
 $apps->execute($params);
 $apps = $apps->fetchAll();
 
-// â”€â”€ Summary stats â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Summary stats ---------------------------------------------
 $total_faculty = $pdo->query("SELECT COUNT(*) FROM users WHERE role = 'faculty' AND status='active'")->fetchColumn();
 $status_counts = [];
 foreach ($apps as $a) {
     $status_counts[$a['status']] = ($status_counts[$a['status']] ?? 0) + 1;
 }
 
-// â”€â”€ KRA averages for selected cycle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- KRA averages for selected cycle --------------------------
 $kra_q = $cycle_id
     ? $pdo->prepare("SELECT ks.kra_category, AVG(ks.computed_points) as avg_pts FROM kra_submissions ks JOIN applications a ON ks.application_id=a.application_id WHERE a.cycle_id=? GROUP BY ks.kra_category")
     : $pdo->prepare("SELECT kra_category, AVG(computed_points) as avg_pts FROM kra_submissions GROUP BY kra_category");
@@ -70,27 +70,37 @@ foreach ($kra_q->fetchAll() as $k) $kra_avgs[$k['kra_category']] = round($k['avg
 
 $generated_at = date('F d, Y h:i A');
 $admin_name   = $_SESSION['full_name'] ?? 'Administrator';
+$status_labels = [
+    'submitted'      => 'Submitted',
+    'under_review'   => 'Under Evaluation',
+    'approved'       => 'Evaluation Complete',
+    'rejected'       => 'Returned for Revision',
+    'reclassified'   => 'Evaluation Complete',
+    'admin_rejected' => 'Evaluation Complete',
+    'edit_requested' => 'Edit Requested',
+    'draft'          => 'Draft',
+];
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SUCFRMS &mdash; Admin Report</title>
+<title>SUCFRMS - Admin Report</title>
 </head>
 <body>
 
-<!-- â”€â”€ Screen controls â”€â”€ -->
+<!-- -- Screen controls -- -->
 <div class="controls screen-only">
-    <h6><i>ðŸ“‹</i> &nbsp;SUCFRMS Admin Report</h6>
+    <h6><i class="bi bi-clipboard-data"></i> &nbsp;SUCFRMS Admin Report</h6>
     <div class="btn-group">
         <a href="../index.php?page=dashboard" class="btn btn-outline">&larr; Back to Dashboard</a>
         <a href="oss_pdf.php?cycle_id=<?= $cycle_id ?>&status=<?= urlencode($status) ?>&campus_id=<?= $campus ?>" class="btn btn-light">&#128424; Print Report</a>
-        <a href="detailed_report_pdf.php?cycle_id=<?= $cycle_id ?>&status=<?= urlencode($status) ?>&campus_id=<?= $campus ?>" class="btn btn-light">ðŸ“„ Detailed Report</a>
+        <a href="detailed_report_pdf.php?cycle_id=<?= $cycle_id ?>&status=<?= urlencode($status) ?>&campus_id=<?= $campus ?>" class="btn btn-light"><i class="bi bi-file-earmark-text"></i> Detailed Report</a>
     </div>
 </div>
 
-<!-- â”€â”€ Filter bar â”€â”€ -->
+<!-- -- Filter bar -- -->
 <form method="GET" class="filter-bar screen-only">
     <label>Cycle:</label>
     <select name="cycle_id" onchange="this.form.submit()">
@@ -105,7 +115,7 @@ $admin_name   = $_SESSION['full_name'] ?? 'Administrator';
     <select name="status" onchange="this.form.submit()">
         <option value="">All Statuses</option>
         <?php foreach (['submitted','under_review','approved','rejected','reclassified','admin_rejected'] as $s): ?>
-        <option value="<?= $s ?>" <?= $status === $s ? 'selected' : '' ?>><?= ucwords(str_replace('_',' ',$s)) ?></option>
+        <option value="<?= $s ?>" <?= $status === $s ? 'selected' : '' ?>><?= $status_labels[$s] ?? ucwords(str_replace('_',' ',$s)) ?></option>
         <?php endforeach; ?>
     </select>
     <label>Campus:</label>
@@ -117,27 +127,8 @@ $admin_name   = $_SESSION['full_name'] ?? 'Administrator';
     </select>
 </form>
 
-<!-- â”€â”€ Report body â”€â”€ -->
+<!-- -- Report body -- -->
 <div class="report-body">
-
-    <!-- Header -->
-    <div class="report-card">
-        <div class="report-header">
-            <img src="../assets/images/logo.jpg" alt="Institution Logo">
-            <div class="report-header-text">
-                <h1>SUC Faculty Reclassification Management System</h1>
-                <p>SUC &mdash; Admin Report &nbsp;&middot;&nbsp;
-                   <?= $selected_cycle ? htmlspecialchars($selected_cycle['cycle_name']) : 'All Cycles' ?>
-                   <?= $status ? ' &nbsp;&middot;&nbsp; ' . ucwords(str_replace('_',' ',$status)) : '' ?>
-                   <?php if ($campus): foreach ($all_campuses as $cp) { if ($cp['campus_id'] === $campus) echo ' &nbsp;&middot;&nbsp; ' . htmlspecialchars($cp['campus_name']); } endif; ?>
-                </p>
-            </div>
-            <div class="report-meta">
-                <div>Generated: <?= $generated_at ?></div>
-                <div>By: <?= htmlspecialchars($admin_name) ?></div>
-            </div>
-        </div>
-    </div>
 
     <!-- Summary -->
     <div class="report-card">
@@ -149,15 +140,15 @@ $admin_name   = $_SESSION['full_name'] ?? 'Administrator';
             </div>
             <div class="summary-card">
                 <div class="val"><?= count($apps) ?></div>
-                <div class="lbl">Applications<?= $status ? ' ('.ucwords(str_replace('_',' ',$status)).')' : '' ?></div>
+                <div class="lbl">Applications<?= $status ? ' ('.($status_labels[$status] ?? ucwords(str_replace('_',' ',$status))).')' : '' ?></div>
             </div>
             <div class="summary-card">
                 <div class="val"><?= $status_counts['reclassified'] ?? 0 ?></div>
-                <div class="lbl">Reclassified</div>
+                <div class="lbl">Evaluation Complete</div>
             </div>
             <div class="summary-card">
                 <div class="val"><?= $status_counts['approved'] ?? 0 ?></div>
-                <div class="lbl">Approved</div>
+                <div class="lbl">Evaluation Complete</div>
             </div>
             <div class="summary-card">
                 <div class="val"><?= ($status_counts['submitted'] ?? 0) + ($status_counts['under_review'] ?? 0) ?></div>
@@ -167,6 +158,9 @@ $admin_name   = $_SESSION['full_name'] ?? 'Administrator';
                 <div class="val"><?= $status_counts['rejected'] ?? 0 ?></div>
                 <div class="lbl">Returned</div>
             </div>
+        </div>
+        <div style="font-size:0.78rem;color:#64748b;margin:-0.4rem 0 1rem;">
+            <i class="bi bi-info-circle me-1"></i>Scores and recommended ranks are for further committee review and are not final decisions.
         </div>
 
         <!-- Status breakdown pills -->
@@ -185,7 +179,7 @@ $admin_name   = $_SESSION['full_name'] ?? 'Administrator';
             foreach ($status_counts as $st => $cnt):
             ?>
             <span class="status-pill" style="<?= $pill_colors[$st] ?? 'background:#f1f5f9;color:#475569' ?>">
-                <?= ucwords(str_replace('_',' ',$st)) ?>: <?= $cnt ?>
+                <?= $status_labels[$st] ?? ucwords(str_replace('_',' ',$st)) ?>: <?= $cnt ?>
             </span>
             <?php endforeach; ?>
         </div>
@@ -194,11 +188,11 @@ $admin_name   = $_SESSION['full_name'] ?? 'Administrator';
 
     <!-- KRA Averages -->
     <div class="report-card">
-        <div class="section-title">Average KRA Scores <?= $selected_cycle ? '&mdash; ' . htmlspecialchars($selected_cycle['cycle_name']) : '' ?></div>
+        <div class="section-title">Average KRA Scores <?= $selected_cycle ? '- ' . htmlspecialchars($selected_cycle['cycle_name']) : '' ?></div>
         <div class="kra-grid">
             <?php
             $kra_max    = ['Instruction'=>100,'Research'=>100,'Extension'=>100,'Professional Development'=>100];
-            $kra_labels = ['Instruction'=>'KRA I &mdash; Instruction','Research'=>'KRA II &mdash; Research','Extension'=>'KRA III &mdash; Extension','Professional Development'=>'KRA IV &mdash; Prof. Dev.'];
+            $kra_labels = ['Instruction'=>'KRA I - Instruction','Research'=>'KRA II - Research','Extension'=>'KRA III - Extension','Professional Development'=>'KRA IV - Prof. Dev.'];
             foreach ($kra_avgs as $cat => $avg):
                 $max = $kra_max[$cat];
                 $pct = $max > 0 ? min(100, ($avg / $max) * 100) : 0;
@@ -242,17 +236,17 @@ $admin_name   = $_SESSION['full_name'] ?? 'Administrator';
             <tr>
                 <td style="color:#94a3b8;"><?= $i + 1 ?></td>
                 <td style="font-weight:600;"><?= htmlspecialchars(formatDisplayName($a)) ?></td>
-                <td><?= htmlspecialchars($a['employee_id'] ?? '&mdash;') ?></td>
+                <td><?= htmlspecialchars($a['employee_id'] ?? '-') ?></td>
                 <td><?= htmlspecialchars($a['campus_name']) ?></td>
-                <td><?= htmlspecialchars($a['rank'] ?? '&mdash;') ?></td>
-                <td><?= htmlspecialchars($a['cycle_name'] ?? '&mdash;') ?></td>
+                <td><?= htmlspecialchars($a['rank'] ?? '-') ?></td>
+                <td><?= htmlspecialchars($a['cycle_name'] ?? '-') ?></td>
                 <td class="<?= $sc ?>"><?= number_format($ws, 2) ?></td>
                 <td style="text-align:center;">
-                    <?= $inc > 0 ? "<span style='color:#1e4d8c;font-weight:700;'>+{$inc}</span>" : '<span style="color:#94a3b8;">&mdash;</span>' ?>
+                    <?= $inc > 0 ? "<span style='color:#1e4d8c;font-weight:700;'>+{$inc}</span>" : '<span style="color:#94a3b8;">-</span>' ?>
                 </td>
                 <td><span class="badge badge-<?= $a['status'] ?>"><?= ucwords(str_replace('_',' ',$a['status'])) ?></span></td>
-                <td><?= htmlspecialchars(!empty($a['checker_uid']) ? checkerDisplayLabel(['checker_label'=>$a['checker_name'],'user_id'=>$a['checker_uid']]) : '&mdash;') ?></td>
-                <td><?= $a['submitted_at'] ? date('M d, Y', strtotime($a['submitted_at'])) : '&mdash;' ?></td>
+                <td><?= htmlspecialchars(!empty($a['checker_uid']) ? checkerDisplayLabel(['checker_label'=>$a['checker_name'],'user_id'=>$a['checker_uid']]) : '-') ?></td>
+                <td><?= $a['submitted_at'] ? date('M d, Y', strtotime($a['submitted_at'])) : '-' ?></td>
             </tr>
             <?php endforeach; ?>
             </tbody>
@@ -264,7 +258,6 @@ $admin_name   = $_SESSION['full_name'] ?? 'Administrator';
 
         <!-- Footer -->
         <div class="report-footer">
-            <span>SUCFRMS &mdash; SUC Faculty Reclassification Management System</span>
             <span>Generated <?= $generated_at ?> by <?= htmlspecialchars($admin_name) ?></span>
         </div>
     </div>

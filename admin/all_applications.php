@@ -14,10 +14,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $app_id = intval($_POST['app_id'] ?? 0);
 
     if ($action === 'admin_approve_edit' && $app_id) {
-        $pdo->prepare("UPDATE applications SET status='draft', checker_remarks='Edit approved by admin. Please update and resubmit.' WHERE application_id=?")
+        $pdo->prepare("UPDATE applications SET status='draft', checker_remarks='Edit request allowed by admin. Please update and resubmit.' WHERE application_id=?")
             ->execute([$app_id]);
-        logAudit($pdo, $_SESSION['user_id'], 'Edit Request Approved', "Admin approved edit for Application #{$app_id}.");
-        flashMessage('success', 'Edit request approved. Faculty can now edit and resubmit.');
+        logAudit($pdo, $_SESSION['user_id'], 'Edit Request Allowed', "Admin allowed edit for Application #{$app_id}.");
+        flashMessage('success', 'Edit request allowed. Faculty can now edit and resubmit.');
         echo "<script>window.location.href='index.php?page=all_applications&filter=edit_requested';</script>"; exit;
     } elseif ($action === 'admin_deny_edit' && $app_id) {
         $deny_reason = trim($_POST['deny_reason'] ?? 'Edit request denied by admin.');
@@ -33,9 +33,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif ($action === 'admin_reject' && $app_id) {
         $admin_remarks = trim($_POST['admin_remarks'] ?? '');
         $pdo->prepare("UPDATE applications SET status='admin_rejected', checker_remarks=?, reviewed_at=NOW() WHERE application_id=? AND status='approved'")
-            ->execute([$admin_remarks ?: 'Rejected by admin.', $app_id]);
-        logAudit($pdo, $_SESSION['user_id'], 'Application Rejected by Admin', "Admin rejected Application #{$app_id}. Remarks: {$admin_remarks}");
-        flashMessage('warning', 'Application has been <strong>rejected</strong>. This is a final decision &mdash; faculty cannot edit or resubmit for this cycle.');
+            ->execute([$admin_remarks ?: 'Returned by admin.', $app_id]);
+        logAudit($pdo, $_SESSION['user_id'], 'Application Returned by Admin', "Admin returned Application #{$app_id}. Remarks: {$admin_remarks}");
+        flashMessage('warning', 'Application has been returned for revision.');
         echo "<script>window.location.href='index.php?page=all_applications&filter=approved';</script>"; exit;
     }
     echo "<script>window.location.href='index.php?page=all_applications&filter=edit_requested';</script>"; exit;
@@ -87,11 +87,12 @@ $tabs = [
     'draft'          => ['label'=>'Draft',          'icon'=>'bi-file-earmark', 'color'=>'#94a3b8'],
     'submitted'      => ['label'=>'Submitted',      'icon'=>'bi-send',                  'color'=>'#1a3a6b'],
     'under_review'   => ['label'=>'Under Review',   'icon'=>'bi-hourglass-split',         'color'=>'#1a3a6b'],
-    'talisay_review' => ['label'=>'Talisay Review', 'icon'=>'bi-building-up',              'color'=>'#1a3a6b'],
-    'approved'       => ['label'=>'Approved',       'icon'=>'bi-check-circle',             'color'=>'#1a3a6b'],
-    'rejected'       => ['label'=>'Returned',       'icon'=>'bi-arrow-counterclockwise',   'color'=>'#1a3a6b'],
+    // Display name for stored status value 'talisay_review' is "ITC Review".
+    'talisay_review' => ['label'=>'ITC Review', 'icon'=>'bi-building-up',              'color'=>'#1a3a6b'],
+    'approved'       => ['label'=>'Evaluation Complete', 'icon'=>'bi-clipboard-check',    'color'=>'#1a3a6b'],
+    'rejected'       => ['label'=>'Returned for Revision','icon'=>'bi-arrow-counterclockwise','color'=>'#1a3a6b'],
     'needs_revision' => ['label'=>'Needs Revision', 'icon'=>'bi-pencil-square',            'color'=>'#1a3a6b'],
-    'admin_rejected' => ['label'=>'Rejected',       'icon'=>'bi-x-circle',                'color'=>'#1a3a6b'],
+    'admin_rejected' => ['label'=>'Evaluation Complete','icon'=>'bi-clipboard-check',     'color'=>'#1a3a6b'],
 ];
 
 // Score color helper
@@ -104,7 +105,7 @@ function scoreColor(float $s): string {
 
 <?php showFlash(); ?>
 
-<!-- ── Page header ── -->
+<!-- -- Page header -- -->
 <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;margin-bottom:1.5rem;">
     <div>
         <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.2rem;">
@@ -124,7 +125,7 @@ function scoreColor(float $s): string {
         $highlights = [
             'submitted'    => ['#1e4d8c','#eff6ff','Submitted'],
             'under_review' => ['#475569','#f8fafc','Under Review'],
-            'approved'     => ['#1e4d8c','#f0f4fb','Approved'],
+            'approved'     => ['#1e4d8c','#f0f4fb','Evaluation Complete'],
         ];
         foreach ($highlights as $st => [$tc,$bg,$lbl]):
             $c = $counts[$st] ?? 0; if (!$c) continue;
@@ -137,7 +138,7 @@ function scoreColor(float $s): string {
     </div>
 </div>
 
-<!-- ── Search & Filter bar ── -->
+<!-- -- Search & Filter bar -- -->
 <div class="neon-card mb-3" style="padding:1rem 1.25rem;">
     <form method="GET">
         <input type="hidden" name="page" value="all_applications">
@@ -200,7 +201,7 @@ function scoreColor(float $s): string {
     </form>
 </div>
 
-<!-- ── Status filter tabs ── -->
+<!-- -- Status filter tabs -- -->
 <div style="display:flex;flex-wrap:wrap;gap:0.4rem;margin-bottom:1.25rem;">
     <?php foreach ($tabs as $key => $t):
         $cnt    = $key === '' ? $total : ($counts[$key] ?? 0);
@@ -227,7 +228,7 @@ function scoreColor(float $s): string {
     <?php endforeach; ?>
 </div>
 
-<!-- ── Applications table / empty state ── -->
+<!-- -- Applications table / empty state -- -->
 <?php if ($apps): ?>
 <div class="neon-card" style="padding:0;overflow:hidden;">
     <div class="table-responsive">
@@ -292,7 +293,7 @@ function scoreColor(float $s): string {
                         </div>
                         <div>
                             <div style="font-weight:600;color:#1e293b;font-size:0.84rem;line-height:1.2;">
-                                <?= sanitize($a['full_name'] ?? '—') ?>
+                                <?= sanitize($a['full_name'] ?? ' - ') ?>
                             </div>
                             <div style="font-size:0.7rem;color:#94a3b8;margin-top:1px;">
                                 <?= sanitize($a['employee_id'] ?? '') ?>
@@ -307,7 +308,7 @@ function scoreColor(float $s): string {
                 <!-- Campus -->
                 <td style="padding:0.85rem 0.75rem;vertical-align:middle;">
                     <span style="font-size:0.82rem;color:#475569;">
-                        <?= sanitize($a['campus_name'] ?? '—') ?>
+                        <?= sanitize($a['campus_name'] ?? ' - ') ?>
                     </span>
                 </td>
 
@@ -315,7 +316,7 @@ function scoreColor(float $s): string {
                 <td style="padding:0.85rem 0.75rem;vertical-align:middle;max-width:160px;">
                     <span style="font-size:0.78rem;color:#64748b;white-space:nowrap;overflow:hidden;
                                  text-overflow:ellipsis;display:block;" title="<?= sanitize($a['cycle_name'] ?? '') ?>">
-                        <?= sanitize($a['cycle_name'] ?? '—') ?>
+                        <?= sanitize($a['cycle_name'] ?? ' - ') ?>
                     </span>
                 </td>
 
@@ -338,7 +339,7 @@ function scoreColor(float $s): string {
                     <?= statusBadge($a['status']) ?>
                     <?php if (($a['approvals_count'] ?? 0) > 0 && in_array($a['status'],['under_review','talisay_review'])): ?>
                     <div style="font-size:0.65rem;color:#94a3b8;margin-top:3px;">
-                        <i class="bi bi-check-circle me-1"></i><?= $a['approvals_count'] ?> approval<?= $a['approvals_count']>1?'s':'' ?>
+                        <i class="bi bi-check-circle me-1"></i><?= $a['approvals_count'] ?> evaluator completion<?= $a['approvals_count']>1?'s':'' ?>
                     </div>
                     <?php endif; ?>
                 </td>
@@ -346,7 +347,7 @@ function scoreColor(float $s): string {
                 <!-- Updated -->
                 <td style="padding:0.85rem 0.75rem;vertical-align:middle;white-space:nowrap;">
                     <div style="font-size:0.78rem;color:#475569;">
-                        <?= $a['updated_at'] ? date('M d, Y', strtotime($a['updated_at'])) : '—' ?>
+                        <?= $a['updated_at'] ? date('M d, Y', strtotime($a['updated_at'])) : ' - ' ?>
                     </div>
                     <div style="font-size:0.67rem;color:#94a3b8;">
                         <?= $a['updated_at'] ? date('H:i', strtotime($a['updated_at'])) : '' ?>

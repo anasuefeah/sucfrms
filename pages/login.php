@@ -21,7 +21,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($status === 'inactive') {
                 $error = 'Your account has been deactivated. Contact the administrator.';
             } elseif ($status === 'rejected') {
-                $error = 'Your account has been rejected. Contact the administrator.';
+                $error = 'Your account is unavailable. Contact the administrator.';
             } else {
                 session_regenerate_id(true);
                 $_SESSION['user_id']     = $user['user_id'];
@@ -35,22 +35,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['profile_pic'] = $user['profile_pic'] ?? '';
                 logAudit($pdo, $user['user_id'], 'Login', 'User logged in successfully.');
 
-                // Check if they still have an unredeemed temp password — force change immediately
-                try {
-                    $pr = $pdo->prepare("SELECT status FROM password_resets WHERE user_id = ? AND status = 'released' LIMIT 1");
-                    $pr->execute([$user['user_id']]);
-                    if ($pr->fetch()) {
-                        $_SESSION['force_pw_change'] = true;
-                        header('Location: ../pages/change_password.php');
-                        exit;
-                    }
-                } catch (\Exception $e) {}
-
-                // Faculty lands on portal overview first; all other roles go to dashboard
-                $redirect = $user['role'] === 'faculty'
-                    ? '../pages/portal.php'
-                    : '../index.php';
-                header('Location: ' . $redirect);
+                // Check if they still have an unredeemed temp password  -  force change immediately
+                header('Location: ../index.php');
                 exit;
             }
         } else {
@@ -327,9 +313,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </button>
         </form>
 
-        <div class="login-links">
-            <p class="mb-0">Don't have an account? <a href="register.php">Register here</a></p>
-        </div>
     </div>
 
     <!-- Track Card removed -->

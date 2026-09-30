@@ -18,7 +18,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $key_row->execute([$cid]);
         $crit_key = $key_row->fetchColumn() ?: '';
 
-        // kra1_c_mentor_competition is a confirmed source gap — max_points = 0 is valid
+        // kra1_c_mentor_competition is a confirmed source gap  -  max_points = 0 is valid
         // (means "not yet configured"). All other criteria must have max_points > 0.
         $allow_zero = ($crit_key === 'kra1_c_mentor_competition');
 
@@ -28,10 +28,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if ($allow_zero && $max_pts === 0.0) {
                 logAudit($pdo, $_SESSION['user_id'], 'Criteria Updated', "Reset CONFIG_MENTORSHIP_POINTS to 0 (unset) for criterion ID {$cid}.");
-                flashMessage('warning', "CONFIG_MENTORSHIP_POINTS reset to <strong>0</strong> — mentorship entries will return PENDING_DOCUMENTATION until a non-zero value is set.");
+                flashMessage('warning', "CONFIG_MENTORSHIP_POINTS reset to <strong>0</strong>  -  mentorship entries will return PENDING_DOCUMENTATION until a non-zero value is set.");
             } elseif ($allow_zero) {
                 logAudit($pdo, $_SESSION['user_id'], 'Criteria Updated', "CONFIG_MENTORSHIP_POINTS set to {$max_pts} for criterion ID {$cid}: {$label}");
-                flashMessage('success', "CONFIG_MENTORSHIP_POINTS set to <strong>{$max_pts} pt(s)</strong>. Mentorship entries will now be scored. Remember: this value was not sourced from JC01 — confirm with CHED-RO before finalising.");
+                flashMessage('success', "CONFIG_MENTORSHIP_POINTS set to <strong>{$max_pts} pt(s)</strong>. Mentorship entries will now be scored. Remember: this value was not sourced from JC01  -  confirm with CHED-RO before finalising.");
             } else {
                 logAudit($pdo, $_SESSION['user_id'], 'Criteria Updated', "Updated criteria ID {$cid}: {$label} = {$max_pts} pts");
                 flashMessage('success', "Criterion <strong>{$label}</strong> updated.");
@@ -84,10 +84,10 @@ if ($mentor_row !== false && (float)$mentor_row['max_points'] === 0.0):
 <div style="display:flex;align-items:flex-start;gap:0.75rem;padding:0.85rem 1rem;background:#fef3c7;border:1px solid #fde68a;border-left:4px solid #f59e0b;border-radius:8px;margin-bottom:1.25rem;font-size:0.82rem;color:#92400e;">
     <i class="bi bi-exclamation-triangle-fill" style="font-size:1.1rem;flex-shrink:0;margin-top:1px;"></i>
     <div>
-        <strong>ACTION REQUIRED — CONFIG_MENTORSHIP_POINTS is not set.</strong><br>
+        <strong>ACTION REQUIRED  -  CONFIG_MENTORSHIP_POINTS is not set.</strong><br>
         The Points value for <em>Mentorship Services</em> (KRA I Criterion C) is blank in the official JC01 s.2026 circular (Section 15, item 2, p.78). Until an administrator sets it, all mentorship submissions will return <strong>PENDING_DOCUMENTATION</strong> and score zero.
-        Open the <strong>Instruction</strong> accordion below, find "Criterion C – Mentor: Student/Team Competition Winner", and enter the confirmed value in Max Pts.
-        Suggested starting point for discussion: <strong>1 pt</strong> — but confirm with CHED-RO or your adviser first. This is a design recommendation, not a sourced value.
+        Open the <strong>Instruction</strong> accordion below, find "Criterion C - Mentor: Student/Team Competition Winner", and enter the confirmed value in Max Pts.
+        Suggested starting point for discussion: <strong>1 pt</strong>  -  but confirm with CHED-RO or your adviser first. This is a design recommendation, not a sourced value.
     </div>
 </div>
 <?php endif; ?>
@@ -140,11 +140,11 @@ if ($mentor_row !== false && (float)$mentor_row['max_points'] === 0.0):
                 <div style="margin-bottom:0.65rem;padding:0.5rem 0.75rem;background:#fef3c7;border:1px solid #fde68a;border-radius:6px;font-size:0.78rem;color:#92400e;display:flex;align-items:flex-start;gap:0.5rem;">
                     <i class="bi bi-exclamation-triangle-fill flex-shrink-0" style="margin-top:1px;"></i>
                     <div>
-                        <strong>CONFIG_MENTORSHIP_POINTS — Action Required</strong><br>
-                        The Points column for Mentorship Services is <strong>blank in the official JC01 s.2026 circular</strong> (Section 15, item 2, p.78) — this is a confirmed source gap, not an extraction error.
+                        <strong>CONFIG_MENTORSHIP_POINTS  -  Action Required</strong><br>
+                        The Points column for Mentorship Services is <strong>blank in the official JC01 s.2026 circular</strong> (Section 15, item 2, p.78)  -  this is a confirmed source gap, not an extraction error.
                         All mentorship submissions are currently returning <strong>PENDING_DOCUMENTATION</strong> and scoring zero.<br>
                         Set <strong>Max Pts</strong> to a non-zero value only after confirming with CHED-RO or your adviser.
-                        Suggested starting point for discussion: <strong>1 pt</strong> (matching Panel Member, Special/Capstone — lowest confirmed rate in this criterion).
+                        Suggested starting point for discussion: <strong>1 pt</strong> (matching Panel Member, Special/Capstone  -  lowest confirmed rate in this criterion).
                         This is a design recommendation, <em>not</em> a sourced value.
                     </div>
                 </div>
@@ -152,7 +152,7 @@ if ($mentor_row !== false && (float)$mentor_row['max_points'] === 0.0):
                 <div style="margin-bottom:0.65rem;padding:0.4rem 0.75rem;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;font-size:0.75rem;color:#166534;">
                     <i class="bi bi-check-circle-fill me-1"></i>
                     <strong>CONFIG_MENTORSHIP_POINTS set to <?= number_format((float)$c['max_points'], 2) ?> pt(s).</strong>
-                    Mentorship entries will now be scored using this value. Reminder: this was not sourced from JC01 — confirm with CHED-RO before finalising.
+                    Mentorship entries will now be scored using this value. Reminder: this was not sourced from JC01  -  confirm with CHED-RO before finalising.
                 </div>
                 <?php endif; ?>
                 <div style="display:grid;grid-template-columns:80px 1fr 100px 90px 1fr 60px auto;gap:0.6rem;align-items:end;">
@@ -161,7 +161,7 @@ if ($mentor_row !== false && (float)$mentor_row['max_points'] === 0.0):
                         <div style="font-size:0.65rem;font-weight:600;color:#94a3b8;text-transform:uppercase;letter-spacing:0.04em;margin-bottom:3px;">Key</div>
                         <div style="font-size:0.72rem;color:#94a3b8;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:6px 8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
                              title="<?= sanitize($c['criterion_key']) ?>">
-                            <?= sanitize(substr($c['criterion_key'],0,12)) ?>…
+                            <?= sanitize(substr($c['criterion_key'],0,12)) ?>...
                         </div>
                     </div>
                     <!-- Label -->

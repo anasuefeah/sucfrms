@@ -1,7 +1,7 @@
 <?php
 /**
  * AutoSubRankCalculator
- * ─────────────────────────────────────────────────────────────────────────────
+ * -----------------------------------------------------------------------------
  * Determines the optimal doctorate / award mode automatically.
  * No manual faculty choice. System calculates based on:
  *   1. Weighted score vs. 41-point threshold
@@ -18,7 +18,7 @@
  *   $calc = new \Scoring\AutoSubRankCalculator($pdo, 0, $user_id);
  *   $result = $calc->calculateForPreEval($weighted_score, $rank, $has_doctorate, $doctorate_details, $has_award, $award_details);
  *   $calc->persistPreEval($result);   // saves to pre_eval_auto_sub_rank
- * ─────────────────────────────────────────────────────────────────────────────
+ * -----------------------------------------------------------------------------
  */
 
 namespace Scoring;
@@ -32,7 +32,7 @@ class AutoSubRankCalculator
     const DOCTORATE_POINTS = 40.0;
 
     // Ranks that are NOT eligible for doctorate-based sub-rank trigger
-    // (Professor I and above — doctorate only contributes 40 pts for them)
+    // (Professor I and above  -  doctorate only contributes 40 pts for them)
     const INELIGIBLE_RANK_PATTERNS = [
         '/^Professor\s+(I|II|III|IV|V|VI)$/i',
         '/^University\s+Professor/i',
@@ -49,9 +49,9 @@ class AutoSubRankCalculator
         $this->user_id        = $user_id;
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
     // PUBLIC: Main application calculation
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
 
     /**
      * Calculate optimal auto sub-rank mode for a main application.
@@ -139,9 +139,9 @@ class AutoSubRankCalculator
         );
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
     // PUBLIC: Persist
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
 
     /**
      * Upsert result into auto_sub_rank table (main application).
@@ -212,9 +212,9 @@ class AutoSubRankCalculator
         ]);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
     // PUBLIC: Static helpers for reading stored results
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
 
     /**
      * Load stored auto_sub_rank row for an application.
@@ -239,7 +239,7 @@ class AutoSubRankCalculator
 
     /**
      * Return doctorate_points to add to KRA IV score.
-     * Called by kra4_scorer.php — clean replacement for the old fragile global-$pdo block.
+     * Called by kra4_scorer.php  -  clean replacement for the old fragile global-$pdo block.
      */
     public static function getDoctoratePoints(\PDO $pdo, int $application_id): float
     {
@@ -252,7 +252,7 @@ class AutoSubRankCalculator
         $row = $stmt->fetch(\PDO::FETCH_ASSOC);
 
         if (!$row) {
-            // No record yet — default to points_only (safe fallback: add 40 pts)
+            // No record yet  -  default to points_only (safe fallback: add 40 pts)
             return self::DOCTORATE_POINTS;
         }
 
@@ -266,7 +266,7 @@ class AutoSubRankCalculator
             return (float)($row['doctorate_points'] ?: self::DOCTORATE_POINTS);
         }
 
-        // not_eligible = faculty has no doctorate or rank blocks it — add 40 pts if doctorate present
+        // not_eligible = faculty has no doctorate or rank blocks it  -  add 40 pts if doctorate present
         return 0.0;
     }
 
@@ -333,9 +333,9 @@ class AutoSubRankCalculator
         };
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
     // PRIVATE: Core calculation
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
 
     public function computeMode(
         float  $weighted_score,
@@ -346,7 +346,7 @@ class AutoSubRankCalculator
         string $award_details,
         bool   $isPreEval
     ): array {
-        // ── Doctorate decision ───────────────────────────────────────────────
+        // -- Doctorate decision -----------------------------------------------
         $doctorate_mode    = 'not_eligible';
         $doctorate_points  = 0.0;
         $doctorate_reason  = '';
@@ -371,14 +371,14 @@ class AutoSubRankCalculator
                             : 'date unknown';
                     $doctorate_mode   = 'blocked_historical';
                     $doctorate_points = self::DOCTORATE_POINTS;
-                    $doctorate_reason = "Your doctorate was already used for auto sub-rank in {$cycle} (approved {$date}). "
+                    $doctorate_reason = "Your doctorate was already used for auto sub-rank in {$cycle} (evaluation completed {$date}). "
                                       . "It now contributes " . (int)self::DOCTORATE_POINTS . " points to your score instead.";
                 } elseif ($weighted_score >= self::SCORE_THRESHOLD) {
                     $doctorate_mode   = 'triggered';
                     $doctorate_points = 0.0;
                     $doctorate_reason = "Your weighted score is {$weighted_score} (at or above the "
                                       . (int)self::SCORE_THRESHOLD . "-point threshold). "
-                                      . "Triggering your doctorate grants +1 sub-rank — this is the optimal strategy.";
+                                      . "Triggering your doctorate grants +1 sub-rank  -  this is the optimal strategy.";
                 } else {
                     $doctorate_mode   = 'points_only';
                     $doctorate_points = self::DOCTORATE_POINTS;
@@ -390,10 +390,10 @@ class AutoSubRankCalculator
             }
         } else {
             $doctorate_reason = "No doctorate degree found in your Professional Development entries. "
-                              . "Add a doctorate entry (B-degree with value ≥ 40) to enable this criterion.";
+                              . "Add a doctorate entry (B-degree with value >= 40) to enable this criterion.";
         }
 
-        // ── Award decision ───────────────────────────────────────────────────
+        // -- Award decision ---------------------------------------------------
         $award_mode   = 'not_eligible';
         $award_reason = '';
 
@@ -415,7 +415,7 @@ class AutoSubRankCalculator
                           . "Add an award entry (C-award with sub-value = 0) to enable this criterion.";
         }
 
-        // ── Combined display reason ──────────────────────────────────────────
+        // -- Combined display reason ------------------------------------------
         $doc_label = $has_doctorate ? self::modeLabel($doctorate_mode) : 'N/A (no doctorate)';
         $awd_label = $has_award     ? self::modeLabel($award_mode)     : 'N/A (no award)';
 
@@ -444,9 +444,9 @@ class AutoSubRankCalculator
         ];
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
     // PRIVATE: Detection helpers
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
 
     /**
      * Detect doctorate from kra_submissions for the current application.
@@ -512,9 +512,9 @@ class AutoSubRankCalculator
         return [false, ''];
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
     // PRIVATE: Rank eligibility
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
 
     private function isRankEligibleForTrigger(string $rank): bool
     {
@@ -526,9 +526,9 @@ class AutoSubRankCalculator
         return true;
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
     // PRIVATE: Historical doctorate usage check
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
 
     /**
      * Check if this faculty already triggered doctorate in any prior APPROVED application.
@@ -556,9 +556,9 @@ class AutoSubRankCalculator
         return $row ?: false;
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // PRIVATE: Runtime migrations (idempotent — safe to run on every page load)
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
+    // PRIVATE: Runtime migrations (idempotent  -  safe to run on every page load)
+    // -------------------------------------------------------------------------
 
     private function ensureRuntimeMigration(): void
     {
@@ -683,9 +683,9 @@ class AutoSubRankCalculator
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
     // PRIVATE: Empty result template
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
 
     private function emptyResult(): array
     {
@@ -709,17 +709,17 @@ class AutoSubRankCalculator
 }
 
 /**
- * AutoSubrank — static compatibility facade for Orchestrator::run().
- * ─────────────────────────────────────────────────────────────────────────────
+ * AutoSubrank  -  static compatibility facade for Orchestrator::run().
+ * -----------------------------------------------------------------------------
  * Orchestrator::run() calls AutoSubrank::professorGate(), ::compute(), and
  * ::routeCommittee(), none of which previously existed anywhere in this
- * codebase (only the differently-named AutoSubRankCalculator class did) —
+ * codebase (only the differently-named AutoSubRankCalculator class did)  - 
  * every call to Orchestrator::run() therefore fatal-errored before this fix.
  *
  * ::compute() deliberately does NOT re-read applications.weighted_score from
  * the database (unlike AutoSubRankCalculator::calculate()), because at the
  * point the orchestrator calls this, the freshly-computed in-memory score
- * has not been persisted yet — reading the DB here would use a stale value
+ * has not been persisted yet  -  reading the DB here would use a stale value
  * from the previous run. Instead it reuses AutoSubRankCalculator's detection
  * and computeMode() logic directly against the score the orchestrator just
  * computed.
@@ -820,7 +820,7 @@ class AutoSubrank
      * Committee routing based on the applicant's final target rank, using the
      * IEC / REC / EAC / CC labels already displayed in
      * includes/checker/review_application.php.
-     * NOTE: the exact rank-to-committee cutoffs are a best-effort mapping —
+     * NOTE: the exact rank-to-committee cutoffs are a best-effort mapping  - 
      * confirm against the institution's actual JC01 s.2026 committee
      * jurisdiction rules and adjust here if it differs.
      */

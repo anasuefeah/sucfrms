@@ -70,6 +70,37 @@ function actionBadge(string $action): array {
     if (str_contains($action, 'cycle'))    return ['#f0fdfa','#1e4d8c','bi-calendar-range'];
     return ['#f8fafc','#475569','bi-activity'];
 }
+
+function auditDisplayText(?string $text): string {
+    return strtr((string)$text, [
+        'Pending Verification' => 'Pending Review',
+        'Not Verified' => 'Not Acceptable',
+        'Unverified' => 'Not Acceptable',
+        'unverified' => 'not acceptable',
+        'Verified by' => 'Marked Acceptable by',
+        'verified by' => 'marked acceptable by',
+        'Verification' => 'Review',
+        'verification' => 'review',
+        'Verifying' => 'Reviewing',
+        'verifying' => 'reviewing',
+        'Verified' => 'Acceptable',
+        'verified' => 'acceptable',
+        'Verify' => 'Review',
+        'verify' => 'review',
+        'Approval' => 'Evaluation Completion',
+        'approval' => 'evaluation completion',
+        'Approved' => 'Evaluation Complete',
+        'approved' => 'evaluation complete',
+        'Approve' => 'Complete Evaluation',
+        'approve' => 'complete evaluation',
+        'Rejection' => 'Return for Revision',
+        'rejection' => 'return for revision',
+        'Rejected' => 'Returned for Revision',
+        'rejected' => 'returned for revision',
+        'Reject' => 'Return for Revision',
+        'reject' => 'return for revision',
+    ]);
+}
 ?>
 
 <!-- Page header -->
@@ -118,13 +149,13 @@ function actionBadge(string $action): array {
                            style="flex:1;border:none;outline:none;background:transparent;padding:0.45rem 0.4rem 0.45rem 0;font-size:0.83rem;color:#1e293b;">
                     <datalist id="auditSearchSuggestions">
                         <option value="Login"><option value="Logout"><option value="KRA Saved">
-                        <option value="Application Submitted"><option value="Application Approved">
-                        <option value="Application Rejected"><option value="Checker Approved">
+                        <option value="Application Submitted"><option value="Evaluation Complete">
+                        <option value="Returned for Revision"><option value="Evaluator Completed">
                         <option value="Revision Requested"><option value="Score Altered">
                         <option value="Cycle Created"><option value="Register">
                         <option value="Password Reset Released"><option value="Role Changed">
                         <?php foreach ($action_types as $at): ?>
-                        <option value="<?= sanitize($at) ?>">
+                        <option value="<?= sanitize(auditDisplayText($at)) ?>">
                         <?php endforeach; ?>
                     </datalist>
                 </div>
@@ -138,7 +169,7 @@ function actionBadge(string $action): array {
                 <select name="filter_role" style="<?= $sel_style ?>" onchange="this.form.submit()">
                     <option value="">All Roles</option>
                     <option value="admin"   <?= $filter_role==='admin'   ?'selected':'' ?>>Admin</option>
-                    <option value="checker" <?= $filter_role==='checker' ?'selected':'' ?>>Checker</option>
+                    <option value="checker" <?= $filter_role==='checker' ?'selected':'' ?>>Evaluator</option>
                     <option value="faculty" <?= $filter_role==='faculty' ?'selected':'' ?>>Faculty</option>
                 </select>
             </div>
@@ -160,7 +191,7 @@ function actionBadge(string $action): array {
                 <select name="filter_action" style="<?= $sel_style ?>" onchange="this.form.submit()">
                     <option value="">All Actions</option>
                     <?php foreach ($action_types as $at): ?>
-                    <option value="<?= sanitize($at) ?>" <?= $filter_action===$at?'selected':'' ?>><?= sanitize($at) ?></option>
+                    <option value="<?= sanitize($at) ?>" <?= $filter_action===$at?'selected':'' ?>><?= sanitize(auditDisplayText($at)) ?></option>
                     <?php endforeach; ?>
                 </select>
             </div>
@@ -210,6 +241,8 @@ function actionBadge(string $action): array {
             <tbody>
             <?php if ($logs): foreach ($logs as $i => $log):
                 [$bg, $tc, $ic] = actionBadge($log['action_performed']);
+                $action_display = auditDisplayText($log['action_performed'] ?? '');
+                $details_display = auditDisplayText($log['details'] ?? '');
             ?>
             <tr style="border-bottom:1px solid #f0f4fb;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background=''">
                 <td style="padding:0.65rem 1rem;color:#94a3b8;font-size:0.78rem;vertical-align:middle;"><?= $offset + $i + 1 ?></td>
@@ -226,22 +259,24 @@ function actionBadge(string $action): array {
                 <td style="padding:0.65rem 0.75rem;vertical-align:middle;">
                     <?php
                     $rc_map = ['admin'=>['#f1f5f9','#334155'],'checker'=>['#dbeafe','#1e4d8c'],'faculty'=>['#f0f4fb','#475569'],'talisay_checker'=>['#f0f4fb','#1a3a6b']];
-                    [$rb,$rt] = $rc_map[$log['role_at_time'] ?? ''] ?? ['#f1f5f9','#64748b'];
+                    $role_display_map = ['admin'=>'Admin','checker'=>'Evaluator','faculty'=>'Faculty','talisay_checker'=>'ITC Evaluator'];
+                    $role_key = $log['role_at_time'] ?? '';
+                    [$rb,$rt] = $rc_map[$role_key] ?? ['#f1f5f9','#64748b'];
                     ?>
                     <span style="background:<?= $rb ?>;color:<?= $rt ?>;padding:0.18rem 0.5rem;border-radius:20px;font-size:0.68rem;font-weight:600;white-space:nowrap;">
-                        <?= sanitize($log['role_at_time'] ?? '—') ?>
+                        <?= sanitize($role_display_map[$role_key] ?? ($role_key ?: 'N/A')) ?>
                     </span>
                 </td>
                 <?php endif; ?>
                 <td style="padding:0.65rem 0.75rem;vertical-align:middle;">
                     <span style="background:<?= $bg ?>;color:<?= $tc ?>;padding:0.22rem 0.6rem;border-radius:20px;font-size:0.75rem;font-weight:600;white-space:nowrap;display:inline-flex;align-items:center;gap:4px;">
                         <i class="bi <?= $ic ?>" style="font-size:0.72rem;"></i>
-                        <?= sanitize($log['action_performed']) ?>
+                        <?= sanitize($action_display) ?>
                     </span>
                 </td>
                 <td style="padding:0.65rem 0.75rem;color:#64748b;font-size:0.82rem;vertical-align:middle;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
-                    title="<?= sanitize($log['details']) ?>">
-                    <?= sanitize($log['details']) ?>
+                    title="<?= sanitize($details_display) ?>">
+                    <?= sanitize($details_display) ?>
                 </td>
                 <td style="padding:0.65rem 0.75rem;color:#94a3b8;font-size:0.78rem;vertical-align:middle;white-space:nowrap;">
                     <?= date('M d, Y', strtotime($log['timestamp'])) ?>
@@ -262,7 +297,7 @@ function actionBadge(string $action): array {
     <?php if ($total_pages > 1): ?>
     <div class="px-3 py-2 d-flex justify-content-between align-items-center" style="border-top:1px solid #f0f4fb;">
         <small class="text-muted">
-            Showing <?= $offset + 1 ?>–<?= min($offset + $per_page, $total_rows) ?> of <?= number_format($total_rows) ?>
+            Showing <?= $offset + 1 ?>-<?= min($offset + $per_page, $total_rows) ?> of <?= number_format($total_rows) ?>
         </small>
         <ul class="pagination pagination-sm mb-0">
             <li class="page-item <?= $page_num <= 1 ? 'disabled' : '' ?>">
@@ -273,7 +308,7 @@ function actionBadge(string $action): array {
             $end   = min($total_pages, $page_num + 2);
             if ($start > 1): ?>
             <li class="page-item"><a class="page-link" href="<?= auditUrl(['p'=>1]) ?>">1</a></li>
-            <?php if ($start > 2): ?><li class="page-item disabled"><span class="page-link">&hellip;</span></li><?php endif; ?>
+            <?php if ($start > 2): ?><li class="page-item disabled"><span class="page-link">...</span></li><?php endif; ?>
             <?php endif; ?>
             <?php for ($pg = $start; $pg <= $end; $pg++): ?>
             <li class="page-item <?= $pg === $page_num ? 'active' : '' ?>">
@@ -281,7 +316,7 @@ function actionBadge(string $action): array {
             </li>
             <?php endfor; ?>
             <?php if ($end < $total_pages): ?>
-            <?php if ($end < $total_pages - 1): ?><li class="page-item disabled"><span class="page-link">&hellip;</span></li><?php endif; ?>
+            <?php if ($end < $total_pages - 1): ?><li class="page-item disabled"><span class="page-link">...</span></li><?php endif; ?>
             <li class="page-item"><a class="page-link" href="<?= auditUrl(['p'=>$total_pages]) ?>"><?= $total_pages ?></a></li>
             <?php endif; ?>
             <li class="page-item <?= $page_num >= $total_pages ? 'disabled' : '' ?>">

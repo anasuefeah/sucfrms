@@ -38,13 +38,13 @@ define('SMTP_PORT',     587);
 define('SMTP_USER',     'sucfrms.chmsu@gmail.com');
 define('SMTP_PASS',     'wwbbxdrtpuammsma');
 define('SMTP_FROM',     'sucfrms.chmsu@gmail.com');
-define('SMTP_FROM_NAME','SUCFRMS &ndash; SUC');
+define('SMTP_FROM_NAME','SUCFRMS - SUC');
 
 // --------------------------------------------------------------
 // Helper: send OTP email via PHPMailer
 // --------------------------------------------------------------
 function sendOTPEmail(string $to_email, string $to_name, string $otp): bool {
-    $subject = 'SUCFRMS &ndash; Your Password Reset Code';
+    $subject = 'SUCFRMS - Your Password Reset Code';
 
     // Load PHPMailer directly
     $base = __DIR__ . '/../vendor/phpmailer/phpmailer/src/';
@@ -67,7 +67,7 @@ function sendOTPEmail(string $to_email, string $to_name, string $otp): bool {
             $mail->isHTML(true);
             $mail->Subject = $subject;
             $mail->Body    = emailTemplate($to_name, $otp);
-            $mail->AltBody = "Hello $to_name,\n\nYour password reset code is: $otp\n\nThis code expires in 15 minutes.\n\n&ndash; SUCFRMS";
+            $mail->AltBody = "Hello $to_name,\n\nYour password reset code is: $otp\n\nThis code expires in 15 minutes.\n\n- SUCFRMS";
             $mail->send();
             return true;
         } catch (\Exception $e) {
@@ -76,7 +76,7 @@ function sendOTPEmail(string $to_email, string $to_name, string $otp): bool {
         }
     }
 
-    // PHPMailer not available &mdash; cannot send
+    // PHPMailer not available - cannot send
     error_log('PHPMailer not found. Please install it in vendor/phpmailer/phpmailer/src/');
     return false;
 }
@@ -104,13 +104,13 @@ function emailTemplate(string $name, string $otp): string {
         <tr><td style='padding:32px;'>
           <p style='margin:0 0 12px;color:#334155;font-size:15px;'>Hello, <strong>" . htmlspecialchars($name) . "</strong>!</p>
           <p style='margin:0 0 24px;color:#64748b;font-size:14px;line-height:1.6;'>
-            We received a request to reset your password. Use the verification code below to continue.
+            We received a request to reset your password. Use the confirmation code below to continue.
             This code expires in <strong>15 minutes</strong>.
           </p>
 
           <!-- OTP Box -->
           <div style='background:#eff6ff;border:2px dashed #1a3a6b;border-radius:10px;padding:24px;text-align:center;margin-bottom:24px;'>
-            <p style='margin:0 0 6px;font-size:12px;color:#64748b;text-transform:uppercase;letter-spacing:1px;'>Your Verification Code</p>
+            <p style='margin:0 0 6px;font-size:12px;color:#64748b;text-transform:uppercase;letter-spacing:1px;'>Your Confirmation Code</p>
             <span style='font-size:42px;font-weight:700;letter-spacing:10px;color:#1a3a6b;font-family:monospace;'>" . htmlspecialchars($otp) . "</span>
           </div>
 
@@ -136,7 +136,7 @@ function emailTemplate(string $name, string $otp): string {
 }
 
 // --------------------------------------------------------------
-// STEP 1 &mdash; Submit email ? send OTP
+// STEP 1 - Submit email ? send OTP
 // --------------------------------------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
@@ -169,7 +169,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $sent = sendOTPEmail($user['email'], $user['full_name'], $otp);
 
                 if ($sent) {
-                    // Store everything in session — OTP included — so double-submits don't
+                    // Store everything in session  -  OTP included  -  so double-submits don't
                     // overwrite the DB with a different code after the email has gone out
                     $_SESSION['reset_email']   = $user['email'];
                     $_SESSION['reset_user_id'] = $user['user_id'];
@@ -192,7 +192,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     }
 
     // ----------------------------------------------------------
-    // STEP 2 — Verify OTP
+    // STEP 2  -  Verify OTP
     // ----------------------------------------------------------
     elseif ($_POST['action'] === 'verify_otp') {
         $uid  = (int)($_SESSION['reset_user_id'] ?? -1);
@@ -216,7 +216,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $error = 'Invalid code. Please check your email and try again.';
                 $step  = 'verify';
             } else {
-                // Valid — mark verified in both session and DB
+                // Valid  -  mark verified in both session and DB
                 $pdo->prepare("UPDATE password_resets SET status='verified' WHERE user_id=?")
                     ->execute([$uid]);
                 $_SESSION['reset_verified'] = true;
@@ -229,7 +229,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
     }
 
     // ----------------------------------------------------------
-    // STEP 3 &mdash; Set new password
+    // STEP 3 - Set new password
     // ----------------------------------------------------------
     elseif ($_POST['action'] === 'reset_password') {
         $uid      = (int)($_SESSION['reset_user_id'] ?? 0);
@@ -338,7 +338,7 @@ if (!empty($_SESSION['reset_email'])) {
                 <?php endif; ?>
 
                 <!-- ------------------------------------------ -->
-                <!-- STEP 1 &mdash; Request Form                      -->
+                <!-- STEP 1 - Request Form                      -->
                 <!-- ------------------------------------------ -->
                 <?php if ($step === 'request'): ?>
                 <div style="width:64px;height:64px;border-radius:50%;background:#eff6ff;display:flex;align-items:center;justify-content:center;margin:0 auto 1rem;">
@@ -346,7 +346,7 @@ if (!empty($_SESSION['reset_email'])) {
                 </div>
                 <h5 class="fw-bold mb-1" style="color:#1e293b;">Forgot Password</h5>
                 <p style="color:#64748b;font-size:0.82rem;margin-bottom:1.25rem;">
-                    Enter your registered email address and we'll send you a 6-digit verification code.
+                    Enter your registered email address and we'll send you a 6-digit confirmation code.
                 </p>
 
                 <form method="POST" novalidate>
@@ -365,7 +365,7 @@ if (!empty($_SESSION['reset_email'])) {
                     </div>
                     <button type="submit"
                             style="width:100%;background:#1a3a6b;color:#fff;border:none;padding:0.65rem;border-radius:8px;font-size:0.9rem;font-weight:700;cursor:pointer;">
-                        <i class="bi bi-send me-1"></i>Send Verification Code
+                        <i class="bi bi-send me-1"></i>Send Confirmation Code
                     </button>
                 </form>
 
@@ -375,7 +375,7 @@ if (!empty($_SESSION['reset_email'])) {
 
 
                 <!-- ------------------------------------------ -->
-                <!-- STEP 2 &mdash; OTP Verify                        -->
+                <!-- STEP 2 - OTP Verify                        -->
                 <!-- ------------------------------------------ -->
                 <?php elseif ($step === 'verify'): ?>
                 <div style="width:64px;height:64px;border-radius:50%;background:#eff6ff;display:flex;align-items:center;justify-content:center;margin:0 auto 1rem;">
@@ -403,7 +403,7 @@ if (!empty($_SESSION['reset_email'])) {
 
                     <button type="submit" id="verifyBtn"
                             style="width:100%;background:#1a3a6b;color:#fff;border:none;padding:0.65rem;border-radius:8px;font-size:0.9rem;font-weight:700;cursor:pointer;">
-                        <i class="bi bi-check-circle me-1"></i>Verify Code
+                        <i class="bi bi-check-circle me-1"></i>Confirm Code
                     </button>
                 </form>
 
@@ -425,7 +425,7 @@ if (!empty($_SESSION['reset_email'])) {
 
 
                 <!-- ------------------------------------------ -->
-                <!-- STEP 3 &mdash; New Password Form                 -->
+                <!-- STEP 3 - New Password Form                 -->
                 <!-- ------------------------------------------ -->
                 <?php elseif ($step === 'reset'): ?>
                 <div style="width:64px;height:64px;border-radius:50%;background:#eff6ff;display:flex;align-items:center;justify-content:center;margin:0 auto 1rem;">
@@ -483,7 +483,7 @@ if (!empty($_SESSION['reset_email'])) {
 
 
                 <!-- ------------------------------------------ -->
-                <!-- STEP 4 &mdash; Done                              -->
+                <!-- STEP 4 - Done                              -->
                 <!-- ------------------------------------------ -->
                 <?php elseif ($step === 'done'): ?>
                 <div style="width:72px;height:72px;border-radius:50%;background:#eff6ff;display:flex;align-items:center;justify-content:center;margin:0 auto 1rem;">

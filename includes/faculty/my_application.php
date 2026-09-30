@@ -2,7 +2,7 @@
 $uid   = $_SESSION['user_id'];
 $cycle = getActiveCycle($pdo);
 
-// â”€â”€ Runtime migration: create kra_evidence_files if missing â”€â”€
+// -- Runtime migration: create kra_evidence_files if missing --
 try { $pdo->query("SELECT evidence_id FROM kra_evidence_files LIMIT 1"); }
 catch (\Exception $e) {
     $pdo->exec("CREATE TABLE IF NOT EXISTS kra_evidence_files (
@@ -17,7 +17,7 @@ catch (\Exception $e) {
         FOREIGN KEY (uploaded_by)   REFERENCES users(user_id) ON DELETE SET NULL
     )");
 }
-// â”€â”€ Runtime migration: add revision columns to kra_submissions â”€â”€
+// -- Runtime migration: add revision columns to kra_submissions --
 try { $pdo->query("SELECT revision_status FROM kra_submissions LIMIT 1"); }
 catch (\Exception $e) {
     $pdo->exec("ALTER TABLE kra_submissions
@@ -34,17 +34,18 @@ if (!$cycle) {
     echo '<div class="neon-card text-center py-5">
         <i class="bi bi-calendar-x fs-1 text-secondary mb-3 d-block"></i>
         <h5 style="color:#1a3a6b;font-weight:700;margin-bottom:0.5rem;">No Active Reclassification Cycle</h5>
-        <p class="text-muted mb-1">There is currently no open cycle. Your account is ready &mdash; you do not need to register again.</p>
+        <p class="text-muted mb-1">There is currently no open cycle. Your account is ready.</p>
         <p class="text-muted small">When the next cycle opens, your application will be available here automatically.</p>'
         . ($last_cycle ? '<p class="text-muted small mt-2">Last cycle: <strong>' . htmlspecialchars($last_cycle['cycle_name']) . '</strong> (' . ucfirst($last_cycle['status']) . ')</p>' : '')
         . '</div>';
     return;
 }
+ensureAppealTables($pdo);
 
 $app = getOrCreateApplication($pdo, $uid, $cycle['cycle_id']);
 $app_id = $app['application_id'];
 
-// Only lock when checker has approved or admin has finalized
+// Lock once evaluator work is complete.
 $can_edit = !in_array($app['status'], ['approved', 'reclassified', 'admin_rejected']);
 
 // All KRA submissions for this application
@@ -63,6 +64,21 @@ foreach ($subs as &$sub) {
 }
 unset($sub);
 
+$appeals_by_submission = [];
+if ($subs) {
+    $sub_ids = array_map('intval', array_column($subs, 'submission_id'));
+    $ph = implode(',', array_fill(0, count($sub_ids), '?'));
+    $ap_stmt = $pdo->prepare("SELECT * FROM appeals WHERE submission_id IN ($ph) ORDER BY created_at DESC");
+    $ap_stmt->execute($sub_ids);
+    foreach ($ap_stmt->fetchAll() as $ap) {
+        $sid = (int)$ap['submission_id'];
+        if (!isset($appeals_by_submission[$sid])) $appeals_by_submission[$sid] = [];
+        $appeals_by_submission[$sid][] = $ap;
+    }
+}
+$appeals_allowed = ($cycle['status'] ?? '') === 'open'
+    && (empty($cycle['appeal_deadline']) || time() <= strtotime($cycle['appeal_deadline'] . ' 23:59:59'));
+
 // Fetch faculty rank from users table (not in $app which is from applications)
 $faculty_rank_row = $pdo->prepare("SELECT rank FROM users WHERE user_id=?");
 $faculty_rank_row->execute([$uid]);
@@ -71,7 +87,7 @@ $faculty_current_rank = $faculty_rank_row['rank'] ?? '';
 $score_summary_faculty = getApplicationScoreSummary($pdo, (int)$app_id);
 $raw_kra_faculty       = array_map(fn($d) => $d['pts'], $score_summary_faculty['kra_map']);
 $potential_data_faculty = [
-    'potential_rank'   => $score_summary_faculty['potential_rank'] ?: 'â€”',
+    'potential_rank'   => $score_summary_faculty['potential_rank'] ?: ' - ',
     'flags'            => [],
     'crossed_category' => false,
     'recomputed_score' => $score_summary_faculty['weighted_score'],
@@ -147,16 +163,16 @@ $kra_tabs = [
     <div class="d-flex gap-2 align-items-start">
         <i class="bi bi-x-circle-fill" style="color:#1e293b;font-size:1rem;margin-top:2px;flex-shrink:0;"></i>
         <div>
-            <div style="font-size:0.72rem;font-weight:700;color:#1e293b;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px;">Final Rejection</div>
+            <div style="font-size:0.72rem;font-weight:700;color:#1e293b;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px;">Evaluation Complete</div>
             <div style="font-size:0.88rem;color:#1e293b;"><?= sanitize($app['checker_remarks']) ?></div>
-            <div style="font-size:0.78rem;color:#1e293b;margin-top:6px;"><i class="bi bi-exclamation-triangle me-1"></i>You cannot edit or resubmit for this cycle.</div>
+            <div style="font-size:0.78rem;color:#1e293b;margin-top:6px;"><i class="bi bi-info-circle me-1"></i>This result is for further committee review and is not a final decision.</div>
         </div>
     </div>
     <?php elseif ($status === 'needs_revision'): ?>
     <div class="d-flex gap-2 align-items-start">
         <i class="bi bi-exclamation-triangle-fill" style="color:#475569;font-size:1rem;margin-top:2px;flex-shrink:0;"></i>
         <div>
-            <div style="font-size:0.72rem;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px;">Checker Note</div>
+            <div style="font-size:0.72rem;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px;">Evaluator Note</div>
             <div style="font-size:0.88rem;color:#1e293b;"><?= sanitize($app['checker_remarks']) ?></div>
             <div style="font-size:0.78rem;color:#64748b;margin-top:6px;">Edit only the flagged entries below, then resubmit.</div>
         </div>
@@ -165,7 +181,7 @@ $kra_tabs = [
     <div class="d-flex gap-2 align-items-start">
         <i class="bi bi-arrow-counterclockwise" style="color:#475569;font-size:1rem;margin-top:2px;flex-shrink:0;"></i>
         <div>
-            <div style="font-size:0.72rem;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px;">Checker Remarks</div>
+            <div style="font-size:0.72rem;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px;">Returned for Revision</div>
             <div style="font-size:0.88rem;color:#1e293b;"><?= sanitize($app['checker_remarks']) ?></div>
             <div class="mt-2"><a href="?page=apply" class="btn btn-sm btn-warning" style="font-weight:600;">Edit &amp; Resubmit</a></div>
         </div>
@@ -182,14 +198,14 @@ $kra_tabs = [
 </div>
 <?php endif; ?>
 
-<!-- Potential Rank -->
+<!-- Recommended Rank -->
 <div class="neon-card p-0 mb-3" style="overflow:hidden;">
     <div style="padding:0.85rem 1.5rem;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;">
         <div class="d-flex align-items-center gap-2">
             <i class="bi bi-award-fill" style="color:#1e4d8c;font-size:1.1rem;"></i>
             <div>
-                <div style="font-size:0.9rem;font-weight:700;color:#1a3a6b;">Potential Rank / Sub-rank <?= helpBtn('Potential Rank', 'Based on your weighted score, this shows the rank you could be reclassified to. A score of 41-50 = +1 sub-rank, 51-60 = +2, 61-70 = +3, 71-80 = +4, 81-90 = +5, 91-100 = +6. An automatic +1 extra is given for earning a doctorate during the cycle.') ?></div>
-                <div style="font-size:0.72rem;color:#94a3b8;">Based on DBM-CHED Joint Circular No. 3, s. 2022</div>
+                <div style="font-size:0.9rem;font-weight:700;color:#1a3a6b;">Recommended Rank / Sub-rank <?= helpBtn('Recommended Rank', 'Based on your weighted score, this shows the recommended rank for committee review. A score of 41-50 = +1 sub-rank, 51-60 = +2, 61-70 = +3, 71-80 = +4, 81-90 = +5, 91-100 = +6. An automatic +1 extra is given for earning a doctorate during the cycle.') ?></div>
+                <div style="font-size:0.72rem;color:#94a3b8;">Recommendation only, based on DBM-CHED Joint Circular No. 3, s. 2022</div>
             </div>
         </div>
         <span class="badge bg-secondary" style="font-size:0.68rem;"><i class="bi bi-lock-fill me-1"></i>System-computed</span>
@@ -197,13 +213,13 @@ $kra_tabs = [
     <div style="padding:1rem 1.5rem;display:flex;flex-wrap:wrap;gap:1rem;align-items:center;">
         <div style="flex:1;min-width:140px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:0.75rem 1rem;">
             <div style="font-size:0.68rem;text-transform:uppercase;letter-spacing:0.07em;color:#94a3b8;font-weight:600;margin-bottom:4px;">Current Rank</div>
-            <div style="font-size:0.95rem;font-weight:700;color:#1a3a6b;"><?= sanitize($faculty_current_rank ?: '&mdash;') ?></div>
+            <div style="font-size:0.95rem;font-weight:700;color:#1a3a6b;"><?= sanitize($faculty_current_rank ?: '-') ?></div>
         </div>
         <div style="color:#cbd5e1;font-size:1.2rem;flex-shrink:0;">&#8594;</div>
         <div style="flex:1;min-width:140px;background:#f0f4fb;border:1px solid #bfdbfe;border-radius:8px;padding:0.75rem 1rem;">
-            <div style="font-size:0.68rem;text-transform:uppercase;letter-spacing:0.07em;color:#94a3b8;font-weight:600;margin-bottom:4px;">Potential Rank</div>
-            <?php if ($potential_data_faculty['potential_rank'] === '—' || empty($raw_kra_faculty)): ?>
-            <div style="font-size:0.85rem;color:#94a3b8;">&mdash; no submissions yet</div>
+            <div style="font-size:0.68rem;text-transform:uppercase;letter-spacing:0.07em;color:#94a3b8;font-weight:600;margin-bottom:4px;">Recommended Rank</div>
+            <?php if ($potential_data_faculty['potential_rank'] === ' - ' || empty($raw_kra_faculty)): ?>
+            <div style="font-size:0.85rem;color:#94a3b8;">- no submissions yet</div>
             <?php else: ?>
             <div style="font-size:0.95rem;font-weight:700;color:#1e4d8c;">
                 <?= sanitize($potential_data_faculty['potential_rank']) ?>
@@ -234,6 +250,9 @@ $kra_tabs = [
         <?php endforeach; ?>
     </div>
     <?php endif; ?>
+    <div style="padding:0 1.5rem 1rem;font-size:0.75rem;color:#64748b;">
+        <i class="bi bi-info-circle me-1"></i>This result is for further committee review and is not a final decision.
+    </div>
 </div>
 
 <!-- KRA Submissions -->
@@ -262,6 +281,7 @@ $kra_tabs = [
                     <th style="padding:0.65rem 0.75rem;font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;width:160px;">Evidence</th>
                     <th style="padding:0.65rem 0.75rem;font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;width:80px;text-align:center;">Status</th>
                     <th style="padding:0.65rem 0.75rem;font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;width:90px;">Date</th>
+                    <th style="padding:0.65rem 0.75rem;font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;width:110px;">Appeal</th>
                     <?php if ($can_edit): ?>
                     <th style="padding:0.65rem 0.75rem;font-size:0.7rem;width:60px;"></th>
                     <?php endif; ?>
@@ -303,7 +323,7 @@ $kra_tabs = [
                         <?php endforeach; ?>
                     </div>
                     <?php else: ?>
-                    <span style="color:#cbd5e1;font-size:0.8rem;">&mdash;</span>
+                    <span style="color:#cbd5e1;font-size:0.8rem;">-</span>
                     <?php endif; ?>
                 </td>
                 <td style="padding:0.75rem 0.75rem;text-align:center;vertical-align:middle;">
@@ -320,21 +340,46 @@ $kra_tabs = [
                     </div>
                     <?php elseif ($s['verified']): ?>
                     <span style="font-size:0.7rem;padding:0.2rem 0.5rem;border-radius:4px;background:#dbeafe;color:#1e4d8c;border:1px solid #bfdbfe;font-weight:600;white-space:nowrap;">
-                        <i class="bi bi-check-circle me-1"></i>Verified
+                        <i class="bi bi-check-circle me-1"></i>Acceptable
                     </span>
                     <?php else: ?>
-                    <span style="color:#cbd5e1;font-size:0.78rem;">&mdash;</span>
+                    <span style="color:#cbd5e1;font-size:0.78rem;">-</span>
                     <?php endif; ?>
                 </td>
                 <td style="padding:0.75rem 0.75rem;color:#94a3b8;font-size:0.78rem;vertical-align:middle;white-space:nowrap;">
                     <?= date('M d, Y', strtotime($s['submitted_at'])) ?>
+                </td>
+                <td style="padding:0.75rem 0.75rem;vertical-align:middle;">
+                    <?php
+                    $sid = (int)$s['submission_id'];
+                    $score_changed = isset($s['faculty_original_score']) && $s['faculty_original_score'] !== null && (float)$s['faculty_original_score'] !== (float)$s['computed_points'];
+                    $flagged = ($s['revision_status'] ?? 'ok') === 'needs_revision';
+                    $open_appeal = null;
+                    foreach ($appeals_by_submission[$sid] ?? [] as $apx) {
+                        if (in_array($apx['status'], ['open','under_review'], true)) { $open_appeal = $apx; break; }
+                    }
+                    $latest_appeal = $appeals_by_submission[$sid][0] ?? null;
+                    $appealable = ($flagged || $score_changed) && $appeals_allowed && !$open_appeal && (int)($s['revision_by'] ?: $s['verified_by']) > 0;
+                    ?>
+                    <?php if ($open_appeal): ?>
+                    <a href="index.php?page=appeals&id=<?= (int)$open_appeal['appeal_id'] ?>" class="btn btn-sm btn-outline-primary" style="font-size:0.72rem;">Open Appeal</a>
+                    <?php elseif ($appealable): ?>
+                    <button type="button" class="btn btn-sm btn-outline-primary" style="font-size:0.72rem;"
+                            onclick="openAppealModal(<?= $sid ?>,'<?= htmlspecialchars(addslashes($s['kra_category'])) ?>')">
+                        Appeal
+                    </button>
+                    <?php elseif ($latest_appeal): ?>
+                    <a href="index.php?page=appeals&id=<?= (int)$latest_appeal['appeal_id'] ?>" class="btn btn-sm btn-outline-secondary" style="font-size:0.72rem;">View</a>
+                    <?php else: ?>
+                    <span style="color:#cbd5e1;font-size:0.78rem;">-</span>
+                    <?php endif; ?>
                 </td>
                 <?php if ($can_edit): ?>
                 <td style="padding:0.75rem 0.75rem;text-align:center;vertical-align:middle;">
                     <?php $tab = $kra_tabs[$s['kra_category']] ?? 'instruction';
                           $is_flagged = ($s['revision_status'] ?? 'ok') === 'needs_revision'; ?>
                     <?php if ($app['status'] === 'needs_revision' && !$is_flagged): ?>
-                    <span style="color:#cbd5e1;font-size:0.8rem;">&mdash;</span>
+                    <span style="color:#cbd5e1;font-size:0.8rem;">-</span>
                     <?php else: ?>
                     <a href="?page=apply&tab=<?= $tab ?>&edit_sid=<?= $s['submission_id'] ?>"
                        style="font-size:0.8rem;padding:0.28rem 0.65rem;border-radius:5px;background:#f0f4fb;color:#1a3a6b;border:1px solid #dbeafe;text-decoration:none;font-weight:600;display:inline-flex;align-items:center;gap:4px;white-space:nowrap;">
@@ -363,6 +408,39 @@ No KRA Submissions Yet</div>
     <?php endif; ?>
 </div>
 
+<div id="appealModal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,0.55);z-index:9999;align-items:center;justify-content:center;padding:1rem;">
+    <div style="background:#fff;border-radius:12px;width:100%;max-width:520px;border:1px solid #e2e8f0;box-shadow:0 20px 60px rgba(0,0,0,0.22);">
+        <div style="padding:1rem 1.25rem;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;">
+            <strong style="color:#1a3a6b;">File Appeal</strong>
+            <button type="button" onclick="document.getElementById('appealModal').style.display='none'" style="background:none;border:none;font-size:1.3rem;color:#94a3b8;">&times;</button>
+        </div>
+        <form method="POST" action="index.php?page=appeals" enctype="multipart/form-data" style="padding:1.25rem;">
+            <input type="hidden" name="action" value="file_appeal">
+            <input type="hidden" name="submission_id" id="appealSubmissionId">
+            <div style="font-size:0.84rem;color:#475569;margin-bottom:0.75rem;">
+                Appealing item: <strong id="appealKraLabel"></strong>
+            </div>
+            <label class="form-label">Reason for Appeal</label>
+            <textarea name="reason" class="form-control" rows="4" required placeholder="Explain why this flag or score change should be reviewed."></textarea>
+            <label class="form-label mt-3">Supporting Files</label>
+            <input type="file" name="attachments[]" class="form-control" multiple>
+            <div class="form-text">PDF, image, Word files. Max 5 MB each.</div>
+            <div class="d-flex justify-content-end gap-2 mt-3">
+                <button type="button" class="btn btn-outline-secondary" onclick="document.getElementById('appealModal').style.display='none'">Cancel</button>
+                <button class="btn btn-primary"><i class="bi bi-send me-1"></i>Submit Appeal</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function openAppealModal(submissionId, kraLabel) {
+    document.getElementById('appealSubmissionId').value = submissionId;
+    document.getElementById('appealKraLabel').textContent = kraLabel;
+    document.getElementById('appealModal').style.display = 'flex';
+}
+</script>
+
 <?php
 // Score Comparison Table (live-polled)
 // Show as soon as the application has been submitted or is under review
@@ -386,13 +464,13 @@ if ($show_comparison):
                 <i class="bi bi-bar-chart-steps"></i>Score Evaluation Comparison
             </div>
             <div style="font-size:0.72rem;color:#94a3b8;margin-top:1px;">
-                Your submitted scores alongside checker evaluations
+                Your submitted scores alongside evaluator evaluations
             </div>
         </div>
         <?php if (!$is_live): ?>
         <span style="font-size:0.7rem;padding:0.3rem 0.7rem;border-radius:20px;background:#f0f4fb;
                      color:#1e4d8c;border:1px solid #dbeafe;font-weight:600;white-space:nowrap;">
-            <i class="bi bi-lock me-1"></i>Finalised
+                <i class="bi bi-lock me-1"></i>Evaluation Complete
         </span>
         <?php endif; ?>
     </div>
@@ -402,7 +480,7 @@ if ($show_comparison):
         <div id="cmpTableWrap">
             <div style="padding:2.5rem;text-align:center;color:#94a3b8;font-size:0.85rem;">
                 <div class="spinner-border spinner-border-sm text-primary me-2"></div>
-                Loading comparison data&hellip;
+                Loading comparison data...
             </div>
         </div>
     </div>
@@ -456,7 +534,7 @@ if ($show_comparison):
 
         let html = '<table style="width:100%;border-collapse:collapse;font-size:.83rem;margin:0;">';
 
-        // ── thead
+        // -- thead
         html += `<thead><tr style="border-bottom:2px solid #e2e8f0;background:#f8fafc;">
             <th style="padding:.7rem 1rem;color:#1a3a6b;font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;font-weight:700;white-space:nowrap;">KRA</th>
             <th style="padding:.7rem .75rem;font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;font-weight:700;text-align:center;background:#f0f4fb;color:#1a3a6b;">
@@ -466,26 +544,26 @@ if ($show_comparison):
         if (hasS1) {
             html += `<th style="padding:.7rem .75rem;font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;font-weight:700;text-align:center;background:#eff6ff;color:#1e4d8c;">
                 <i class="bi bi-check-circle"></i> Stage 1
-                <div style="font-size:.62rem;font-weight:400;color:#64748b;text-transform:none;letter-spacing:0;">Campus Checker</div>
+                <div style="font-size:.62rem;font-weight:400;color:#64748b;text-transform:none;letter-spacing:0;">Subcommittee</div>
             </th>`;
         } else {
             html += `<th style="padding:.7rem .75rem;font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;font-weight:700;text-align:center;background:#eff6ff;color:#94a3b8;">
                 <i class="bi bi-clock"></i> Stage 1
-                <div style="font-size:.62rem;font-weight:400;color:#94a3b8;text-transform:none;letter-spacing:0;">Awaiting checker</div>
+                <div style="font-size:.62rem;font-weight:400;color:#94a3b8;text-transform:none;letter-spacing:0;">Awaiting evaluator</div>
             </th>`;
         }
 
         if (hasS2) {
             html += `<th style="padding:.7rem .75rem;font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;font-weight:700;text-align:center;background:#f0f4fb;color:#1a3a6b;">
                 <i class="bi bi-check2-circle"></i> Stage 2
-                <div style="font-size:.62rem;font-weight:400;color:#64748b;text-transform:none;letter-spacing:0;">Talisay Checker</div>
+                <div style="font-size:.62rem;font-weight:400;color:#64748b;text-transform:none;letter-spacing:0;">ITC Evaluator</div>
             </th>`;
         }
 
         html += `<th style="padding:.7rem .75rem;font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;font-weight:700;color:#1a3a6b;">Remarks</th>
         </tr></thead><tbody>`;
 
-        // ── tbody
+        // -- tbody
         KRA_ORDER.forEach(kra => {
             const rows = groups[kra] || [];
             if (!rows.length) return;
@@ -515,7 +593,7 @@ if ($show_comparison):
                 } else if (hasS1) {
                     html += `<span class="cmp-nochange">No change</span>`;
                 } else {
-                    html += `<span class="cmp-pending">—</span>`;
+                    html += `<span class="cmp-pending"> - </span>`;
                 }
                 html += `</td>`;
 
@@ -528,7 +606,7 @@ if ($show_comparison):
                     } else if (hasS2) {
                         html += `<span class="cmp-nochange">No change</span>`;
                     } else {
-                        html += `<span class="cmp-pending">—</span>`;
+                        html += `<span class="cmp-pending"> - </span>`;
                     }
                     html += `</td>`;
                 }
@@ -542,13 +620,13 @@ if ($show_comparison):
                 }
                 if (isFirst && s1Remarks) { html += `<div style="font-size:.72rem;color:#1e4d8c;margin-top:2px;">${s1Remarks}</div>`; hasRem = true; }
                 if (isFirst && s2Remarks) { html += `<div style="font-size:.72rem;color:#1a3a6b;margin-top:2px;">${s2Remarks}</div>`; hasRem = true; }
-                if (!hasRem) html += `<span style="color:#cbd5e1;">—</span>`;
+                if (!hasRem) html += `<span style="color:#cbd5e1;"> - </span>`;
                 html += `</td></tr>`;
             });
         });
         html += `</tbody>`;
 
-        // ── tfoot (weighted scores)
+        // -- tfoot (weighted scores)
         const wsY  = parseFloat(data.ws_faculty ?? 0);
         const wsS1 = parseFloat(data.ws_stage1  ?? 0);
         const wsS2 = data.ws_stage2 !== null ? parseFloat(data.ws_stage2) : null;
@@ -574,7 +652,7 @@ if ($show_comparison):
         if (hasS1) {
             html += `<span class="cmp-ws-s1">${fmt(wsS1)}</span>${diffHtml(d1)}`;
         } else {
-            html += `<span class="cmp-pending">—</span>`;
+            html += `<span class="cmp-pending"> - </span>`;
         }
         html += `</td>`;
 
@@ -583,13 +661,13 @@ if ($show_comparison):
             if (wsS2 !== null) {
                 html += `<span class="cmp-ws-s2">${fmt(wsS2)}</span>${diffHtml(d2)}`;
             } else {
-                html += `<span class="cmp-pending">—</span>`;
+                html += `<span class="cmp-pending"> - </span>`;
             }
             html += `</td>`;
         }
 
         html += `<td style="padding:.75rem;font-size:.72rem;color:#64748b;vertical-align:middle;">
-                Final weighted score after all adjustments
+                Evaluator score after all adjustments. This result is for further committee review and is not a final decision.
             </td>
         </tr></tfoot></table>`;
         return html;

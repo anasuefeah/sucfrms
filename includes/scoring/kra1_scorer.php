@@ -1,12 +1,12 @@
 <?php
 /**
- * KRA I Scorer — Instruction (100 points)
+ * KRA I Scorer  -  Instruction (100 points)
  * DBM-CHED Joint Circular No. 01, s. 2026
  *
  * Structure:
- *   Criterion A – Teaching Effectiveness:               max 60 pts
- *   Criterion B – Instructional Materials & Programs:   max 30 pts
- *   Criterion C – Research-Related & Mentorship:        max 10 pts
+ *   Criterion A - Teaching Effectiveness:               max 60 pts
+ *   Criterion B - Instructional Materials & Programs:   max 30 pts
+ *   Criterion C - Research-Related & Mentorship:        max 10 pts
  *   KRA I total = A + B + C, hard cap 100
  */
 
@@ -27,8 +27,8 @@ class KRA1Scorer
         'module'      => 16,
         'manual'      => 16,
         'multimedia'  => 16,
-        'chapter'     => null,   // not in evidence matrix → CONFIG_INCOMPLETE
-        'testing'     => null,   // not in evidence matrix → CONFIG_INCOMPLETE
+        'chapter'     => null,   // not in evidence matrix -> CONFIG_INCOMPLETE
+        'testing'     => null,   // not in evidence matrix -> CONFIG_INCOMPLETE
         'program_lead'  => 10,
         'program_contrib' => 5,
     ];
@@ -86,20 +86,20 @@ class KRA1Scorer
             }
 
             switch ($critType) {
-                // ── Criterion A: Teaching Effectiveness ─────────────
+                // -- Criterion A: Teaching Effectiveness -------------
                 case 'A-set-sef':
                     $set = min(100, max(0, (float)($parts[1] ?? 0)));
                     $sef = min(100, max(0, (float)($parts[2] ?? 0)));
-                    // Formula: SET/100 × 36 + SEF/100 × 24
+                    // Formula: SET/100 x 36 + SEF/100 x 24
                     if ($set > 0) $crit_a_set_ratings[] = $set;
                     if ($sef > 0) $crit_a_sef_ratings[] = $sef;
 
                     if ($set === 0.0 && $sef === 0.0) {
-                        $pending[] = 'KRA I Crit A: SET and SEF ratings are both 0 — pending documentation.';
+                        $pending[] = 'KRA I Crit A: SET and SEF ratings are both 0  -  pending documentation.';
                     }
                     break;
 
-                // ── Criterion B: Instructional Materials ────────────
+                // -- Criterion B: Instructional Materials ------------
                 case 'A-set-sef-sem':
                     $set = min(100, max(0, (float)($parts[3] ?? 0)));
                     $sef = min(100, max(0, (float)($parts[4] ?? 0)));
@@ -110,6 +110,28 @@ class KRA1Scorer
                         $period = $parts[1] ?? 'Unknown period';
                         $sem    = $parts[2] ?? '?';
                         $pending[] = "KRA I Crit A: {$period} semester {$sem} SET and SEF ratings are both 0 - pending documentation.";
+                    }
+                    break;
+
+                case 'A-set-sem':
+                    $setRaw = $parts[3] ?? '';
+                    $set = min(100, max(0, (float)$setRaw));
+                    if ($setRaw !== '' && is_numeric($setRaw)) $crit_a_set_ratings[] = $set;
+                    if ($set === 0.0) {
+                        $period = $parts[1] ?? 'Unknown period';
+                        $sem    = $parts[2] ?? '?';
+                        $pending[] = "KRA I Crit A: {$period} semester {$sem} SET rating is 0 - pending documentation.";
+                    }
+                    break;
+
+                case 'A-sef-sem':
+                    $sefRaw = $parts[3] ?? '';
+                    $sef = min(100, max(0, (float)$sefRaw));
+                    if ($sefRaw !== '' && is_numeric($sefRaw)) $crit_a_sef_ratings[] = $sef;
+                    if ($sef === 0.0) {
+                        $period = $parts[1] ?? 'Unknown period';
+                        $sem    = $parts[2] ?? '?';
+                        $pending[] = "KRA I Crit A: {$period} semester {$sem} SEF rating is 0 - pending documentation.";
                     }
                     break;
 
@@ -127,32 +149,32 @@ class KRA1Scorer
                     }
                     // Evidence baseline check
                     if (empty($s['evidence_names'])) {
-                        $pending[] = "KRA I Crit B: '{$label}' — no evidence files attached (required: cover page, ToC, IMDC evaluation, syllabus listing, library certification).";
+                        $pending[] = "KRA I Crit B: '{$label}'  -  no evidence files attached (required: cover page, ToC, IMDC evaluation, syllabus listing, library certification).";
                     }
                     break;
 
-                // ── Criterion C: Research-Related & Mentorship ───────
+                // -- Criterion C: Research-Related & Mentorship -------
                 case 'C-thesis':
                     $label = $parts[1] ?? '';
                     $pts   = self::resolveThesisPoints($label, $config_i);
                     $crit_c += $pts;
                     if (empty($s['evidence_names'])) {
-                        $pending[] = "KRA I Crit C: '{$label}' — missing approval sheet / RRPA / COPC evidence.";
+                        $pending[] = "KRA I Crit C: '{$label}'  -  missing approval sheet / RRPA / COPC evidence.";
                     }
                     break;
 
                 case 'C-mentor':
                     /*
-                     * Mentorship Services — CONFIRMED SOURCE GAP (JC01 s.2026, Section 15 item 2, p.78)
+                     * Mentorship Services  -  CONFIRMED SOURCE GAP (JC01 s.2026, Section 15 item 2, p.78)
                      * The Points column is blank in the official circular. This is NOT an extraction
-                     * error — verified directly against the scanned page.
+                     * error  -  verified directly against the scanned page.
                      *
                      * CONFIG_MENTORSHIP_POINTS must be explicitly set by a system administrator
                      * before this indicator can score anything. Until set, always returns
-                     * PENDING_DOCUMENTATION — never 0, never a guessed figure.
+                     * PENDING_DOCUMENTATION  -  never 0, never a guessed figure.
                      *
                      * Suggested starting point for discussion: 1 pt (matching Panel Member,
-                     * Special/Capstone — lowest confirmed rate in this criterion), but this is a
+                     * Special/Capstone  -  lowest confirmed rate in this criterion), but this is a
                      * design recommendation, NOT a sourced value. Confirm with CHED-RO or adviser.
                      */
                     $competition = $parts[1] ?? 'unknown competition';
@@ -161,7 +183,7 @@ class KRA1Scorer
 
                     // Hard rule 1: local-only competitions do not qualify regardless of point value
                     if ($level === 'local' || $level === '') {
-                        $config_i[] = "KRA I Crit C – Mentorship: '{$competition}' — local-only competition does not qualify. Must be regional, national, or international. Entry excluded.";
+                        $config_i[] = "KRA I Crit C - Mentorship: '{$competition}'  -  local-only competition does not qualify. Must be regional, national, or international. Entry excluded.";
                         break;
                     }
 
@@ -172,30 +194,30 @@ class KRA1Scorer
                         '1st place','2nd place','3rd place',
                     ]);
                     if (!$qualifies) {
-                        $config_i[] = "KRA I Crit C – Mentorship: '{$competition}' placement '{$placement}' does not qualify. Only Champion through 3rd place in regional/national/international competitions count. Consolation prizes excluded. Entry excluded.";
+                        $config_i[] = "KRA I Crit C - Mentorship: '{$competition}' placement '{$placement}' does not qualify. Only Champion through 3rd place in regional/national/international competitions count. Consolation prizes excluded. Entry excluded.";
                         break;
                     }
 
-                    // Entry passes hard rules — but point value is a confirmed source gap.
+                    // Entry passes hard rules  -  but point value is a confirmed source gap.
                     // Read CONFIG_MENTORSHIP_POINTS from scoring_criteria table if available.
                     $mentor_pts = self::getMentorshipPoints();
 
                     if ($mentor_pts === null) {
-                        // Not configured — must not score; raise as PENDING_DOCUMENTATION
-                        $pending[] = "KRA I Crit C – Mentorship: '{$competition}' ({$level}, {$placement}) — PENDING_DOCUMENTATION. "
+                        // Not configured  -  must not score; raise as PENDING_DOCUMENTATION
+                        $pending[] = "KRA I Crit C - Mentorship: '{$competition}' ({$level}, {$placement})  -  PENDING_DOCUMENTATION. "
                                    . "CONFIG_MENTORSHIP_POINTS has not been set by a system administrator. "
                                    . "This entry cannot be scored until the point value is confirmed with CHED-RO or your adviser and entered in the Scoring Criteria configuration. "
-                                   . "Suggested starting point for discussion: 1 pt (not a sourced value — disclosed design recommendation only).";
+                                   . "Suggested starting point for discussion: 1 pt (not a sourced value  -  disclosed design recommendation only).";
                     } else {
                         $pts = (float)$mentor_pts;
                         $crit_c += $pts;
-                        $config_i[] = "KRA I Crit C – Mentorship: '{$competition}' scored at {$pts} pt(s) using administrator-configured CONFIG_MENTORSHIP_POINTS. "
-                                    . "Note: this value was not sourced from the JC01 circular (p.78 Points column is blank) — confirm with CHED-RO before finalising.";
+                        $config_i[] = "KRA I Crit C - Mentorship: '{$competition}' scored at {$pts} pt(s) using administrator-configured CONFIG_MENTORSHIP_POINTS. "
+                                    . "Note: this value was not sourced from the JC01 circular (p.78 Points column is blank)  -  confirm with CHED-RO before finalising.";
                     }
 
                     // Evidence requirements always apply
                     if (empty($s['evidence_names'])) {
-                        $pending[] = "KRA I Crit C – Mentorship: '{$competition}' — missing required evidence: (1) award certificate or photo of trophy/plaque/medal, (2) competition mechanics document, (3) profile/mandate/history of the award-giving organization including prior winners list.";
+                        $pending[] = "KRA I Crit C - Mentorship: '{$competition}'  -  missing required evidence: (1) award certificate or photo of trophy/plaque/medal, (2) competition mechanics document, (3) profile/mandate/history of the award-giving organization including prior winners list.";
                     }
                     break;
 
@@ -235,7 +257,7 @@ class KRA1Scorer
         ];
     }
 
-    // ── Resolve IM base points from label ────────────────────────────
+    // -- Resolve IM base points from label ----------------------------
     private static function resolveIMBase(string $label, array &$config_i): ?float
     {
         $l = strtolower($label);
@@ -248,18 +270,18 @@ class KRA1Scorer
         // Textbook chapter and validated testing materials: checklist-only items
         // with no confirmed point figure in the evidence-matrix annex.
         if (str_contains($l, 'chapter') || str_contains($l, 'testing') || str_contains($l, 'validated')) {
-            $config_i[] = "KRA I Crit B: '{$label}' — item appears in checklist annex only, no confirmed point value in evidence-matrix annex. Flag as CONFIG_INCOMPLETE.";
+            $config_i[] = "KRA I Crit B: '{$label}'  -  item appears in checklist annex only, no confirmed point value in evidence-matrix annex. Flag as CONFIG_INCOMPLETE.";
             return null;
         }
         // Try extracting pts from label pattern "(Xpts)"
         if (preg_match('/\((\d+(?:\.\d+)?)\s*pts?\)/i', $label, $m)) {
             return (float)$m[1];
         }
-        $config_i[] = "KRA I Crit B: '{$label}' — unrecognised IM type. Flag as CONFIG_INCOMPLETE.";
+        $config_i[] = "KRA I Crit B: '{$label}'  -  unrecognised IM type. Flag as CONFIG_INCOMPLETE.";
         return null;
     }
 
-    // ── Detect co-authorship from label ─────────────────────────────
+    // -- Detect co-authorship from label -----------------------------
     private static function isCoAuthor(string $label): bool
     {
         $l = strtolower($label);
@@ -267,7 +289,7 @@ class KRA1Scorer
             || str_contains($l, 'co-') || str_contains($l, 'coauthor');
     }
 
-    // ── Resolve thesis/panel points ─────────────────────────────────
+    // -- Resolve thesis/panel points ---------------------------------
     private static function resolveThesisPoints(string $label, array &$config_i): float
     {
         $l = strtolower($label);
@@ -285,7 +307,7 @@ class KRA1Scorer
             if (str_contains($l, 'undergraduate') || str_contains($l, 'undergrad')) return 2.0;
             if (str_contains($l, 'special') || str_contains($l, 'capstone'))      return 1.0;
         }
-        $config_i[] = "KRA I Crit C: Unrecognised thesis/panel entry '{$label}' — CONFIG_INCOMPLETE.";
+        $config_i[] = "KRA I Crit C: Unrecognised thesis/panel entry '{$label}'  -  CONFIG_INCOMPLETE.";
         return 0.0;
     }
 
@@ -323,6 +345,14 @@ class KRA1Scorer
                 $sef = min(100, max(0, (float)($parts[4] ?? 0)));
                 return round(($set / 100) * 36 + ($sef / 100) * 24, 2);
 
+            case 'A-set-sem':
+                $set = min(100, max(0, (float)($parts[3] ?? 0)));
+                return round(($set / 100) * 36, 2);
+
+            case 'A-sef-sem':
+                $sef = min(100, max(0, (float)($parts[3] ?? 0)));
+                return round(($sef / 100) * 24, 2);
+
             case 'B-material':
                 if (str_starts_with($critType, 'B|')) {
                     $flat    = explode('|', $critType);
@@ -349,7 +379,7 @@ class KRA1Scorer
                  * CONFIG_MENTORSHIP_POINTS is a confirmed source gap (JC01 p.78 blank).
                  * Per-entry computation cannot score this without the configured value.
                  * Returns 0.0 here; the orchestrator's full score() method raises
-                 * PENDING_DOCUMENTATION. The UI must show the pending flag — never
+                 * PENDING_DOCUMENTATION. The UI must show the pending flag  -  never
                  * silently credit 0 as if the entry was scored.
                  */
                 return 0.0;
@@ -368,11 +398,11 @@ class KRA1Scorer
      * The criterion_key 'kra1_c_mentor_competition' with a non-zero max_points
      * signals that an administrator has explicitly confirmed the point value.
      *
-     * Returns null  → not configured; triggers PENDING_DOCUMENTATION (never score 0).
-     * Returns float → admin has explicitly set the value; use it.
+     * Returns null  -> not configured; triggers PENDING_DOCUMENTATION (never score 0).
+     * Returns float -> admin has explicitly set the value; use it.
      *
      * Suggested starting point for discussion: 1 pt (matching Panel Member,
-     * Special/Capstone — the lowest confirmed rate in this criterion). This is a
+     * Special/Capstone  -  the lowest confirmed rate in this criterion). This is a
      * disclosed design recommendation, NOT a sourced value from JC01 p.78.
      * Confirm with CHED-RO or your adviser before finalising.
      */

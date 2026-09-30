@@ -2,11 +2,11 @@
 if (session_status() === PHP_SESSION_NONE) session_start();
 require_once 'includes/functions.php';
 
-// ── AJAX: verify KRA submission — intercept BEFORE any header is sent ──
+// -- AJAX: mark KRA submission acceptable  -  intercept BEFORE any header is sent --
 if (
     isset($_SERVER['HTTP_X_REQUESTED_WITH']) &&
     $_SERVER['HTTP_X_REQUESTED_WITH'] === 'XMLHttpRequest' &&
-    ($_POST['action'] ?? '') === 'verify_kra'
+    in_array(($_POST['action'] ?? ''), ['verify_kra', 'verify_submission'], true)
 ) {
     require_once 'config/db.php';
     if (!isLoggedIn()) { http_response_code(403); echo json_encode(['ok'=>false,'error'=>'Unauthorized']); exit; }
@@ -14,6 +14,7 @@ if (
 
     $app_id = intval($_GET['id'] ?? 0);
     $sub_id = intval($_POST['submission_id'] ?? 0);
+    $note   = trim($_POST['note'] ?? '');
     $uid    = $_SESSION['user_id'];
 
     if (!$app_id || !$sub_id) {
@@ -21,7 +22,41 @@ if (
         exit;
     }
 
-    $app_row = $pdo->prepare("SELECT checker_id FROM applications WHERE application_id = ?");
+    try {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS kra_checker_verifications (
+            ckv_id        INT AUTO_INCREMENT PRIMARY KEY,
+            submission_id INT NOT NULL,
+            checker_id    INT NOT NULL,
+            verified_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_sub_checker (submission_id, checker_id),
+            FOREIGN KEY (submission_id) REFERENCES kra_submissions(submission_id) ON DELETE CASCADE,
+            FOREIGN KEY (checker_id)    REFERENCES users(user_id) ON DELETE CASCADE
+        )");
+    } catch (\Exception $e) {}
+    try { $pdo->query("SELECT checker_note FROM kra_submissions LIMIT 1"); }
+    catch (\Exception $e) {
+        try { $pdo->exec("ALTER TABLE kra_submissions ADD COLUMN checker_note TEXT DEFAULT NULL"); }
+        catch (\Exception $e2) {}
+    }
+    try {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS application_checker_reviews (
+            review_id      INT AUTO_INCREMENT PRIMARY KEY,
+            application_id INT NOT NULL,
+            checker_id     INT NOT NULL,
+            decision       ENUM('approved','rejected','pending') DEFAULT 'pending',
+            remarks        TEXT,
+            decided_at     TIMESTAMP NULL,
+            created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_app_checker (application_id, checker_id),
+            FOREIGN KEY (application_id) REFERENCES applications(application_id) ON DELETE CASCADE,
+            FOREIGN KEY (checker_id)     REFERENCES users(user_id) ON DELETE CASCADE
+        )");
+    } catch (\Exception $e) {}
+
+    $app_row = $pdo->prepare("SELECT a.application_id, a.status, a.cycle_id, a.checker_id, a.user_id, u.full_name
+        FROM applications a
+        JOIN users u ON u.user_id = a.user_id
+        WHERE a.application_id = ?");
     $app_row->execute([$app_id]);
     $app_row = $app_row->fetch();
 
@@ -30,25 +65,70 @@ if (
         exit;
     }
 
-    if (isAdmin() && empty($app_row['checker_id'])) {
-        echo json_encode(['ok' => false, 'error' => 'Cannot verify — a checker must review this application first.']);
+    if (!in_array($app_row['status'], ['under_review', 'talisay_review', 'needs_revision'], true)) {
+        echo json_encode(['ok' => false, 'error' => 'This application is not under active review.']);
         exit;
     }
 
-    $pdo->prepare("UPDATE kra_submissions
-        SET verified=1, verified_by=?, verified_at=NOW(),
-            faculty_original_score = COALESCE(faculty_original_score, computed_points)
-        WHERE submission_id=? AND application_id=?")
-        ->execute([$uid, $sub_id, $app_id]);
-    logAudit($pdo, $uid, 'KRA Score Verified', "Verified submission ID {$sub_id} for Application {$app_id}");
+    $sub_row = $pdo->prepare("SELECT submission_id, kra_category, computed_points FROM kra_submissions WHERE submission_id = ? AND application_id = ?");
+    $sub_row->execute([$sub_id, $app_id]);
+    $sub_row = $sub_row->fetch();
+    if (!$sub_row) {
+        echo json_encode(['ok' => false, 'error' => 'KRA submission not found.']);
+        exit;
+    }
 
-    echo json_encode(['ok' => true]);
+    if (!isAdmin()) {
+        ensureKraAssignmentTable($pdo);
+        if (!checkerCanReviewKra($pdo, (int)$uid, (int)$app_row['cycle_id'], $sub_row['kra_category'])) {
+            http_response_code(403);
+            echo json_encode(['ok' => false, 'error' => 'You are not assigned to review that KRA for this cycle.']);
+            exit;
+        }
+    }
+
+    try {
+        $pdo->prepare("INSERT IGNORE INTO application_checker_reviews
+            (application_id, checker_id, decision) VALUES (?, ?, 'pending')")
+            ->execute([$app_id, $uid]);
+    } catch (\Exception $e) {}
+
+    $pdo->prepare("INSERT IGNORE INTO kra_checker_verifications (submission_id, checker_id) VALUES (?, ?)")
+        ->execute([$sub_id, $uid]);
+    $pdo->prepare("UPDATE kra_submissions
+        SET faculty_original_score = COALESCE(faculty_original_score, computed_points),
+            checker_note = ?
+        WHERE submission_id = ? AND application_id = ?")
+        ->execute([$note ?: null, $sub_id, $app_id]);
+
+    $total_ck = (isAdmin() || isTalisayChecker())
+        ? 1
+        : countAssignedCheckersForKra($pdo, (int)$app_row['cycle_id'], $sub_row['kra_category']);
+    $total_ck = max(1, $total_ck);
+    $done_stmt = $pdo->prepare("SELECT COUNT(*) FROM kra_checker_verifications WHERE submission_id = ?");
+    $done_stmt->execute([$sub_id]);
+    $done_ck = (int)$done_stmt->fetchColumn();
+    $all_verified = ($total_ck > 0 && $done_ck >= $total_ck);
+    if ($all_verified) {
+        $pdo->prepare("UPDATE kra_submissions SET verified = 1, verified_by = ?, verified_at = NOW() WHERE submission_id = ? AND application_id = ?")
+            ->execute([$uid, $sub_id, $app_id]);
+    }
+
+    logAudit($pdo, $uid, 'Evidence Marked Acceptable', "You marked {$app_row['full_name']}'s {$sub_row['kra_category']} entry acceptable." . ($note ? " Note: {$note}" : ''));
+
+    echo json_encode([
+        'ok' => true,
+        'submission_id' => $sub_id,
+        'done_count' => $done_ck,
+        'total_count' => $total_ck,
+        'all_verified' => $all_verified,
+    ]);
     exit;
 }
 
 header('Content-Type: text/html; charset=UTF-8');
 
-// Ping endpoint — used by back-button detection to check session validity
+// Ping endpoint  -  used by back-button detection to check session validity
 if (isset($_GET['ping'])) {
     if (!isLoggedIn()) {
         http_response_code(401);
@@ -75,7 +155,7 @@ if (empty($_SESSION['_notif_cleanup_done'])) {
     $_SESSION['_notif_cleanup_done'] = true;
 }
 
-// ── AJAX: mark notifications as read ──
+// -- AJAX: mark notifications as read --
 if (isset($_GET['notif_action'])) {
     header('Content-Type: application/json');
     $na = $_GET['notif_action'];
@@ -91,12 +171,12 @@ if (isset($_GET['notif_action'])) {
     } elseif ($na === 'get_notifs') {
         // Filter notification types by role so each role only sees relevant notifications
         $role_notif = $_SESSION['role'] ?? 'faculty';
-        // new_submission = campus checker notifications only
+        // new_submission = first-stage reviewer notifications only
         // new_talisay_submission = talisay checker notifications only
         // Build an exclusion list based on role
         $excluded_types = [];
         if ($role_notif === 'talisay_checker') {
-            // Talisay checkers should NOT see new_submission (that's for campus checkers)
+            // ITC reviewers should NOT see new_submission (that's for first-stage reviewers)
             $excluded_types[] = 'new_submission';
             $excluded_types[] = 'revision_resubmitted';
         } elseif ($role_notif === 'checker') {
@@ -116,23 +196,20 @@ if (isset($_GET['notif_action'])) {
     exit;
 }
 
-// ── Force password change if temp password is still active ──
-if (!empty($_SESSION['force_pw_change'])) {
-    header('Location: pages/change_password.php');
-    exit;
-}
+// -- Force password change if temp password is still active --
+unset($_SESSION['force_pw_change']);
 
-// ── Runtime migration: add 'inactive' to users.status ENUM ──
+// -- Runtime migration: add 'inactive' to users.status ENUM --
 try {
     $pdo->exec("ALTER TABLE users MODIFY COLUMN status ENUM('active','inactive','rejected') DEFAULT 'active'");
 } catch (\Exception $e) { /* already updated or not needed */ }
 
-// ── Runtime migration: add 'talisay_checker' to users.role ENUM ──
+// -- Runtime migration: add 'talisay_checker' to users.role ENUM --
 try {
     $pdo->exec("ALTER TABLE users MODIFY COLUMN role ENUM('faculty','checker','admin','talisay_checker') DEFAULT 'faculty'");
 } catch (\Exception $e) { /* already updated */ }
 
-// ── Runtime migration: split full_name into first_name / middle_name / last_name ──
+// -- Runtime migration: split full_name into first_name / middle_name / last_name --
 try {
     $cols = $pdo->query("SHOW COLUMNS FROM users LIKE 'first_name'")->fetchAll();
     if (empty($cols)) {
@@ -158,12 +235,96 @@ try {
     }
 } catch (\Exception $e) { /* already migrated */ }
 
-// ── Runtime migration: ensure applications.status ENUM includes all needed values ──
+// Runtime migration: faculty profile-completion flow.
+try { $pdo->query("SELECT suffix FROM users LIMIT 1"); }
+catch (\Exception $e) { try { $pdo->exec("ALTER TABLE users ADD COLUMN suffix VARCHAR(30) DEFAULT NULL AFTER last_name"); } catch (\Exception $e2) {} }
+try { $pdo->query("SELECT profile_completed FROM users LIMIT 1"); }
+catch (\Exception $e) { try { $pdo->exec("ALTER TABLE users ADD COLUMN profile_completed TINYINT(1) DEFAULT 0 AFTER profile_pic"); } catch (\Exception $e2) {} }
+try { $pdo->query("SELECT email_locked FROM users LIMIT 1"); }
+catch (\Exception $e) { try { $pdo->exec("ALTER TABLE users ADD COLUMN email_locked TINYINT(1) DEFAULT 1 AFTER profile_completed"); } catch (\Exception $e2) {} }
+try { $pdo->query("SELECT faculty_status FROM users LIMIT 1"); }
+catch (\Exception $e) { try { $pdo->exec("ALTER TABLE users ADD COLUMN faculty_status ENUM('Existing Faculty','New Faculty') DEFAULT 'New Faculty' AFTER email_locked"); } catch (\Exception $e2) {} }
+try { $pdo->query("SELECT applied_first_cycle FROM users LIMIT 1"); }
+catch (\Exception $e) { try { $pdo->exec("ALTER TABLE users ADD COLUMN applied_first_cycle TINYINT(1) DEFAULT 0 AFTER faculty_status"); } catch (\Exception $e2) {} }
+try {
+    $pdo->exec("CREATE TABLE IF NOT EXISTS faculty_education (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        level ENUM('Bachelor','Master','Doctorate','PostDoctorate') NOT NULL,
+        degree_program VARCHAR(255) NOT NULL,
+        major_specialization VARCHAR(255) NOT NULL,
+        school_university VARCHAR(255) NOT NULL,
+        year_graduated VARCHAR(20) NOT NULL,
+        honors_units_notes VARCHAR(255) DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_faculty_education_user (user_id),
+        FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+    )");
+    $pdo->exec("ALTER TABLE faculty_education MODIFY COLUMN level ENUM('Bachelor','Master','Doctorate','PostDoctorate') NOT NULL");
+    $pdo->exec("CREATE TABLE IF NOT EXISTS faculty_employment (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        type ENUM('current','previous') NOT NULL,
+        rank VARCHAR(100) NOT NULL,
+        mode_of_appointment VARCHAR(100) NOT NULL,
+        date_of_appointment DATE DEFAULT NULL,
+        employment_sector VARCHAR(150) DEFAULT NULL,
+        suc VARCHAR(255) NOT NULL,
+        campus VARCHAR(255) NOT NULL,
+        address TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_faculty_employment_user_type (user_id, type),
+        FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+    )");
+    $pdo->exec("UPDATE users
+        SET profile_completed = 1
+        WHERE role = 'faculty'
+          AND COALESCE(employee_id, '') <> ''
+          AND campus_id IS NOT NULL
+          AND COALESCE(rank, '') <> ''");
+    $pdo->exec("UPDATE users SET email_locked = 1 WHERE role = 'faculty'");
+} catch (\Exception $e) {}
+
+// Runtime migration: cycle submission/evaluation date controls and extensions.
+try { $pdo->query("SELECT submission_start_date FROM cycles LIMIT 1"); }
+catch (\Exception $e) {
+    try { $pdo->exec("ALTER TABLE cycles ADD COLUMN submission_start_date DATE DEFAULT NULL AFTER end_date"); } catch (\Exception $e2) {}
+    try { $pdo->exec("UPDATE cycles SET submission_start_date=start_date WHERE submission_start_date IS NULL AND start_date IS NOT NULL"); } catch (\Exception $e2) {}
+}
+try { $pdo->query("SELECT evaluation_deadline FROM cycles LIMIT 1"); }
+catch (\Exception $e) {
+    try { $pdo->exec("ALTER TABLE cycles ADD COLUMN evaluation_deadline DATE DEFAULT NULL AFTER submission_deadline"); } catch (\Exception $e2) {}
+    try { $pdo->exec("UPDATE cycles SET evaluation_deadline=end_date WHERE evaluation_deadline IS NULL AND end_date IS NOT NULL"); } catch (\Exception $e2) {}
+}
+try {
+    $pdo->exec("CREATE TABLE IF NOT EXISTS cycle_submission_extensions (
+        extension_id INT AUTO_INCREMENT PRIMARY KEY,
+        cycle_id INT NOT NULL,
+        faculty_user_id INT DEFAULT NULL,
+        applies_to_all TINYINT(1) DEFAULT 0,
+        previous_deadline DATE NOT NULL,
+        new_deadline DATE NOT NULL,
+        reason TEXT DEFAULT NULL,
+        extended_by INT DEFAULT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_cycle_extensions_cycle (cycle_id),
+        INDEX idx_cycle_extensions_faculty (faculty_user_id),
+        FOREIGN KEY (cycle_id) REFERENCES cycles(cycle_id) ON DELETE CASCADE,
+        FOREIGN KEY (faculty_user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+        FOREIGN KEY (extended_by) REFERENCES users(user_id) ON DELETE SET NULL
+    )");
+} catch (\Exception $e) {}
+
+// Runtime migration: evaluator KRA assignments per cycle.
+ensureKraAssignmentTable($pdo);
+ensureAppealTables($pdo);
+
+// -- Runtime migration: ensure applications.status ENUM includes all needed values --
 try {
     $pdo->exec("ALTER TABLE applications MODIFY COLUMN status ENUM('draft','submitted','under_review','talisay_review','approved','rejected','reclassified','admin_rejected','edit_requested','needs_revision') DEFAULT 'draft'");
 } catch (\Exception $e) { /* already updated */ }
 
-// ── Runtime migration: create notifications table ──
+// -- Runtime migration: create notifications table --
 try {
     $pdo->exec("CREATE TABLE IF NOT EXISTS notifications (
         notif_id       INT AUTO_INCREMENT PRIMARY KEY,
@@ -178,13 +339,13 @@ try {
     )");
 } catch (\Exception $e) { /* already exists */ }
 
-// ── Runtime migration: notifications.submission_id — lets a "needs_revision"
-//    notification deep-link straight to the flagged KRA entry ──
+// -- Runtime migration: notifications.submission_id  -  lets a "needs_revision"
+//    notification deep-link straight to the flagged KRA entry --
 try {
     $pdo->exec("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS submission_id INT DEFAULT NULL AFTER application_id");
 } catch (\Exception $e) { /* already exists / unsupported syntax on older MySQL */ }
 
-// ── Runtime migration: create help_articles table ──
+// -- Runtime migration: create help_articles table --
 try {
     $pdo->exec("CREATE TABLE IF NOT EXISTS help_articles (
         article_id   INT AUTO_INCREMENT PRIMARY KEY,
@@ -199,7 +360,7 @@ try {
     )");
 } catch (\Exception $e) { /* already exists */ }
 
-// ── Runtime migration: create feedback_submissions table ──
+// -- Runtime migration: create feedback_submissions table --
 try {
     $pdo->exec("CREATE TABLE IF NOT EXISTS feedback_submissions (
         feedback_id   INT AUTO_INCREMENT PRIMARY KEY,
@@ -217,7 +378,7 @@ try {
     )");
 } catch (\Exception $e) { /* already exists */ }
 
-// ── Runtime migration: JC01 s.2026 — reset mentorship points to 0 (confirmed source gap) ──
+// -- Runtime migration: JC01 s.2026  -  reset mentorship points to 0 (confirmed source gap) --
 // kra1_c_mentor_competition had max_points = 3.00 (old hardcoded guess). Reset to 0.00 so
 // the admin is prompted to confirm the value with CHED-RO before it scores anything.
 try {
@@ -228,8 +389,8 @@ try {
           AND max_points = 3.00");
 } catch (\Exception $e) { /* table may not exist yet */ }
 
-// ── Runtime migration: JC01 s.2026 — correct panel member point values ──
-// panel_masters: 2 → 4 pts; panel_doctoral: 2 → 6 pts per confirmed JC01 annex.
+// -- Runtime migration: JC01 s.2026  -  correct panel member point values --
+// panel_masters: 2 -> 4 pts; panel_doctoral: 2 -> 6 pts per confirmed JC01 annex.
 try {
     $pdo->exec("UPDATE scoring_criteria SET max_points = 4.00
         WHERE criterion_key = 'kra1_c_panel_masters' AND max_points = 2.00 AND cycle_id IS NULL");
@@ -237,7 +398,7 @@ try {
         WHERE criterion_key = 'kra1_c_panel_doctoral' AND max_points = 2.00 AND cycle_id IS NULL");
 } catch (\Exception $e) { /* already corrected or table missing */ }
 
-// ── AJAX: submit feedback ──
+// -- AJAX: submit feedback --
 // Runtime migration: de-duplicate scoring criteria and make NULL scopes unique.
 // MySQL unique indexes allow multiple NULLs, so repeated seeds could create
 // duplicate global/cycle-wide rows such as Criterion A SET/SEF.
@@ -317,7 +478,7 @@ $role = $_SESSION['role'] ?? 'faculty';
 $page = $_GET['page'] ?? 'dashboard';
 
 // Always sync role, status and name from DB on every page load
-$fresh = $pdo->prepare("SELECT role, status, first_name, middle_name, last_name, profile_pic FROM users WHERE user_id = ?");
+$fresh = $pdo->prepare("SELECT role, status, first_name, middle_name, last_name, profile_pic, profile_completed FROM users WHERE user_id = ?");
 $fresh->execute([$_SESSION['user_id']]);
 $fresh = $fresh->fetch();
 if ($fresh) {
@@ -369,10 +530,10 @@ if (empty($_SESSION['_notif_names_fixed'])) {
 }
 
 // Role-based allowed pages
-$faculty_pages         = ['dashboard','my_application','my_audit','profile','apply','score_comparison','help'];
-$checker_pages         = ['dashboard','review_queue','review_application','checker_audit','profile','help'];
+$faculty_pages         = ['dashboard','my_application','my_audit','profile','profile_entry','apply','score_comparison','appeals','help'];
+$checker_pages         = ['dashboard','review_queue','review_application','appeals','checker_audit','profile','help'];
 $talisay_pages         = ['dashboard','review_queue','review_application','checker_audit','profile','help'];
-$admin_pages           = ['dashboard','manage_users','audit','cycles','config','analytics','profile','all_applications','manage_campuses','view_application','help','feedback'];
+$admin_pages           = ['dashboard','manage_users','audit','cycles','config','analytics','profile','all_applications','manage_campuses','view_application','appeals','help','feedback'];
 
 $allowed = match($role) {
     'admin'            => $admin_pages,
@@ -383,15 +544,11 @@ $allowed = match($role) {
 
 if (!in_array($page, $allowed)) $page = 'dashboard';
 
-// Pending count for admin sidebar badge (inactive users needing attention)
-$pending_count = 0;
-if ($role === 'admin') {
-    try {
-        $pending_count = (int)$pdo->query("SELECT COUNT(*) FROM users WHERE status = 'inactive'")->fetchColumn();
-    } catch (\Exception $e) { $pending_count = 0; }
+$faculty_profile_incomplete = ($role === 'faculty' && empty($fresh['profile_completed']));
+if ($faculty_profile_incomplete && $page !== 'profile_entry') {
+    header('Location: index.php?page=profile_entry');
+    exit;
 }
-
-
 
 include 'includes/header.php';
 ?>
@@ -399,7 +556,7 @@ include 'includes/header.php';
 <div class="container-fluid main-content" style="padding-left:264px;padding-right:0;padding-top:0;padding-bottom:1.5rem;margin-top:0;">
     <div class="row g-0">
 
-        <!-- ── Sidebar ── -->
+        <!-- -- Sidebar -- -->
         <div id="sidebarCol" class="col-auto d-none d-md-block">
             <div id="sidebarCard">
                 <!-- Profile -->
@@ -425,24 +582,37 @@ include 'includes/header.php';
                     <div class="min-w-0">
                         <p class="sidebar-profile-name text-truncate"><?= htmlspecialchars($_SESSION['full_name'] ?? '') ?></p>
                         <span class="badge <?= $role === 'admin' ? 'bg-warning text-dark' : ($role === 'checker' ? 'bg-success' : 'bg-info') ?>">
-                            <?= ucfirst(str_replace('_',' ',$role)) ?>
+                            <?= ucfirst(str_replace(['talisay_checker','checker'], ['ITC Evaluator','Evaluator'], $role)) ?>
                         </span>
                     </div>
                 </div>
                 <div class="sidebar-divider"></div>
                 <div class="sidebar-nav-scroll">
                 <nav class="nav flex-column">
+                    <?php if (!($role === 'faculty' && $faculty_profile_incomplete)): ?>
                     <a href="?page=dashboard" class="nav-link sidebar-link <?= $page==='dashboard'?'active':'' ?>">
                         <i class="bi bi-speedometer2 me-2"></i>Dashboard
                     </a>
+                    <?php endif; ?>
 
                     <?php if ($role === 'faculty'): ?>
+                    <?php if ($faculty_profile_incomplete): ?>
+                    <div style="padding:0.7rem 0.75rem;margin-bottom:0.55rem;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:rgba(255,255,255,0.78);font-size:0.72rem;line-height:1.45;">
+                        <i class="bi bi-lock-fill me-1"></i>Please complete your profile to continue.
+                    </div>
+                    <a href="?page=profile_entry" class="nav-link sidebar-link <?= $page==='profile_entry'?'active':'' ?>">
+                        <i class="bi bi-person-lines-fill me-2"></i>Profile Entry
+                    </a>
+                    <?php else: ?>
                     <div class="sidebar-section-label">My Application</div>
                     <a href="?page=my_application" class="nav-link sidebar-link <?= $page==='my_application'?'active':'' ?>">
                         <i class="bi bi-file-earmark-person me-2"></i>Application Status
                     </a>
                     <a href="?page=apply" class="nav-link sidebar-link <?= $page==='apply'?'active':'' ?>">
                         <i class="bi bi-ui-checks-grid me-2"></i>Apply / KRA Entry
+                    </a>
+                    <a href="?page=appeals" class="nav-link sidebar-link <?= $page==='appeals'?'active':'' ?>">
+                        <i class="bi bi-chat-square-text me-2"></i>Appeals
                     </a>
                     <div class="sidebar-section-label">Account</div>
                     <a href="?page=my_audit" class="nav-link sidebar-link <?= $page==='my_audit'?'active':'' ?>">
@@ -451,11 +621,15 @@ include 'includes/header.php';
                     <a href="?page=profile" class="nav-link sidebar-link <?= $page==='profile'?'active':'' ?>">
                         <i class="bi bi-person me-2"></i>Profile
                     </a>
+                    <?php endif; ?>
 
                     <?php elseif ($role === 'checker'): ?>
                     <div class="sidebar-section-label">Review</div>
                     <a href="?page=review_queue" class="nav-link sidebar-link <?= $page==='review_queue'?'active':'' ?>">
                         <i class="bi bi-inbox me-2"></i>Review Queue
+                    </a>
+                    <a href="?page=appeals" class="nav-link sidebar-link <?= $page==='appeals'?'active':'' ?>">
+                        <i class="bi bi-chat-square-text me-2"></i>Appeals
                     </a>
                     <div class="sidebar-section-label">Account</div>
                     <a href="?page=checker_audit" class="nav-link sidebar-link <?= $page==='checker_audit'?'active':'' ?>">
@@ -466,7 +640,7 @@ include 'includes/header.php';
                     </a>
 
                     <?php elseif ($role === 'talisay_checker'): ?>
-                    <div class="sidebar-section-label">Talisay Review</div>
+                    <div class="sidebar-section-label">ITC Review</div>
                     <a href="?page=review_queue" class="nav-link sidebar-link <?= $page==='review_queue'?'active':'' ?>">
                         <i class="bi bi-inbox-fill me-2"></i>Review Queue
                     </a>
@@ -482,6 +656,9 @@ include 'includes/header.php';
                     <div class="sidebar-section-label">Applications</div>
                     <a href="?page=all_applications" class="nav-link sidebar-link <?= $page==='all_applications'?'active':'' ?>">
                         <i class="bi bi-ui-checks-grid me-2"></i>All Applications
+                    </a>
+                    <a href="?page=appeals" class="nav-link sidebar-link <?= $page==='appeals'?'active':'' ?>">
+                        <i class="bi bi-chat-square-text me-2"></i>Appeals
                     </a>
                     <div class="sidebar-section-label">Administration</div>
                     <a href="?page=analytics" class="nav-link sidebar-link <?= $page==='analytics'?'active':'' ?>">
@@ -504,9 +681,6 @@ include 'includes/header.php';
                             </a>
                             <a href="?page=manage_users" class="nav-link sidebar-link sidebar-sublink <?= $page==='manage_users'?'active':'' ?>">
                                 <i class="bi bi-people-fill me-2"></i>Manage Users
-                                <?php if ($pending_count > 0): ?>
-                                <span class="badge rounded-pill ms-auto" style="background:#334155;font-size:0.65rem;padding:0.25em 0.5em;"><?= $pending_count ?></span>
-                                <?php endif; ?>
                             </a>
                             <a href="?page=manage_campuses" class="nav-link sidebar-link sidebar-sublink <?= $page==='manage_campuses'?'active':'' ?>">
                                 <i class="bi bi-geo-alt me-2"></i>Manage Campuses
@@ -563,7 +737,7 @@ include 'includes/header.php';
             </div>
         </div>
 
-        <!-- ── Main Content ── -->
+        <!-- -- Main Content -- -->
         <div class="col-12 min-w-0">
             <?php showFlash(); ?>
             <?php switch ($page) {
@@ -589,6 +763,9 @@ include 'includes/header.php';
                     break;
                 case 'review_application':
                     include 'includes/checker/review_application.php';
+                    break;
+                case 'appeals':
+                    include 'includes/appeals.php';
                     break;
                 case 'all_applications':
                     include 'admin/all_applications.php';
@@ -621,6 +798,9 @@ include 'includes/header.php';
                     break;
                 case 'profile':
                     include 'includes/profile.php';
+                    break;
+                case 'profile_entry':
+                    include 'includes/faculty/profile_entry.php';
                     break;
                 case 'help':
                     include 'includes/help.php';

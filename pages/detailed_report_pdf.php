@@ -1,6 +1,6 @@
 <?php
 /**
- * Detailed Report PDF &mdash; Per-faculty KRA breakdown for all faculty in a cycle
+ * Detailed Report PDF - Per-faculty KRA breakdown for all faculty in a cycle
  * Plain, professional formatting (no color fills, no colored text)
  */
 ob_start();
@@ -15,7 +15,7 @@ $cycle_id  = intval($_GET['cycle_id']  ?? 0);
 $campus_id = intval($_GET['campus_id'] ?? 0);
 $status    = trim($_GET['status']      ?? '');
 
-// â”€â”€ Load cycles / campuses â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Load cycles / campuses -------------------------------------
 $all_cycles = $pdo->query("SELECT cycle_id, cycle_name, status FROM cycles ORDER BY created_at DESC")->fetchAll();
 if (!$cycle_id) {
     foreach ($all_cycles as $cy) {
@@ -27,7 +27,7 @@ foreach ($all_cycles as $cy) {
     if ($cy['cycle_id'] === $cycle_id) { $selected_cycle = $cy; break; }
 }
 
-// â”€â”€ Load applications â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Load applications ------------------------------------------
 $where  = "WHERE u.role = 'faculty' AND a.cycle_id=?";
 $params = [$cycle_id];
 if ($campus_id) { $where .= ' AND u.campus_id=?'; $params[] = $campus_id; }
@@ -59,7 +59,7 @@ if (empty($applications)) {
     exit;
 }
 
-// â”€â”€ Load all KRA submissions in one query â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Load all KRA submissions in one query ----------------------
 $app_ids      = array_column($applications, 'application_id');
 $placeholders = implode(',', array_fill(0, count($app_ids), '?'));
 $ks = $pdo->prepare("SELECT * FROM kra_submissions WHERE application_id IN ($placeholders) ORDER BY application_id, kra_category, submitted_at ASC");
@@ -79,13 +79,13 @@ $kra_info = [
 $printed_at = date('M d, Y h:i A');
 $admin_name = $_SESSION['full_name'] ?? 'Administrator';
 
-// â”€â”€ Helper: strip HTML for PDF â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Helper: strip HTML for PDF ---------------------------------
 function pdfClean2(string $html): string {
     $t = html_entity_decode(strip_tags($html), ENT_QUOTES, 'UTF-8');
     return preg_replace('/\s+/', ' ', trim($t));
 }
 
-// â”€â”€ FPDF class â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- FPDF class -------------------------------------------------
 class DetailedPDF extends FPDF {
     public $cyc_name   = '';
     public $printed_at = '';
@@ -95,21 +95,7 @@ class DetailedPDF extends FPDF {
     function Header() {
         $this->SetFont('Times','B',12);
         $this->SetTextColor(0,0,0);
-        $this->SetXY(12, 6);
-        $this->Cell(0, 6, 'State Universities and Colleges', 0, 1, 'C');
-
-        $this->SetFont('Times','',8.5);
-        $this->SetTextColor(60,60,60);
-        $this->SetX(12);
-        $this->Cell(0, 4.5, 'SUC Faculty Reclassification Management System', 0, 1, 'C');
-
-        $this->SetDrawColor(0,0,0);
-        $this->SetLineWidth(0.4);
-        $this->Line(12, $this->GetY(), 198, $this->GetY());
-        $this->Ln(1.5);
-
-        $this->SetFont('Times','B',11);
-        $this->SetTextColor(0,0,0);
+        $this->SetXY(12, 8);
         $this->SetX(12);
         $this->Cell(0, 6, 'DETAILED FACULTY RECLASSIFICATION REPORT', 0, 1, 'C');
 
@@ -145,7 +131,7 @@ class DetailedPDF extends FPDF {
         $this->Ln(1.5);
     }
 
-    // KRA category header &mdash; light grey fill
+    // KRA category header - light grey fill
     function KraHeader(string $num, string $label, string $cap): void {
         $this->SetFillColor(220,220,220);
         $this->SetTextColor(0,0,0);
@@ -155,7 +141,7 @@ class DetailedPDF extends FPDF {
         $this->Cell(0, 6, $cap, 1, 1, 'R', true);
     }
 
-    // Table column header &mdash; light grey
+    // Table column header - light grey
     function ColHead(array $cols): void {
         $this->SetFillColor(210,210,210);
         $this->SetTextColor(0,0,0);
@@ -183,7 +169,7 @@ class DetailedPDF extends FPDF {
     }
 }
 
-// â”€â”€ Build PDF â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- Build PDF --------------------------------------------------
 $pdf = new DetailedPDF('P','mm','A4');
 $pdf->AliasNbPages();
 $pdf->cyc_name   = $selected_cycle['cycle_name'] ?? 'N/A';
@@ -197,7 +183,7 @@ $pdf->SetLineWidth(0.2);
 // Page width = 210 - 12 - 12 = 186mm
 $pw = 186;
 
-// â”€â”€ One section per faculty â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- One section per faculty ------------------------------------
 foreach ($applications as $idx => $a) {
     $pdf->fac_name = $a['full_name'];
     $pdf->AddPage();
@@ -215,7 +201,7 @@ foreach ($applications as $idx => $a) {
     $grand_total = $result['grand_total'];
     $weights     = $result['weights'];
 
-    // â”€â”€ Faculty info â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // -- Faculty info -------------------------------------------
     $pdf->SectionLabel('Faculty Information');
     $pdf->InfoRow('Full Name',    $a['full_name'],
                   'Employee ID',  $a['employee_id'] ?? 'N/A');
@@ -229,7 +215,7 @@ foreach ($applications as $idx => $a) {
     }
     $pdf->Ln(3);
 
-    // â”€â”€ KRA sections â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // -- KRA sections -------------------------------------------
     foreach ($kra_info as $cat => $info) {
         $entries   = $subs_by_cat[$cat] ?? [];
         $cat_total = $kra_totals[$cat];
@@ -242,7 +228,7 @@ foreach ($applications as $idx => $a) {
                 [7,   '#',           'C'],
                 [117, 'Description', 'L'],
                 [22,  'Points',      'C'],
-                [40,  'Verified',    'C'],
+                [40,  'Acceptable',  'C'],
             ]);
 
             foreach ($entries as $i => $s) {
@@ -264,7 +250,7 @@ foreach ($applications as $idx => $a) {
                 $pdf->SetTextColor(0,0,0);
                 $pdf->Cell(7, $cell_h, $i + 1, 1, 0, 'C');
 
-                // Description &mdash; MultiCell, then reposition
+                // Description - MultiCell, then reposition
                 $pdf->SetFont('Times','',7.5);
                 $pdf->MultiCell(117, $line_h, $desc, 1, 'L');
 
@@ -273,8 +259,8 @@ foreach ($applications as $idx => $a) {
                 $pdf->SetFont('Times','B',8.5);
                 $pdf->Cell(22, $cell_h, number_format((float)$s['computed_points'], 2), 1, 0, 'C');
 
-                // Verified
-                $verified_label = $s['verified'] ? 'Verified' : 'Pending';
+                // Acceptable
+                $verified_label = $s['verified'] ? 'Acceptable' : 'Pending Review';
                 $pdf->SetFont('Times','', 7.5);
                 $pdf->SetTextColor(0,0,0);
                 $pdf->Cell(40, $cell_h, $verified_label, 1, 1, 'C');
@@ -295,7 +281,7 @@ foreach ($applications as $idx => $a) {
         $pdf->Ln(2);
     }
 
-    // â”€â”€ Grand total â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // -- Grand total --------------------------------------------
     $pdf->SetFillColor(220,220,220);
     $pdf->SetFont('Times','B',10);
     $pdf->SetTextColor(0,0,0);
@@ -303,7 +289,7 @@ foreach ($applications as $idx => $a) {
     $pdf->Cell(40,  7, number_format($grand_total, 2),        1, 1, 'C', true);
     $pdf->Ln(3);
 
-    // â”€â”€ Weighted score computation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // -- Weighted score computation -----------------------------
     $pdf->SectionLabel('Weighted Score Computation');
     $pdf->ColHead([
         [70, 'KRA',        'L'],
@@ -348,10 +334,10 @@ foreach ($applications as $idx => $a) {
     $pdf->Cell(44,  7, number_format($result['weighted_score'], 2), 1, 1, 'C', true);
     $pdf->Ln(3);
 
-    // â”€â”€ Result summary â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // -- Result summary -----------------------------------------
     $pdf->SectionLabel('Result Summary');
     $inc      = $result['sub_rank_increment'];
-    $inc_text = $inc > 0 ? '+' . $inc . ' sub-rank' . ($inc > 1 ? 's' : '') : 'No reclassification (score below 41)';
+    $inc_text = $inc > 0 ? '+' . $inc . ' sub-rank' . ($inc > 1 ? 's' : '') : 'No sub-rank increment (score below 41)';
 
     $pdf->SetFillColor(235,235,235);
     $pdf->SetFont('Times','B',8);
@@ -365,14 +351,18 @@ foreach ($applications as $idx => $a) {
     $pdf->Cell(62, 8, $inc_text,                                   1, 0, 'C');
     $pdf->SetFont('Times','',9);
     $pdf->Cell(62, 8, $rank ?: 'N/A',                              1, 1, 'C');
+    $pdf->SetFont('Times','I',7.5);
+    $pdf->SetTextColor(80,80,80);
+    $pdf->MultiCell(186, 5, 'This result is for further committee review and is not a final decision.', 1, 'C');
+    $pdf->SetTextColor(0,0,0);
     $pdf->Ln(4);
 
-    // â”€â”€ Signatures â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // -- Signatures ---------------------------------------------
     $pdf->SectionLabel('Certification & Signatures');
     $pdf->Ln(12);
 
     $sig_names = [$a['full_name'], (!empty($a['checker_uid']) ? checkerDisplayLabel(['checker_label'=>$a['checker_name'],'user_id'=>$a['checker_uid']]) : 'N/A'), 'Campus Director / Dean', 'University President'];
-    $sig_roles = ['Faculty - Applicant', 'Checker / Evaluator', 'Campus Director / Dean', 'University President'];
+    $sig_roles = ['Faculty - Applicant', 'Evaluator', 'Campus Director / Dean', 'University President'];
     $sw = 80;
 
     // Row 1: Faculty + Checker

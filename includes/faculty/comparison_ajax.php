@@ -4,13 +4,13 @@
  * Returns live comparison data for the score comparison table.
  * Called by faculty's my_application page via polling.
  *
- * GET  ?app_id=N   → JSON comparison payload
+ * GET  ?app_id=N   -> JSON comparison payload
  */
 if (session_status() === PHP_SESSION_NONE) session_start();
 require_once __DIR__ . '/../../config/db.php';
 require_once __DIR__ . '/../../includes/functions.php';
 
-// Send JSON content type immediately — any error below will still be caught
+// Send JSON content type immediately  -  any error below will still be caught
 header('Content-Type: application/json');
 
 // Catch all errors and return JSON so the poller doesn't hang
@@ -61,7 +61,7 @@ if (!$app_id) {
 
 $uid = $_SESSION['user_id'];
 
-// Load application — faculty can only see their own; admin can see any
+// Load application  -  faculty can only see their own; admin can see any
 $app_stmt = $pdo->prepare("
     SELECT a.application_id, a.status, a.weighted_score, a.total_score,
            a.sub_rank_increment, a.potential_rank, u.rank AS faculty_rank,
@@ -118,8 +118,8 @@ try {
     }
 }
 
-// Build per-submission checker info — who verified and what the adjusted value is
-// verified_by → anonymous checker label
+// Build per-submission checker info  -  who verified and what the adjusted value is
+// verified_by -> anonymous checker label
 $checker_names = [];
 $vby_ids = array_filter(array_unique(array_column($subs, 'verified_by')));
 if (!empty($vby_ids)) {
@@ -144,14 +144,14 @@ try {
     $reviews_stmt->execute([$app_id]);
     $reviews = $reviews_stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (\Exception $e) {
-    // application_checker_reviews table may not exist yet — no reviews yet
+    // application_checker_reviews table may not exist yet  -  no reviews yet
     $reviews = [];
 }
 
 $stage1_reviews = array_values(array_filter($reviews, fn($r) => $r['role'] === 'checker'));
 $stage2_reviews = array_values(array_filter($reviews, fn($r) => $r['role'] === 'talisay_checker'));
 
-// For each submission, determine stage (stage1 = campus checker, stage2 = talisay)
+// For each submission, determine stage (stage1 = Subcommittee, stage2 = ITC)
 // Use verified_by role to classify the adjustment stage
 $submissions = [];
 foreach ($subs as $s) {

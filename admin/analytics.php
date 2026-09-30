@@ -59,7 +59,7 @@ $kra_avg_data   = array_map(fn($k) => round($k['avg_pts'], 2), $kra_avgs);
 $campus_names   = array_column($dept_stats, 'campus_name');
 $campus_scores  = array_map(fn($d) => round($d['avg_score'] ?? 0, 2), $dept_stats);
 
-/* ── Muted, professional palette ──────────────────────────────
+/* -- Muted, professional palette ------------------------------
    Built on the existing navy/gold design tokens instead of a wide
    rainbow of unrelated hues. Semantic colors (success/warning/danger)
    are reserved for status meaning only. */
@@ -101,8 +101,8 @@ $worst_campus= count($dept_stats) > 1 ? end($dept_stats) : null;
 if ($total_applied === 0) {
     $summary = 'No applications have been submitted yet. Analytics will populate once faculty begin applying.';
 } else {
-    $summary  = "A total of <strong>{$total_applied}</strong> application(s) submitted across all cycles — ";
-    $summary .= "<strong>{$total_qualified}</strong> qualified/approved (<strong>{$overall_rate}%</strong> rate). ";
+    $summary  = "A total of <strong>{$total_applied}</strong> application(s) submitted across all cycles  -  ";
+    $summary .= "<strong>{$total_qualified}</strong> evaluation complete (<strong>{$overall_rate}%</strong> rate). ";
     if ($lowest_kra && $highest_kra && $lowest_kra['kra_category'] !== $highest_kra['kra_category']) {
         $summary .= "<strong>{$lowest_kra['kra_category']}</strong> is the weakest KRA area (avg <strong>".round($lowest_kra['avg_pts'],2)."</strong> pts); ";
         $summary .= "<strong>{$highest_kra['kra_category']}</strong> performs best (avg <strong>".round($highest_kra['avg_pts'],2)."</strong> pts). ";
@@ -113,7 +113,7 @@ if ($total_applied === 0) {
     $summary .= $overall_rate >= 75
         ? "Overall performance is <strong style='color:{$success};'>strong</strong>."
         : ($overall_rate > 0 && $overall_rate < 40
-            ? "Reclassification rate is <strong style='color:{$danger};'>below 40%</strong> — further faculty support may help."
+            ? "Reclassification rate is <strong style='color:{$danger};'>below 40%</strong>  -  further faculty support may help."
             : "These figures provide a baseline for monitoring reclassification progress.");
 }
 
@@ -124,11 +124,11 @@ $kra_short = [
     'Extension'                => 'KRA III',
     'Professional Development' => 'KRA IV',
 ];
-// Single-hue graduated scale (navy → gold) instead of a red/amber/blue/green mix
+// Single-hue graduated scale (navy -> gold) instead of a red/amber/blue/green mix
 $kra_colors_chart = [$navy_800, $navy_600, $navy_300, $gold_700];
 ?>
 
-<!-- ── Page header ── -->
+<!-- -- Page header -- -->
 <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;margin-bottom:1.5rem;">
     <div style="display:flex;align-items:center;gap:0.75rem;">
         <div style="width:40px;height:40px;border-radius:10px;background:<?= $navy_800 ?>;
@@ -145,14 +145,14 @@ $kra_colors_chart = [$navy_800, $navy_600, $navy_300, $gold_700];
 
 </div>
 
-<!-- ── KPI stat cards ── -->
+<!-- -- KPI stat cards -- -->
 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1rem;margin-bottom:1.5rem;">
 
     <?php
     $stats_cards = [
         ['Applied',       $total_applied,    'bi-send-fill'],
-        ['Qualified',     $total_qualified,  'bi-check-circle-fill'],
-        ['Reclassified',  $total_reclass,    'bi-patch-check-fill'],
+        ['Evaluation Complete', $total_qualified,  'bi-check-circle-fill'],
+        ['Recommended Rank',    $total_reclass,    'bi-patch-check-fill'],
     ];
     foreach ($stats_cards as [$label,$val,$icon]):
     ?>
@@ -172,7 +172,7 @@ $kra_colors_chart = [$navy_800, $navy_600, $navy_300, $gold_700];
     </div>
     <?php endforeach; ?>
 
-    <!-- Success rate — the single highlighted metric, gold accent -->
+    <!-- Success rate  -  the single highlighted metric, gold accent -->
     <div style="background:linear-gradient(135deg,<?= $navy_800 ?>,<?= $navy_700 ?>);border-radius:12px;
                 padding:1.1rem 1.25rem;position:relative;overflow:hidden;">
         <div style="position:absolute;top:-16px;right:-16px;width:80px;height:80px;border-radius:50%;
@@ -183,7 +183,7 @@ $kra_colors_chart = [$navy_800, $navy_600, $navy_300, $gold_700];
                 <i class="bi bi-percent" style="color:<?= $gold_500 ?>;font-size:0.9rem;"></i>
             </div>
             <span style="font-size:0.72rem;font-weight:600;color:#cbd8ec;text-transform:uppercase;
-                         letter-spacing:0.05em;">Success Rate</span>
+                         letter-spacing:0.05em;">Completion Rate</span>
         </div>
         <div style="font-size:1.85rem;font-weight:800;color:#fff;line-height:1;letter-spacing:-1px;">
             <?= $overall_rate ?>%
@@ -191,7 +191,7 @@ $kra_colors_chart = [$navy_800, $navy_600, $navy_300, $gold_700];
     </div>
 </div>
 
-<!-- ── Charts row 1: Cycle bar + Status donut ── -->
+<!-- -- Charts row 1: Cycle bar + Status donut -- -->
 <div style="display:grid;grid-template-columns:1fr 380px;gap:1rem;margin-bottom:1rem;">
 
     <!-- Cycle grouped bar -->
@@ -201,10 +201,10 @@ $kra_colors_chart = [$navy_800, $navy_600, $navy_300, $gold_700];
                 <div style="font-weight:700;color:<?= $navy_800 ?>;font-size:0.88rem;">
                     Applications per Cycle
                 </div>
-                <div style="font-size:0.72rem;color:#94a3b8;margin-top:1px;">Applied vs Qualified vs Reclassified</div>
+                <div style="font-size:0.72rem;color:#94a3b8;margin-top:1px;">Applied vs Evaluation Complete vs Recommended Rank</div>
             </div>
             <div style="display:flex;gap:0.75rem;flex-wrap:wrap;">
-                <?php foreach ([[$navy_800,'Applied'],[$navy_600,'Qualified'],[$gold_700,'Reclassified']] as [$c,$l]): ?>
+                <?php foreach ([[$navy_800,'Applied'],[$navy_600,'Evaluation Complete'],[$gold_700,'Recommended Rank']] as [$c,$l]): ?>
                 <span style="display:flex;align-items:center;gap:4px;font-size:0.7rem;color:#64748b;">
                     <span style="width:10px;height:10px;border-radius:3px;background:<?= $c ?>;flex-shrink:0;"></span><?= $l ?>
                 </span>
@@ -241,7 +241,7 @@ $kra_colors_chart = [$navy_800, $navy_600, $navy_300, $gold_700];
     </div>
 </div>
 
-<!-- ── Charts row 2: KRA bars + Campus avg ── -->
+<!-- -- Charts row 2: KRA bars + Campus avg -- -->
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem;">
 
     <!-- KRA avg horizontal bars -->
@@ -296,7 +296,7 @@ $kra_colors_chart = [$navy_800, $navy_600, $navy_300, $gold_700];
     </div>
 </div>
 
-<!-- ── Per-Cycle summary table ── -->
+<!-- -- Per-Cycle summary table -- -->
 <div class="neon-card mb-3" style="padding:0;overflow:hidden;">
     <div style="padding:1rem 1.25rem;border-bottom:1px solid #f1f5f9;">
         <div style="font-weight:700;color:<?= $navy_800 ?>;font-size:0.88rem;">Per-Cycle Summary</div>
@@ -311,9 +311,9 @@ $kra_colors_chart = [$navy_800, $navy_600, $navy_300, $gold_700];
                     <th style="padding:0.7rem 0.75rem;text-align:center;font-size:0.7rem;font-weight:700;
                                text-transform:uppercase;letter-spacing:0.05em;color:#64748b;">Applied</th>
                     <th style="padding:0.7rem 0.75rem;text-align:center;font-size:0.7rem;font-weight:700;
-                               text-transform:uppercase;letter-spacing:0.05em;color:#64748b;">Qualified / Approved</th>
+                               text-transform:uppercase;letter-spacing:0.05em;color:#64748b;">Evaluation Complete</th>
                     <th style="padding:0.7rem 0.75rem;text-align:center;font-size:0.7rem;font-weight:700;
-                               text-transform:uppercase;letter-spacing:0.05em;color:#64748b;">Reclassified</th>
+                               text-transform:uppercase;letter-spacing:0.05em;color:#64748b;">Recommended Rank</th>
                     <th style="padding:0.7rem 0.75rem;text-align:left;font-size:0.7rem;font-weight:700;
                                text-transform:uppercase;letter-spacing:0.05em;color:#64748b;min-width:180px;">Rate</th>
                 </tr>
@@ -365,7 +365,7 @@ $kra_colors_chart = [$navy_800, $navy_600, $navy_300, $gold_700];
     </div>
 </div>
 
-<!-- ── Campus breakdown table ── -->
+<!-- -- Campus breakdown table -- -->
 <?php if ($dept_stats): ?>
 <div class="neon-card mb-3" style="padding:0;overflow:hidden;">
     <div style="padding:1rem 1.25rem;border-bottom:1px solid #f1f5f9;">
@@ -378,8 +378,8 @@ $kra_colors_chart = [$navy_800, $navy_600, $navy_300, $gold_700];
                 <tr style="background:#f8fafc;border-bottom:2px solid #e2e8f0;">
                     <th style="padding:0.7rem 1rem;text-align:left;font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;">Campus</th>
                     <th style="padding:0.7rem 0.75rem;text-align:center;font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;">Applied</th>
-                    <th style="padding:0.7rem 0.75rem;text-align:center;font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;">Approved</th>
-                    <th style="padding:0.7rem 0.75rem;text-align:center;font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;">Reclassified</th>
+                    <th style="padding:0.7rem 0.75rem;text-align:center;font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;">Evaluation Complete</th>
+                    <th style="padding:0.7rem 0.75rem;text-align:center;font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;">Recommended Rank</th>
                     <th style="padding:0.7rem 0.75rem;text-align:left;font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;min-width:180px;">Avg Score</th>
                 </tr>
             </thead>
@@ -429,7 +429,7 @@ $kra_colors_chart = [$navy_800, $navy_600, $navy_300, $gold_700];
 </div>
 <?php endif; ?>
 
-<!-- ── AI Summary insight card ── -->
+<!-- -- AI Summary insight card -- -->
 <div class="neon-card" style="padding:1.1rem 1.25rem;background:#f8fafc;border:1px solid #e2e8f0;">
     <div style="display:flex;align-items:flex-start;gap:0.85rem;">
         <div style="width:36px;height:36px;border-radius:8px;background:<?= $navy_800 ?>;
@@ -464,7 +464,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     };
 
-    // ── Cycle grouped bar ──────────────────────────────────────────
+    // -- Cycle grouped bar ------------------------------------------
     new Chart(document.getElementById('cycleChart'), {
         type: 'bar',
         data: {
@@ -478,14 +478,14 @@ document.addEventListener('DOMContentLoaded', function () {
                     borderSkipped: false
                 },
                 {
-                    label: 'Qualified',
+                    label: 'Evaluation Complete',
                     data: <?= json_encode($qualified_data) ?>,
                     backgroundColor: '<?= $navy_600 ?>',
                     borderRadius: 6,
                     borderSkipped: false
                 },
                 {
-                    label: 'Reclassified',
+                    label: 'Recommended Rank',
                     data: <?= json_encode($reclass_data) ?>,
                     backgroundColor: '<?= $gold_700 ?>',
                     borderRadius: 6,
@@ -513,7 +513,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         maxRotation: 30,
                         callback: function(val, idx) {
                             const lbl = this.getLabelForValue(val);
-                            return lbl.length > 22 ? lbl.substring(0,22)+'…' : lbl;
+                            return lbl.length > 22 ? lbl.substring(0,22)+'...' : lbl;
                         }
                     }
                 }
@@ -521,7 +521,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     });
 
-    // ── Status donut ───────────────────────────────────────────────
+    // -- Status donut -----------------------------------------------
     <?php if (array_sum($pie_data) > 0): ?>
     new Chart(document.getElementById('statusDonut'), {
         type: 'doughnut',
@@ -551,7 +551,7 @@ document.addEventListener('DOMContentLoaded', function () {
     });
     <?php endif; ?>
 
-    // ── Campus avg bar ────────────────────────────────────────────
+    // -- Campus avg bar --------------------------------------------
     <?php if (!empty($dept_stats)): ?>
     new Chart(document.getElementById('campusChart'), {
         type: 'bar',
@@ -580,7 +580,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         font: { size: 11, weight: '600' },
                         callback: function(val) {
                             const lbl = this.getLabelForValue(val);
-                            return lbl.length > 18 ? lbl.substring(0,18)+'…' : lbl;
+                            return lbl.length > 18 ? lbl.substring(0,18)+'...' : lbl;
                         }
                     }
                 }

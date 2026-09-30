@@ -109,7 +109,7 @@ $star_colors = ['','#1e293b','#475569','#475569','#3b82f6','#1e4d8c'];
                 </div>
                 <div>
                     <div style="font-weight:700;color:#1e293b;font-size:0.85rem;"><?= sanitize($fb['full_name'] ?? 'Anonymous') ?></div>
-                    <div style="font-size:0.7rem;color:#64748b;"><?= sanitize($fb['email'] ?? '') ?><?= $fb['role'] ? ' &nbsp;·&nbsp; <span style="text-transform:capitalize;">'.str_replace('_',' ',$fb['role']).'</span>' : '' ?></div>
+                    <div style="font-size:0.7rem;color:#64748b;"><?= sanitize($fb['email'] ?? '') ?><?= $fb['role'] ? ' &nbsp;|&nbsp; <span style="text-transform:capitalize;">'.str_replace('_',' ',$fb['role']).'</span>' : '' ?></div>
                 </div>
             </div>
             <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;">
@@ -126,7 +126,7 @@ $star_colors = ['','#1e293b','#475569','#475569','#3b82f6','#1e4d8c'];
                     <i class="bi <?= $ss['icon'] ?> me-1"></i><?= $ss['label'] ?>
                 </span>
                 <!-- Date -->
-                <span style="font-size:0.7rem;color:#94a3b8;"><?= date('M d, Y · H:i', strtotime($fb['submitted_at'])) ?></span>
+                <span style="font-size:0.7rem;color:#94a3b8;"><?= date('M d, Y | H:i', strtotime($fb['submitted_at'])) ?></span>
             </div>
         </div>
 

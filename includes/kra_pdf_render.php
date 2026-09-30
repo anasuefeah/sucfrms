@@ -1,6 +1,6 @@
 <?php
 /**
- * CHED KRA PDF Renderer — Official "Faculty Summary of Scores" template
+ * CHED KRA PDF Renderer  -  Official "Faculty Summary of Scores" template
  * Reusable render engine, decoupled from DB access so it can be required
  * by pages/kra_pdf.php (live data) or a test harness (mock data).
  */
@@ -8,7 +8,7 @@
 require_once __DIR__ . '/../fpdf/fpdf.php';
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// KRA DEFINITIONS — one row per official indicator (fixed-form summary, not a
+// KRA DEFINITIONS  -  one row per official indicator (fixed-form summary, not a
 // per-submission ledger). Each item's "Points" value is the SUM of computed_points
 // from matching kra_submissions entries, capped where the official form caps it.
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -23,7 +23,7 @@ function kraDefinitions(): array {
                     'title' => 'CRITERION A - TEACHING EFFECTIVENESS (SET + SEF) (MAX = 60 POINTS)',
                     'max' => 60,
                     'items' => [
-                        ['label' => '1. STUDENT EVALUATION OF TEACHING (SET) AND SELF-EVALUATION FORM (SEF) RATING', 'types' => ['A-set-sef']],
+                        ['label' => '1. STUDENT EVALUATION OF TEACHING (SET) AND SUPERVISOR EVALUATION FORM (SEF) RATING', 'types' => ['A-set-sef', 'A-set-sef-sem', 'A-set-sem', 'A-sef-sem']],
                     ],
                 ],
                 'B' => [
@@ -171,7 +171,7 @@ function kraBucketEntries(array $def, array $entries): array {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// PDF CLASS — plain black/white/gray, Times font, matches the CHED printed form
+// PDF CLASS  -  plain black/white/gray, Times font, matches the CHED printed form
 // ═══════════════════════════════════════════════════════════════════════════════
 
 class KRA_PDF extends FPDF {
@@ -198,25 +198,8 @@ class KRA_PDF extends FPDF {
     const GRAY_LABELCOL   = [240, 240, 240]; // faculty info label column
 
     function Header() {
-        $logo_path = __DIR__ . '/../assets/images/ched_logo.png';
-        if (!file_exists($logo_path)) $logo_path = __DIR__ . '/../assets/images/logo.jpg';
-        if (file_exists($logo_path)) {
-            $this->Image($logo_path, 14, 8, 18, 18);
-        }
-
         $this->SetTextColor(0, 0, 0);
-        $this->SetXY(34, 9);
-        $this->SetFont('Times', 'B', 14);
-        $this->Cell(156, 6, 'COMMISSION ON HIGHER EDUCATION', 0, 1, 'C');
-        $this->SetX(34);
-        $this->SetFont('Times', 'B', 10);
-        $this->Cell(156, 5, 'FACULTY POSITION RECLASSIFICATION FOR SUCs', 0, 1, 'C');
-
-        $this->SetLineWidth(0.5);
-        $this->Line(10, 29, 200, 29);
-        $this->SetLineWidth(0.2);
-
-        $this->SetY(33);
+        $this->SetY(10);
         $this->SetFont('Times', 'B', 12);
         if ($this->is_iss_page) {
             $this->Cell(0, 6, 'INDIVIDUAL SUMMARY SHEET', 0, 1, 'C');
@@ -262,7 +245,7 @@ class KRA_PDF extends FPDF {
         $this->SetTextColor(0, 0, 0);
     }
 
-    // ── Criterion band (full-width, gray) ──────────────────────────────
+    // -- Criterion band (full-width, gray) ------------------------------
     function CriterionBand($text) {
         $this->CheckPageBreak(self::ROW_H);
         $this->SetFillColor(...self::GRAY_BAND);
@@ -274,23 +257,23 @@ class KRA_PDF extends FPDF {
         $this->Cell($total_w, self::ROW_H, '  ' . $text, 1, 1, 'L', true);
     }
 
-    // ── Item header row: item label | "Points" | "Allowable Points" ────
+    // -- Item header row: item label | "Points" | "Allowable Points" ----
     function ItemHeaderRow($label) {
         $this->WrappedRow($label, 'Points', 'Allowable Points', self::GRAY_ITEM, true, true, 'L', 'C');
     }
 
-    // ── A plain indicator/data row ──────────────────────────────────────
+    // -- A plain indicator/data row --------------------------------------
     function DataRow($label, $points, $allowable = '') {
         $pts_txt = ($points === '' || $points === null) ? '' : number_format((float)$points, 2);
         $this->WrappedRow($label, $pts_txt, $allowable, [255, 255, 255], false, false, 'L', 'R');
     }
 
-    // ── Item subtotal row: "TOTAL POINTS" ───────────────────────────────
+    // -- Item subtotal row: "TOTAL POINTS" -------------------------------
     function ItemTotalRow($points) {
         $this->WrappedRow('TOTAL POINTS', number_format((float)$points, 2), '', self::GRAY_SUBTOTAL, true, true, 'L', 'R');
     }
 
-    // ── Criterion subtotal row ──────────────────────────────────────────
+    // -- Criterion subtotal row ------------------------------------------
     function CriterionTotalRow($letter, $points, $allowable) {
         $this->WrappedRow(
             'TOTAL POINTS FOR CRITERION ' . $letter,
@@ -300,7 +283,7 @@ class KRA_PDF extends FPDF {
         );
     }
 
-    // ── Grand total row ──────────────────────────────────────────────────
+    // -- Grand total row --------------------------------------------------
     function GrandTotalRow($kra_number, $grand_total, $max_points) {
         $this->WrappedRow(
             'GRAND TOTAL POINTS FOR KRA ' . $kra_number . ' (MAX - ' . $max_points . ' points)',
@@ -382,7 +365,7 @@ class KRA_PDF extends FPDF {
         }
     }
 
-    // ── EVALUATED BY / Conforme / Acknowledgement footer block ─────────
+    // -- EVALUATED BY / Conforme / Acknowledgement footer block ---------
     function SignatureBlock($faculty_name) {
         $this->Ln(4);
         $this->CheckPageBreak(60);
@@ -463,15 +446,14 @@ class KRA_PDF extends FPDF {
         $this->Ln(2);
         $this->SetFont('Times', 'I', 7.5);
         $this->SetTextColor(90, 90, 90);
-        $this->Cell(0, 4, 'CHED FACULTY POSITION RECLASSIFICATION FOR SUCs', 0, 1, 'C');
         $this->SetTextColor(0, 0, 0);
     }
 
-    // ── Individual Summary Sheet: rank-weighted scoring & reclassification ──
+    // -- Individual Summary Sheet: rank-weighted scoring & reclassification --
     // Renders as a final, standalone page: Table 1 (weight table with the
     // applicant's current-rank tier highlighted), Table 2 (the static
     // sub-rank bracket reference table), and the nine-line breakdown block.
-    // $iss is the array returned by Scoring\Orchestrator::run()['iss'] —
+    // $iss is the array returned by Scoring\Orchestrator::run()['iss']  - 
     // this method draws only from that array and never recomputes anything.
     function IssSummaryPage(array $iss) {
         $this->is_iss_page = true;
@@ -480,7 +462,7 @@ class KRA_PDF extends FPDF {
         $this->Cell(0, 5, 'Generated for the current cycle - not cached from any prior computation', 0, 1, 'C');
         $this->Ln(3);
 
-        // ── Table 1: Faculty Rank | KRA1 Pts | Weight | ... | Total Points ──
+        // -- Table 1: Faculty Rank | KRA1 Pts | Weight | ... | Total Points --
         $tiers = [
             'Instructor'                  => 'Instructor I',
             'Asst. Professor'              => 'Assistant Professor I',
@@ -537,7 +519,7 @@ class KRA_PDF extends FPDF {
         }
         $this->Ln(6);
 
-        // ── Table 2: static Score Bracket reference table ──────────────────
+        // -- Table 2: static Score Bracket reference table ------------------
         $this->SetFont('Arial', 'B', 8);
         $this->SetFillColor(...self::GRAY_ITEM);
         $this->Cell(60, 7, 'Score Bracket', 1, 0, 'C', true);
@@ -553,15 +535,15 @@ class KRA_PDF extends FPDF {
         }
         $this->Ln(6);
 
-        // ── Breakdown block ──────────────────────────────────────────────
+        // -- Breakdown block ----------------------------------------------
         $rows = [
             ['Current Faculty Rank', $iss['base_rank']],
             ['Qualified for Auto. 1-Sub Rank (for PhD)?', $iss['qualified_auto_subrank_phd'] ? 'YES' : 'NO'],
             ['Base Rank', $iss['base_rank']],
             ['No. of Sub-Rank Increment based on Score', (string)$iss['sub_rank_increment_pass1']],
-            ['Initial Reclassified Rank', $iss['initial_reclassified_rank']],
+            ['Initial Recommended Rank', $iss['initial_reclassified_rank']],
             ['No. of Sub-Rank Increment based on Recomputed Score', (string)$iss['sub_rank_increment_pass2']],
-            ['Reclassified Rank', $iss['reclassified_rank']],
+            ['Recommended Rank', $iss['reclassified_rank']],
             ['Qualified for Auto. 1-Sub Rank (for Awards)?', $iss['qualified_auto_subrank_award'] ? 'YES' : 'NO'],
             ['Final Rank (Score-Based Increment + Auto Sub Rank combined)', $iss['final_rank']],
         ];
@@ -664,7 +646,7 @@ function renderKraPdf(array $faculty, array $subs_by_cat, array $kras_to_print, 
         $pdf->SignatureBlock($pdf->faculty_name);
     }
 
-    // Rank-weighted scoring / reclassification summary — only when the caller
+    // Rank-weighted scoring / reclassification summary  -  only when the caller
     // supplied fresh ISS data (the full multi-KRA report), never for a
     // single-KRA-only print.
     if ($iss !== null) {

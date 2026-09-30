@@ -1,17 +1,18 @@
 <?php
-// Help page — role-based guides
+// Help page  -  role-based guides
 $role = $_SESSION['role'] ?? 'faculty';
 
-// ── Role label for the header ─────────────────────────────────
+// -- Role label for the header ---------------------------------
 $role_labels = [
     'faculty'          => 'Faculty',
-    'checker'          => 'Campus Checker',
-    'talisay_checker'  => 'Talisay Checker',
+    'checker'          => 'Evaluator',
+    // Display name for stored role value 'talisay_checker' is "ITC Evaluator".
+    'talisay_checker'  => 'ITC Evaluator',
     'admin'            => 'Administrator',
 ];
 $role_label = $role_labels[$role] ?? 'User';
 
-// ── DB articles ───────────────────────────────────────────────
+// -- DB articles -----------------------------------------------
 $articles = [];
 try {
     $stmt = $pdo->prepare(
@@ -24,7 +25,7 @@ try {
     $articles = $stmt->fetchAll(PDO::FETCH_ASSOC);
 } catch (\Exception $e) {}
 
-// ── Built-in guides per role ──────────────────────────────────
+// -- Built-in guides per role ----------------------------------
 
 // FACULTY guides
 $faculty_guides = [
@@ -58,9 +59,9 @@ $faculty_guides = [
         'bg'    => '#f0fdf4',
         'title' => 'Reclassification Application',
         'steps' => [
-            ['num'=>'1','title'=>'Application Information','desc'=>'Go to Apply / KRA Entry from the sidebar. Confirm your personal and employment details. Your rank is auto-filled from your account, so verify it is correct.'],
+            ['num'=>'1','title'=>'Application Information','desc'=>'Go to Apply / KRA Entry from the sidebar. Confirm your personal and employment details. Your rank is auto-filled from your account, so review it for accuracy.'],
             ['num'=>'2','title'=>'KRA Entries & Evidence','desc'=>'Click each KRA tab and open the entry table. Add entries, fill in the required fields, and upload evidence files (PDF, JPG, PNG, max 50 MB each). You need at least 41.00 weighted score to submit.'],
-            ['num'=>'3','title'=>'Submit Your Application','desc'=>'When your weighted score meets the minimum and all evidence is uploaded, click "Submit Application" in the header. Your status changes to Submitted and your checker is notified.'],
+            ['num'=>'3','title'=>'Submit Your Application','desc'=>'When your weighted score meets the minimum and all evidence is uploaded, click "Submit Application" in the header. Your status changes to Submitted and your evaluator is notified.'],
         ],
     ],
     [
@@ -69,9 +70,9 @@ $faculty_guides = [
         'bg'    => '#f8fafc',
         'title' => 'Handling Revision Requests',
         'steps' => [
-            ['num'=>'1','title'=>'Check Notifications','desc'=>'If a checker flags an entry for revision, you will receive a notification and an amber banner appears on your Application Status page.'],
-            ['num'=>'2','title'=>'Edit Flagged Entries Only','desc'=>'During revision mode, only the flagged entries can be edited. Non-flagged entries are locked. The checker\'s note appears below each flagged row.'],
-            ['num'=>'3','title'=>'Resubmit','desc'=>'After correcting the flagged entries, click "Submit Revision" on your Dashboard. Your application returns to the checker for re-review.'],
+            ['num'=>'1','title'=>'Check Notifications','desc'=>'If an evaluator flags an entry for revision, you will receive a notification and an amber banner appears on your Application Status page.'],
+            ['num'=>'2','title'=>'Edit Flagged Entries Only','desc'=>'During revision mode, only the flagged entries can be edited. Non-flagged entries are locked. The evaluator\'s note appears below each flagged row.'],
+            ['num'=>'3','title'=>'Resubmit','desc'=>'After correcting the flagged entries, click "Submit Revision" on your Dashboard. Your application returns to the evaluator for re-review.'],
         ],
     ],
     [
@@ -82,21 +83,21 @@ $faculty_guides = [
         'steps' => [
             ['num'=>'1','title'=>'Update Your Profile','desc'=>'Click "Profile" in the sidebar to edit your name, email, and personal information. Keep your profile accurate so your application details are correct.'],
             ['num'=>'2','title'=>'Change Your Password','desc'=>'In Profile, use the Security section to change your password. Always change a temporary password immediately.'],
-            ['num'=>'3','title'=>'View Activity Log','desc'=>'Click "My Activity Log" to see a history of your actions — submissions, edits, file uploads, and login events.'],
+            ['num'=>'3','title'=>'View Activity Log','desc'=>'Click "My Activity Log" to see a history of your actions  -  submissions, edits, file uploads, and login events.'],
         ],
     ],
 ];
 
-// CHECKER guides
+// EVALUATOR guides
 $checker_guides = [
     [
         'icon'  => 'bi-house-door',
         'color' => '#1e4d8c',
         'bg'    => '#eff6ff',
-        'title' => 'Getting Started as a Checker',
+        'title' => 'Getting Started as an Evaluator',
         'steps' => [
-            ['num'=>'1','title'=>'Log In','desc'=>'Log in with your checker credentials. If using a temporary password, change it immediately from the Profile page.'],
-            ['num'=>'2','title'=>'Your Dashboard','desc'=>'The Checker Dashboard shows your KPI cards: Awaiting Decision (new submissions), Active Reviews, Needs Revision, and Total Completed. These update every 15 seconds automatically.'],
+            ['num'=>'1','title'=>'Log In','desc'=>'Log in with your evaluator credentials. If using a temporary password, change it immediately from the Profile page.'],
+            ['num'=>'2','title'=>'Your Dashboard','desc'=>'The Evaluator Dashboard shows your KPI cards: Awaiting Decision (new submissions), Active Reviews, Needs Revision, and Total Completed. These update every 15 seconds automatically.'],
             ['num'=>'3','title'=>'Review Queue','desc'=>'The Review Queue lists all applications awaiting your evaluation. Use the filter tabs (Pending, Active, Revisions) to navigate. Click an application to start reviewing.'],
         ],
     ],
@@ -107,8 +108,8 @@ $checker_guides = [
         'title' => 'Starting a Review',
         'steps' => [
             ['num'=>'1','title'=>'Open the Application','desc'=>'Click an application from the Review Queue. The application page shows the faculty\'s KRA submissions, evidence files, and score breakdown.'],
-            ['num'=>'2','title'=>'Click Start Review','desc'=>'Click the "Start Review" button to begin. This moves the application to Under Review status and notifies the faculty. You cannot verify or flag entries until you start the review.'],
-            ['num'=>'3','title'=>'Review Evidence','desc'=>'For each KRA entry, open the evidence files to verify they are valid. Check that the document matches the claimed criterion.'],
+            ['num'=>'2','title'=>'Click Start Review','desc'=>'Click the "Start Review" button to begin. This moves the application to Under Review status and notifies the faculty. You cannot mark entries acceptable or flag entries until you start the review.'],
+            ['num'=>'3','title'=>'Review Evidence','desc'=>'For each KRA entry, open the evidence files to review whether they are valid. Check that the document matches the claimed criterion.'],
         ],
     ],
     [
@@ -118,7 +119,7 @@ $checker_guides = [
         'title' => 'Adjusting Scores & Flagging Entries',
         'steps' => [
             ['num'=>'1','title'=>'Adjust a Score','desc'=>'If an entry\'s score needs correction, click the score cell to edit it. Enter the correct value and optionally add a "Reason for Change" note. The weighted score recalculates automatically.'],
-            ['num'=>'2','title'=>'Verify Evidence','desc'=>'Click the "Verify" button on an entry row to mark it as verified by you. All entries must be verified before you can approve the application.'],
+            ['num'=>'2','title'=>'Mark Evidence Acceptable','desc'=>'Click the "Mark as Acceptable" button on an entry row to mark it acceptable by you. All entries must be acceptable before you can complete the evaluation.'],
             ['num'=>'3','title'=>'Flag for Revision','desc'=>'If an entry needs correction by the faculty, click "Flag" and enter a revision note explaining what to fix. The faculty will receive a notification.'],
             ['num'=>'4','title'=>'Clear a Flag','desc'=>'After the faculty resubmits, you can clear a flag by clicking "Clear Flag" once the application is back under review.'],
         ],
@@ -127,37 +128,37 @@ $checker_guides = [
         'icon'  => 'bi-check-circle',
         'color' => '#16a34a',
         'bg'    => '#f0fdf4',
-        'title' => 'Approving or Rejecting',
+        'title' => 'Completing or Returning',
         'steps' => [
-            ['num'=>'1','title'=>'Approve','desc'=>'Once all evidence is verified and the score is correct, click "Approve" at the bottom of the review page. This records your approval. When all required checkers approve, the application moves to the next stage.'],
-            ['num'=>'2','title'=>'Reject','desc'=>'If the application does not meet requirements, click "Reject" and provide a reason. The faculty is notified and the application is returned for revision or closed.'],
+            ['num'=>'1','title'=>'Complete Evaluation','desc'=>'Once all evidence is acceptable and the score is correct, click "Complete Evaluation" at the bottom of the review page. This records that evaluator work is complete.'],
+            ['num'=>'2','title'=>'Return for Revision','desc'=>'If the submission needs correction, click "Return for Revision" and provide a reason. The faculty is notified and can revise the returned items.'],
             ['num'=>'3','title'=>'Remarks','desc'=>'Any remarks you add appear on the faculty\'s application status page and in the comparison table they can view in real time.'],
         ],
     ],
 ];
 
-// TALISAY CHECKER guides
+// ITC EVALUATOR guides
 $talisay_guides = [
     [
         'icon'  => 'bi-building-up',
         'color' => '#1a3a6b',
         'bg'    => '#f0f4fb',
-        'title' => 'Talisay Checker Role',
+        'title' => 'ITC Evaluator Role',
         'steps' => [
-            ['num'=>'1','title'=>'Your Scope','desc'=>'As a Talisay Checker, you review applications that have already been approved by campus checkers and forwarded for Talisay-level evaluation. You see applications in "Talisay Review" status only.'],
-            ['num'=>'2','title'=>'Dashboard','desc'=>'Your dashboard shows applications awaiting your review, total in Talisay Review, your approvals, and total reviewed. These counts update every 15 seconds.'],
-            ['num'=>'3','title'=>'Review Queue','desc'=>'The Review Queue lists applications forwarded to Talisay. Click an application to open it and begin your review.'],
+            ['num'=>'1','title'=>'Your Scope','desc'=>'As an evaluator, you review applications assigned to you and record evaluation results. Final committee decisions happen outside the system.'],
+            ['num'=>'2','title'=>'Dashboard','desc'=>'Your dashboard shows applications awaiting your review, active evaluations, returned submissions, and total reviewed. These counts update every 15 seconds.'],
+            ['num'=>'3','title'=>'Review Queue','desc'=>'The Review Queue lists applications forwarded to the ITC. Click an application to open it and begin your review.'],
         ],
     ],
     [
         'icon'  => 'bi-check2-circle',
         'color' => '#059669',
         'bg'    => '#f0fdf4',
-        'title' => 'Reviewing at Talisay Level',
+        'title' => 'Reviewing at ITC Level',
         'steps' => [
-            ['num'=>'1','title'=>'Open and Review','desc'=>'Open an application from your queue. You can see all KRA submissions, the campus checker\'s score adjustments, and the current weighted score.'],
-            ['num'=>'2','title'=>'Adjust Scores if Needed','desc'=>'If any score requires adjustment at the Talisay level, you can edit it. Any changes appear in the faculty\'s comparison table labeled "Stage 2."'],
-            ['num'=>'3','title'=>'Approve or Reject','desc'=>'Click "Approve" to finalize your decision or "Reject" to return the application. Once all Talisay checkers approve, the application status moves to Approved.'],
+            ['num'=>'1','title'=>'Open and Review','desc'=>'Open an application from your queue. You can see all KRA submissions, the Subcommittee score adjustments, and the current weighted score.'],
+            ['num'=>'2','title'=>'Adjust Scores if Needed','desc'=>'If any score requires adjustment at the ITC level, you can edit it. Any changes appear in the faculty\'s comparison table labeled "Stage 2."'],
+            ['num'=>'3','title'=>'Complete or Return','desc'=>'Click "Complete Evaluation" when evaluation is done, or "Return for Revision" when the faculty needs to fix the submission.'],
         ],
     ],
     [
@@ -168,7 +169,7 @@ $talisay_guides = [
         'steps' => [
             ['num'=>'1','title'=>'Update Profile','desc'=>'Click "Profile" in the sidebar to update your name, email, and information.'],
             ['num'=>'2','title'=>'Change Password','desc'=>'Use the Security section in Profile to change your password at any time.'],
-            ['num'=>'3','title'=>'Activity Log','desc'=>'Click "My Activity Log" (Checker Audit) to see a history of all review actions you have taken.'],
+            ['num'=>'3','title'=>'Activity Log','desc'=>'Click "My Activity Log" (Evaluator Audit) to see a history of all review actions you have taken.'],
         ],
     ],
 ];
@@ -181,7 +182,7 @@ $admin_guides = [
         'bg'    => '#eff6ff',
         'title' => 'Admin Dashboard',
         'steps' => [
-            ['num'=>'1','title'=>'Dashboard Overview','desc'=>'The Admin Dashboard shows real-time KPI cards: Total Faculty, Submitted, Awaiting Checker, Under Review, Needs Revision, and Approved. These update every 15 seconds without a page refresh.'],
+            ['num'=>'1','title'=>'Dashboard Overview','desc'=>'The Admin Dashboard shows real-time KPI cards: Total Faculty, Submitted, Awaiting Evaluator, Under Evaluation, Returned for Revision, and Evaluation Complete. These update every 15 seconds without a page refresh.'],
             ['num'=>'2','title'=>'Submission Trend','desc'=>'The 7-day trend chart shows daily application activity. Use this to monitor when faculty are most active.'],
             ['num'=>'3','title'=>'Quick Actions','desc'=>'Use the sidebar links to navigate to Manage Users, Cycles, All Applications, Campuses, Configuration, and Reports.'],
         ],
@@ -203,8 +204,8 @@ $admin_guides = [
         'bg'    => '#f0fdf4',
         'title' => 'Managing Users',
         'steps' => [
-            ['num'=>'1','title'=>'Register Users','desc'=>'Go to Manage Users and click "Add User." Fill in the name, email, employee ID, campus, rank, and role. The system sends a temporary password to the user\'s email.'],
-            ['num'=>'2','title'=>'Roles','desc'=>'Roles are: Faculty (apply only — registered by self), Checker (review applications — created by admin), Talisay Checker (Talisay-level review — created by admin), Admin (full access). Assign carefully.'],
+            ['num'=>'1','title'=>'Create Accounts','desc'=>'Go to Manage Users and use Create Account. The Administrator enters the name, email, role, and temporary password. Faculty complete employee, campus, rank, education, and employment details on first login.'],
+            ['num'=>'2','title'=>'Roles','desc'=>'Roles are: Faculty (apply only - accounts are created by the Administrator), Evaluator (Subcommittee review - created by admin), ITC Evaluator (ITC-level review - created by admin), Admin (full access). Assign carefully.'],
             ['num'=>'3','title'=>'Activate / Deactivate','desc'=>'Use the Activate/Deactivate button on a user row to enable or disable access. Deactivated users cannot log in.'],
             ['num'=>'4','title'=>'Reset Password','desc'=>'If a user is locked out, use "Reset Password" on their row. A new temporary password is sent to their email.'],
         ],
@@ -216,7 +217,7 @@ $admin_guides = [
         'title' => 'Reviewing Applications',
         'steps' => [
             ['num'=>'1','title'=>'All Applications','desc'=>'Go to All Applications to see every application in the system. Filter by status, campus, or search by name. Click an application to open the review page.'],
-            ['num'=>'2','title'=>'Admin Actions','desc'=>'As admin you can view scores and evidence for any application. You can also make final approval or rejection decisions after the checker stage.'],
+            ['num'=>'2','title'=>'Admin Actions','desc'=>'As admin you can view scores and evidence for any application. Final committee decisions happen outside the system.'],
             ['num'=>'3','title'=>'Reports','desc'=>'Use the Admin Report and OSS (Overall Score Summary) pages to generate PDF reports of all faculty scores, filterable by cycle, campus, and status.'],
         ],
     ],
@@ -226,14 +227,14 @@ $admin_guides = [
         'bg'    => '#f8fafc',
         'title' => 'Configuration & Audit',
         'steps' => [
-            ['num'=>'1','title'=>'Scoring Configuration','desc'=>'Go to Cycles → Manage → Scoring Criteria to view and edit point values for each KRA criterion. Changes are audit-logged.'],
-            ['num'=>'2','title'=>'Campus Management','desc'=>'Go to Campuses to add, rename, activate, or deactivate campuses. Deactivated campuses cannot receive new registrations.'],
-            ['num'=>'3','title'=>'Audit Log','desc'=>'Go to Audit Log to view a full timestamped history of all user actions across the system — logins, edits, submissions, score changes, and admin actions.'],
+            ['num'=>'1','title'=>'Scoring Configuration','desc'=>'Go to Cycles -> Manage -> Scoring Criteria to view and edit point values for each KRA criterion. Changes are audit-logged.'],
+            ['num'=>'2','title'=>'Campus Management','desc'=>'Go to Campuses to add, rename, activate, or deactivate campuses. Deactivated campuses cannot be selected for new faculty profiles.'],
+            ['num'=>'3','title'=>'Audit Log','desc'=>'Go to Audit Log to view a full timestamped history of all user actions across the system  -  logins, edits, submissions, score changes, and admin actions.'],
         ],
     ],
 ];
 
-// ── Select guides based on role ───────────────────────────────
+// -- Select guides based on role -------------------------------
 if ($role === 'admin') {
     $built_in_guides = $admin_guides;
 } elseif ($role === 'talisay_checker') {
@@ -348,3 +349,4 @@ if ($role === 'admin') {
         </span>
     </div>
 </div>
+

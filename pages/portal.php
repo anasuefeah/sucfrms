@@ -1,6 +1,6 @@
 <?php
 /**
- * Faculty Portal — standalone page, no sidebar.
+ * Faculty Portal  -  standalone page, no sidebar.
  */
 if (session_status() === PHP_SESSION_NONE) session_start();
 require_once __DIR__ . '/../config/db.php';
@@ -11,11 +11,7 @@ if (($_SESSION['role'] ?? '') !== 'faculty') {
     header('Location: ../index.php'); exit;
 }
 
-// Force password change if still using temp password
-if (!empty($_SESSION['force_pw_change'])) {
-    header('Location: change_password.php');
-    exit;
-}
+unset($_SESSION['force_pw_change']);
 
 $uid = $_SESSION['user_id'];
 
@@ -30,12 +26,12 @@ $fac         = $fac->fetch();
 $full_name = formatDisplayName($fac);
 $first_name  = $fac['first_name']  ?? '';
 $last_name   = $fac['last_name']   ?? '';
-$rank        = $fac['rank']        ?? '—';
-$campus      = $fac['campus_name'] ?? '—';
-$email       = $fac['email']       ?? '—';
-$employee_id = $fac['employee_id'] ?? '—';
+$rank        = $fac['rank']        ?? ' - ';
+$campus      = $fac['campus_name'] ?? ' - ';
+$email       = $fac['email']       ?? ' - ';
+$employee_id = $fac['employee_id'] ?? ' - ';
 $profile_pic = $fac['profile_pic'] ?? '';
-$date_registered = !empty($fac['created_at']) ? date('F j, Y', strtotime($fac['created_at'])) : '—';
+$date_registered = !empty($fac['created_at']) ? date('F j, Y', strtotime($fac['created_at'])) : ' - ';
 $init        = strtoupper(substr($first_name,0,1).substr($last_name,0,1)) ?: 'FA';
 
 $cycle = getActiveCycle($pdo);
@@ -43,7 +39,7 @@ $current_app = null;
 if ($cycle) {
     $app_row = getOrCreateApplication($pdo, $uid, $cycle['cycle_id']);
     $re = $pdo->prepare("
-        SELECT a.*, c.cycle_name, c.submission_deadline
+        SELECT a.*, c.cycle_name, c.submission_start_date, c.submission_deadline
         FROM applications a LEFT JOIN cycles c ON a.cycle_id=c.cycle_id
         WHERE a.application_id=?
     ");
@@ -51,23 +47,25 @@ if ($cycle) {
     $current_app = $re->fetch();
 }
 
-$deadline_str    = '—';
+$deadline_str    = ' - ';
 $deadline_passed = false;
 if ($current_app && !empty($current_app['submission_deadline'])) {
-    $dl_ts           = strtotime($current_app['submission_deadline'].' 23:59:59');
+    $effective_deadline = getEffectiveSubmissionDeadline($pdo, (int)$current_app['cycle_id'], (int)$uid, $current_app['submission_deadline']);
+    $dl_ts           = strtotime($effective_deadline.' 23:59:59');
     $deadline_passed = time() > $dl_ts;
-    $deadline_str    = date('M d, Y', strtotime($current_app['submission_deadline']));
+    $deadline_str    = date('M d, Y', strtotime($effective_deadline));
 }
 
 function pStatus(string $s): array {
     return match($s) {
         'submitted'      => ['Submitted',      '#1e4d8c','#eff6ff','#bfdbfe'],
         'under_review'   => ['Under Review',   '#1a3a6b','#f0f4fb','#bfdbfe'],
-        'talisay_review' => ['Talisay Review', '#1a3a6b','#f0f4fb','#bfdbfe'],
+        // Display name for stored status value 'talisay_review' is "ITC Review".
+        'talisay_review' => ['ITC Review', '#1a3a6b','#f0f4fb','#bfdbfe'],
         'needs_revision' => ['Needs Revision', '#475569','#f8fafc','#e2e8f0'],
-        'approved'       => ['Approved',       '#1e4d8c','#f0f4fb','#bfdbfe'],
-        'reclassified'   => ['Reclassified',   '#1e4d8c','#f0fdfa','#99f6e4'],
-        'rejected','admin_rejected' => ['Returned','#1e293b','#f8fafc','#e2e8f0'],
+        'approved'       => ['Evaluation Complete', '#1e4d8c','#f0f4fb','#bfdbfe'],
+        'reclassified'   => ['Evaluation Complete', '#1e4d8c','#f0f4fb','#bfdbfe'],
+        'rejected','admin_rejected' => ['Returned for Revision','#1e293b','#f8fafc','#e2e8f0'],
         default          => ['Pending',        '#475569','#f8fafc','#e2e8f0'],
     };
 }
@@ -96,7 +94,7 @@ $pct = $ri !== false ? round(($ri/(count($all_ranks)-1))*100) : 0;
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>SUCFRMS — Faculty Portal</title>
+<title>SUCFRMS  -  Faculty Portal</title>
 <link href="../assets/vendor/bootstrap-icons/bootstrap-icons.min.css" rel="stylesheet">
 <style>
 *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
@@ -210,7 +208,7 @@ body { font-family:'Segoe UI',Arial,sans-serif; background:#f0f3f8; min-height:1
     <!-- Section title -->
     <div class="sec-title">Applications for Evaluation</div>
 
-    <!-- Application card — always visible -->
+    <!-- Application card  -  always visible -->
     <div class="card">
 
         <!-- Logo + cycle name -->
@@ -224,7 +222,7 @@ body { font-family:'Segoe UI',Arial,sans-serif; background:#f0f3f8; min-height:1
             </div>
         </div>
 
-        <!-- Rank pill + bar — only when cycle active -->
+        <!-- Rank pill + bar  -  only when cycle active -->
         <?php if ($cycle): ?>
         <div class="card-rank-wrap">
             <div class="card-rank-pill"><?= sanitize($rank) ?></div>
@@ -240,7 +238,7 @@ body { font-family:'Segoe UI',Arial,sans-serif; background:#f0f3f8; min-height:1
         <div class="info"><div class="info-lbl">Employee ID</div><div class="info-val"><?= sanitize($employee_id) ?></div></div>
         <div class="info"><div class="info-lbl">Campus</div><div class="info-val"><?= sanitize($campus) ?></div></div>
         <div class="info"><div class="info-lbl">Date Registered</div><div class="info-val"><?= $date_registered ?></div></div>        <?php if ($cycle && $current_app): ?>
-        <div class="info"><div class="info-lbl">Cycle</div><div class="info-val"><?= sanitize($current_app['cycle_name'] ?? '—') ?></div></div>
+        <div class="info"><div class="info-lbl">Cycle</div><div class="info-val"><?= sanitize($current_app['cycle_name'] ?? ' - ') ?></div></div>
         <div class="info"><div class="info-lbl">Submission Deadline</div>
             <div class="info-val" style="color:<?= $deadline_passed ? '#1e293b' : 'inherit' ?>"><?= $deadline_str ?></div>
         </div>
