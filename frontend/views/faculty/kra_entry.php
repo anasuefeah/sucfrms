@@ -1,699 +1,34 @@
-<?php
-$active_tab = $_GET['tab'] ?? 'instruction';
-$valid_tabs = ['instruction','research','extension','profdev','autosubrank','posreq'];
-if (!in_array($active_tab, $valid_tabs)) $active_tab = 'instruction';
-
-// -- Runtime migration: create kra_evidence_files if missing --
-try { $pdo->query("SELECT evidence_id FROM kra_evidence_files LIMIT 1"); }
-catch (\Exception $e) {
-    $pdo->exec("CREATE TABLE IF NOT EXISTS kra_evidence_files (
-        evidence_id       INT AUTO_INCREMENT PRIMARY KEY,
-        submission_id     INT NOT NULL,
-        file_path         VARCHAR(255) NOT NULL,
-        original_filename VARCHAR(255) NOT NULL,
-        file_size_bytes   INT DEFAULT 0,
-        uploaded_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        uploaded_by       INT DEFAULT NULL,
-        FOREIGN KEY (submission_id) REFERENCES kra_submissions(submission_id) ON DELETE CASCADE,
-        FOREIGN KEY (uploaded_by)   REFERENCES users(user_id) ON DELETE SET NULL
-    )");
-}
-
-// Runtime migration: add faculty_original_score to kra_submissions if missing
-try { $pdo->query("SELECT faculty_original_score FROM kra_submissions LIMIT 1"); }
-catch (\Exception $e) {
-    $pdo->exec("ALTER TABLE kra_submissions ADD COLUMN faculty_original_score DECIMAL(6,2) DEFAULT NULL AFTER computed_points");
-    $pdo->exec("UPDATE kra_submissions SET faculty_original_score = computed_points WHERE faculty_original_score IS NULL");
-}
-
-// ..."......"... Runtime migration: create auto_sub_rank table if missing ..."......"...
-try { $pdo->query("SELECT auto_rank_id FROM auto_sub_rank LIMIT 1"); }
-catch (\Exception $e) {
-    $pdo->exec("CREATE TABLE IF NOT EXISTS auto_sub_rank (
-        auto_rank_id      INT AUTO_INCREMENT PRIMARY KEY,
-        application_id    INT NOT NULL,
-        doctorate_status  ENUM('Triggered','Not Triggered','Needs Review') DEFAULT 'Needs Review',
-        award_status      ENUM('Triggered','Not Triggered','Needs Review') DEFAULT 'Needs Review',
-        doctorate_details TEXT DEFAULT NULL,
-        award_details     TEXT DEFAULT NULL,
-        award_evidence    VARCHAR(255) DEFAULT NULL,
-        created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (application_id) REFERENCES applications(application_id) ON DELETE CASCADE
-    )");
-}
-
-// ..."......"... Runtime migration: create position_requirements table if missing ..."......"...
-try { $pdo->query("SELECT pos_req_id FROM position_requirements LIMIT 1"); }
-catch (\Exception $e) {
-    $pdo->exec("CREATE TABLE IF NOT EXISTS position_requirements (
-        pos_req_id        INT AUTO_INCREMENT PRIMARY KEY,
-        application_id    INT NOT NULL,
-        cav_transcript    ENUM('Uploaded','Missing') DEFAULT 'Missing',
-        cav_file          VARCHAR(255) DEFAULT NULL,
-        international_article ENUM('Uploaded','Missing') DEFAULT 'Missing',
-        article_file      VARCHAR(255) DEFAULT NULL,
-        certification_form ENUM('Uploaded','Missing') DEFAULT 'Missing',
-        cert_file         VARCHAR(255) DEFAULT NULL,
-        created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (application_id) REFERENCES applications(application_id) ON DELETE CASCADE
-    )");
-}
-
-function kraApplyEffectiveComputedPoints(array $submission): float {
-    $points = (float)($submission['computed_points'] ?? 0);
-    $parts = array_map('trim', explode('|||', (string)($submission['remarks'] ?? '')));
-    if (($parts[0] ?? '') === 'CUSTOM') {
-        return max($points, max(0.0, (float)($parts[4] ?? 0)));
-    }
-    return $points;
-}
-
-function step2OfficialKraTotals(PDO $pdo, int $application_id): array {
-    $scoring_dir = __DIR__ . '/../../../backend/services/scoring/';
-    foreach (['kra1_scorer.php','kra2_scorer.php','kra3_scorer.php','kra4_scorer.php'] as $f) {
-        if (file_exists($scoring_dir . $f)) require_once $scoring_dir . $f;
-    }
-    if (class_exists('\Scoring\KRA1Scorer')) {
-        $ctx = $pdo->prepare("
-            SELECT a.cycle_id, COALESCE(a.position_title, u.rank) AS position_rank
-            FROM applications a
-            JOIN users u ON u.user_id = a.user_id
-            WHERE a.application_id = ?
-            LIMIT 1
-        ");
-        $ctx->execute([$application_id]);
-        $ctx_row = $ctx->fetch(PDO::FETCH_ASSOC) ?: [];
-        \Scoring\KRA1Scorer::setPdo($pdo);
-        \Scoring\KRA1Scorer::setCriteriaContext((int)($ctx_row['cycle_id'] ?? 0), $ctx_row['position_rank'] ?? null);
-        if (class_exists('\Scoring\KRA2Scorer')) {
-            \Scoring\KRA2Scorer::setPdo($pdo);
-            \Scoring\KRA2Scorer::setCriteriaContext((int)($ctx_row['cycle_id'] ?? 0), $ctx_row['position_rank'] ?? null);
-        }
-        if (class_exists('\Scoring\KRA3Scorer')) {
-            \Scoring\KRA3Scorer::setPdo($pdo);
-            \Scoring\KRA3Scorer::setCriteriaContext((int)($ctx_row['cycle_id'] ?? 0), $ctx_row['position_rank'] ?? null);
-        }
-        if (class_exists('\Scoring\KRA4Scorer')) {
-            \Scoring\KRA4Scorer::setPdo($pdo);
-            \Scoring\KRA4Scorer::setCriteriaContext((int)($ctx_row['cycle_id'] ?? 0), $ctx_row['position_rank'] ?? null);
-        }
-    }
-
-    $stmt = $pdo->prepare("
-        SELECT ks.*,
-               GROUP_CONCAT(kef.original_filename ORDER BY kef.evidence_id SEPARATOR '|||') AS evidence_names
-        FROM kra_submissions ks
-        LEFT JOIN kra_evidence_files kef ON kef.submission_id = ks.submission_id
-        WHERE ks.application_id = ?
-        GROUP BY ks.submission_id
-        ORDER BY ks.submitted_at ASC
-    ");
-    $stmt->execute([$application_id]);
-
-    $by_cat = [];
-    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-        $by_cat[$row['kra_category']][] = $row;
-    }
-
-    $fallback = fn($cat) => min(100, array_sum(array_map(
-        fn($s) => kraApplyEffectiveComputedPoints($s),
-        $by_cat[$cat] ?? []
-    )));
-
-    return [
-        'Instruction' => class_exists('\Scoring\KRA1Scorer')
-            ? (float)(\Scoring\KRA1Scorer::score($by_cat['Instruction'] ?? [])['subtotal'] ?? 0)
-            : $fallback('Instruction'),
-        'Research' => class_exists('\Scoring\KRA2Scorer')
-            ? (float)(\Scoring\KRA2Scorer::score($by_cat['Research'] ?? [])['subtotal'] ?? 0)
-            : $fallback('Research'),
-        'Extension' => class_exists('\Scoring\KRA3Scorer')
-            ? (float)(\Scoring\KRA3Scorer::score($by_cat['Extension'] ?? [])['subtotal'] ?? 0)
-            : $fallback('Extension'),
-        'Professional Development' => class_exists('\Scoring\KRA4Scorer')
-            ? (float)(\Scoring\KRA4Scorer::score($by_cat['Professional Development'] ?? [])['subtotal'] ?? 0)
-            : $fallback('Professional Development'),
-    ];
-}
-
-// -- AJAX: return entries as JSON ------------------------------
-if (isset($_GET['ajax_entries'])) {
-    $cat = $_GET['cat'] ?? '';
-    $valid_cats = ['Instruction','Research','Extension','Professional Development'];
-    if (in_array($cat, $valid_cats)) {
-        $rows = $pdo->prepare("SELECT submission_id, computed_points, remarks, document_path FROM kra_submissions WHERE application_id=? AND kra_category=? ORDER BY submitted_at ASC");
-        $rows->execute([$app_id, $cat]);
-        $entries = $rows->fetchAll(PDO::FETCH_ASSOC);
-        foreach ($entries as &$entry) {
-            $entry['computed_points'] = kraApplyEffectiveComputedPoints($entry);
-            $ef = $pdo->prepare("SELECT evidence_id, file_path, original_filename, file_size_bytes FROM kra_evidence_files WHERE submission_id=? ORDER BY uploaded_at ASC");
-            $ef->execute([$entry['submission_id']]);
-            $entry['evidence_files'] = $ef->fetchAll(PDO::FETCH_ASSOC);
-        }
-        unset($entry);
-        header('Content-Type: application/json');
-        echo json_encode(['entries' => $entries]);
-        exit;
-    }
-}
-
-// -- AJAX: return current weighted score for sidebar -----------
-if (isset($_GET['ajax_score'])) {
-    $totals_ajax = step2OfficialKraTotals($pdo, $app_id);
-    $score_ajax = getApplicationScoreSummary($pdo, (int)$app_id);
-    $weights_ajax = $score_ajax['weights'];
-    $kra_weighted_ajax = [
-        'Instruction'              => round($score_ajax['kra1'] * $weights_ajax['Instruction'], 2),
-        'Research'                 => round($score_ajax['kra2'] * $weights_ajax['Research'], 2),
-        'Extension'                => round($score_ajax['kra3'] * $weights_ajax['Extension'], 2),
-        'Professional Development' => round($score_ajax['kra4'] * $weights_ajax['Professional Development'], 2),
-    ];
-    header('Content-Type: application/json');
-    echo json_encode([
-        'weighted'    => $score_ajax['weighted_score'],
-        'sub_rank'    => $score_ajax['sub_rank_increment'],
-        'kra'         => $kra_weighted_ajax,
-        'kra_raw'     => $totals_ajax,
-        'weights_pct' => array_map(fn($w) => round($w * 100), $weights_ajax),
-    ]);
-    exit;
-}
-
-// -- Handle POST -----------------------------------------------
-// Editing rules:
-//   - Faculty can add/edit entries freely as long as the submission deadline has NOT passed,
-//     regardless of application status (draft, submitted, under_review, etc.)
-//   - Once the deadline passes, no more edits or additions are allowed.
-//   - Exceptions that are always blocked regardless of deadline:
-//       * evaluation complete statuses -> fully locked
-//       * needs_revision -> only revision-flagged entries (enforced per-entry below)
-$_effective_deadline = getEffectiveSubmissionDeadline($pdo, (int)($cycle['cycle_id'] ?? 0), (int)$uid, $cycle['submission_deadline'] ?? null);
-$_submission_start_ts = !empty($cycle['submission_start_date'])
-    ? strtotime($cycle['submission_start_date'] . ' 00:00:00')
-    : null;
-$_deadline_ts = !empty($_effective_deadline)
-    ? strtotime($_effective_deadline . ' 23:59:59')
-    : null;
-$_submission_not_open = $_submission_start_ts !== null && time() < $_submission_start_ts;
-$_deadline_passed = $_deadline_ts !== null && time() > $_deadline_ts;
-
-// Statuses that are permanently locked regardless of deadline
-$non_editable_statuses = ['approved', 'reclassified', 'admin_rejected'];
-
-// can_edit = not permanently locked AND deadline has not passed
-// Special case: needs_revision is still editable after deadline (checker returned it, must fix)
-$can_edit = !$locked
-    && !in_array($app['status'], $non_editable_statuses)
-    && !$_submission_not_open
-    && (!$_deadline_passed || in_array($app['status'], ['needs_revision', 'rejected']));
-
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && $can_edit) {
-    $kra_action = $_POST['kra_action'] ?? '';
-
-    if ($kra_action === 'save_kra') {
-        $category = $_POST['kra_category'] ?? '';
-        $remarks  = trim($_POST['remarks'] ?? '');
-        $edit_id  = intval($_POST['edit_submission_id'] ?? 0);
-
-        $valid_cats = ['Instruction','Research','Extension','Professional Development'];
-        if (in_array($category, $valid_cats)) {
-            $remarks_parts = array_map('trim', explode('|||', $remarks));
-            $remarks_type = $remarks_parts[0] ?? '';
-            $meaningful_remarks = $remarks_type !== '';
-            if ($meaningful_remarks && $category === 'Instruction') {
-                if ($remarks_type === 'CUSTOM') {
-                    $meaningful_remarks = ($remarks_parts[1] ?? '') !== '' && ($remarks_parts[2] ?? '') !== ''
-                        && ($remarks_parts[3] ?? '') !== '' && (float)($remarks_parts[4] ?? 0) > 0;
-                } elseif ($remarks_type === 'A-set-sef') {
-                    $meaningful_remarks = ($remarks_parts[1] ?? '') !== '' && ($remarks_parts[2] ?? '') !== '';
-                } elseif ($remarks_type === 'A-set-sef-sem') {
-                    $meaningful_remarks = ($remarks_parts[3] ?? '') !== '' && ($remarks_parts[4] ?? '') !== '';
-                } elseif ($remarks_type === 'A-set-sem' || $remarks_type === 'A-sef-sem') {
-                    $meaningful_remarks = ($remarks_parts[1] ?? '') !== '' && ($remarks_parts[2] ?? '') !== '' && ($remarks_parts[3] ?? '') !== '';
-                } else {
-                    $meaningful_remarks = str_starts_with($remarks_type, 'B|') || str_starts_with($remarks_type, 'C|')
-                        || in_array($remarks_type, ['B-material', 'C-thesis', 'C-mentor'], true);
-                }
-            } elseif ($meaningful_remarks && $category === 'Extension') {
-                if ($remarks_type === 'CUSTOM') {
-                    $meaningful_remarks = ($remarks_parts[1] ?? '') !== '' && ($remarks_parts[2] ?? '') !== ''
-                        && ($remarks_parts[3] ?? '') !== '' && (float)($remarks_parts[4] ?? 0) > 0;
-                } else {
-                    $allowed_extension = [
-                    'moa-linkage', 'income', 'accredit-local', 'accredit-intl',
-                    'judge-research', 'judge-other', 'consultant-local', 'consultant-intl',
-                    'media-column-regular', 'media-column-occasional', 'media-tv-radio-host', 'media-guest',
-                    'resource-speaker-local', 'resource-speaker-intl', 'outreach-isr-lead', 'outreach-isr-member',
-                    'csr-satisfaction', 'president', 'vice-president', 'chancellor', 'vice-chancellor',
-                    'campus director', 'office director', 'dean', 'associate dean', 'dept head',
-                    'program chair', 'committee chair', 'committee member', 'coordinator',
-                    ];
-                    $meaningful_remarks = in_array($remarks_type, $allowed_extension, true);
-                }
-            } elseif ($meaningful_remarks && in_array($category, ['Research','Professional Development'], true) && $remarks_type === 'CUSTOM') {
-                $meaningful_remarks = ($remarks_parts[1] ?? '') !== '' && ($remarks_parts[2] ?? '') !== ''
-                    && ($remarks_parts[3] ?? '') !== '' && (float)($remarks_parts[4] ?? 0) > 0;
-            }
-            if (!$meaningful_remarks) {
-                if (isset($_POST['ajax']) || (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && $_SERVER['HTTP_X_REQUESTED_WITH'] === 'XMLHttpRequest')) {
-                    while (ob_get_level()) ob_end_clean();
-                    header('Content-Type: application/json');
-                    echo json_encode(['ok' => false, 'error' => 'Please select a valid criterion and fill the required score fields before uploading or saving.']);
-                    exit;
-                }
-                flashMessage('danger', 'Please select a valid criterion and fill the required score fields before saving.');
-                echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}';</script>"; exit;
-            }
-
-            // Server-side score recomputation via JC01 s.2026 scorer modules
-            // Load scorers (kra_ajax.php now routes to them; we use the same entry point)
-            if (!function_exists('computeKraScore')) {
-                require_once __DIR__ . '/../../../backend/api/kra_ajax.php';
-            }
-            $points        = computeKraScore($category, $remarks);
-            $client_points = max(0.0, (float)($_POST['computed_points'] ?? 0));
-
-            // Fallback: if server returns 0 but client sent positive, trust client
-            // (edge case: label format unrecognised by server-side pattern matching)
-            if ($points <= 0 && $client_points > 0) {
-                $points = $client_points;
-            }
-            if ($points <= 0 && $client_points <= 0) {
-                error_log("SUCFRMS KRA SAVE: Both server and client score are 0. Category={$category}, Remarks=" . substr($remarks, 0, 200));
-            }
-
-            // -- Normalise uploaded files (single or multi) ------------------
-            $uploaded_files = [];
-            foreach (['evidence', 'evidence[]'] as $field) {
-                if (!empty($_FILES[$field]['name'])) {
-                    $names    = (array)$_FILES[$field]['name'];
-                    $tmps     = (array)$_FILES[$field]['tmp_name'];
-                    $sizes    = (array)$_FILES[$field]['size'];
-                    $errors   = (array)$_FILES[$field]['error'];
-                    foreach ($names as $i => $fname_raw) {
-                        if (!empty($fname_raw) && ($errors[$i] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK) {
-                            $uploaded_files[] = [
-                                'name'     => $fname_raw,
-                                'tmp_name' => $tmps[$i],
-                                'size'     => $sizes[$i],
-                            ];
-                        }
-                    }
-                }
-            }
-
-            $kra_num   = array_search($category, $valid_cats) + 1;
-            $folder    = __DIR__ . '/../../../uploads/kra' . $kra_num . '/';
-            $rel_path  = 'uploads/kra' . $kra_num . '/';
-            $allowed_exts = ['pdf','jpg','jpeg','png'];
-
-            // Collect all successfully moved files to attach after save
-            $files_to_insert = [];
-            foreach ($uploaded_files as $uf) {
-                $ext = strtolower(pathinfo($uf['name'], PATHINFO_EXTENSION));
-                if (in_array($ext, $allowed_exts)) {
-                    if (!is_dir($folder)) mkdir($folder, 0755, true);
-                    $fname = uniqid('kra_') . '.' . $ext;
-                    if (move_uploaded_file($uf['tmp_name'], $folder . $fname)) {
-                        $files_to_insert[] = [
-                            'path' => $rel_path . $fname,
-                            'name' => $uf['name'],
-                            'size' => $uf['size'],
-                        ];
-                    }
-                }
-            }
-
-            // For backward compat: expose first file as $new_file_path etc.
-            $new_file_path = $files_to_insert[0]['path'] ?? '';
-            $new_file_name = $files_to_insert[0]['name'] ?? '';
-            $new_file_size = $files_to_insert[0]['size'] ?? 0;
-
-            if ($edit_id > 0) {
-                $existing = $pdo->prepare("SELECT submission_id, revision_status FROM kra_submissions WHERE submission_id=? AND application_id=?");
-                $existing->execute([$edit_id, $app_id]);
-                $existing_row = $existing->fetch();
-                // For needs_revision status: only allow editing entries flagged for revision
-                $revision_edit_ok = ($app['status'] !== 'needs_revision')
-                    || ($existing_row && $existing_row['revision_status'] === 'needs_revision');
-                if ($existing_row && $revision_edit_ok) {
-                    $pdo->prepare("UPDATE kra_submissions SET computed_points=?, remarks=?, verified=0, submitted_at=NOW() WHERE submission_id=?")
-                        ->execute([$points, $remarks, $edit_id]);
-                    $ins_ef = $pdo->prepare("INSERT INTO kra_evidence_files (submission_id, file_path, original_filename, file_size_bytes, uploaded_by) VALUES (?,?,?,?,?)");
-                    foreach ($files_to_insert as $fi) {
-                        $ins_ef->execute([$edit_id, $fi['path'], $fi['name'], $fi['size'], $uid]);
-                    }
-                }
-            } else {
-                $pdo->prepare("INSERT INTO kra_submissions (application_id, user_id, kra_category, computed_points, document_path, remarks) VALUES (?,?,?,?,?,?)")
-                    ->execute([$app_id, $uid, $category, $points, '', $remarks]);
-                $new_sid = (int)$pdo->lastInsertId();
-                $ins_ef = $pdo->prepare("INSERT INTO kra_evidence_files (submission_id, file_path, original_filename, file_size_bytes, uploaded_by) VALUES (?,?,?,?,?)");
-                foreach ($files_to_insert as $fi) {
-                    $ins_ef->execute([$new_sid, $fi['path'], $fi['name'], $fi['size'], $uid]);
-                }
-            }
-
-            recalcApplicationScore($pdo, $app_id);
-            logAudit($pdo, $uid, 'KRA Saved', "{$category}: {$points} pts (client_sent: {$client_points}, remarks: " . substr($remarks,0,80) . ")");
-        }
-        // Return JSON for AJAX calls - check POST flag OR custom header
-        if (isset($_POST['ajax']) || (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && $_SERVER['HTTP_X_REQUESTED_WITH'] === 'XMLHttpRequest')) {
-            // Clear ALL output buffers
-            while (ob_get_level()) ob_end_clean();
-            header('Content-Type: application/json');
-            // Return the actual saved score so client can update badge directly
-            $saved_sid = ($edit_id > 0) ? $edit_id : (isset($new_sid) ? $new_sid : 0);
-            echo json_encode(['ok' => true, 'message' => 'Entry saved', 'computed_points' => $points, 'submission_id' => $saved_sid]);
-            exit;
-        }
-        flashMessage('success', sanitize($category) . " score saved.");
-        echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}';</script>"; exit;
-    }
-
-    if ($kra_action === 'delete_kra') {
-        $del_id = intval($_POST['submission_id'] ?? 0);
-        if ($del_id) {
-            // For needs_revision: only allow deleting revision-flagged entries
-            $del_check = $pdo->prepare("SELECT revision_status FROM kra_submissions WHERE submission_id=? AND application_id=?");
-            $del_check->execute([$del_id, $app_id]);
-            $del_row = $del_check->fetch();
-            $del_allowed = $del_row && (
-                $app['status'] !== 'needs_revision' ||
-                $del_row['revision_status'] === 'needs_revision'
-            );
-            if (!$del_allowed) {
-                flashMessage('error', 'This entry cannot be deleted in the current application status.');
-                echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}';</script>"; exit;
-            }
-            // Delete all evidence files for this submission
-            $ef_rows = $pdo->prepare("SELECT file_path FROM kra_evidence_files WHERE submission_id=?");
-            $ef_rows->execute([$del_id]);
-            foreach ($ef_rows->fetchAll(PDO::FETCH_COLUMN) as $fp) {
-                $abs = rtrim(str_replace('/', DIRECTORY_SEPARATOR, realpath(__DIR__ . '/../../../')), DIRECTORY_SEPARATOR)
-                       . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $fp);
-                if (file_exists($abs)) @unlink($abs);
-            }
-            $row = $pdo->prepare("SELECT document_path FROM kra_submissions WHERE submission_id=? AND application_id=?");
-            $row->execute([$del_id, $app_id]);
-            $row = $row->fetch();
-            if ($row) {
-                if ($row['document_path']) {
-                    $abs_del = rtrim(str_replace('/', DIRECTORY_SEPARATOR, realpath(__DIR__ . '/../../../')), DIRECTORY_SEPARATOR)
-                               . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $row['document_path']);
-                    if (file_exists($abs_del)) @unlink($abs_del);
-                }
-                $pdo->prepare("DELETE FROM kra_submissions WHERE submission_id=?")->execute([$del_id]);
-                recalcApplicationScore($pdo, $app_id);
-                logAudit($pdo, $uid, 'KRA Entry Deleted', "Deleted submission #{$del_id}");
-            }
-        }
-        if (isset($_POST['ajax']) || (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && $_SERVER['HTTP_X_REQUESTED_WITH'] === 'XMLHttpRequest')) {
-            if (ob_get_level()) ob_clean();
-            header('Content-Type: application/json');
-            echo json_encode(['ok' => true]);
-            exit;
-        }
-        echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}';</script>"; exit;
-    }
-
-    if ($kra_action === 'save_auto_sub_rank') {
-        // -- Auto Sub-Rank is now fully automatic  -  no manual save needed.
-        // Recalculate and persist, then redirect back.
-        if (!class_exists('\Scoring\AutoSubRankCalculator')) {
-            require_once __DIR__ . '/../../../backend/services/scoring/autosubrank.php';
-        }
-        $calc   = new \Scoring\AutoSubRankCalculator($pdo, $app_id);
-        $result = $calc->calculate();
-        $calc->persist($result);
-        logAudit($pdo, $uid, 'Auto Sub-Rank Recalculated',
-            "Application #{$app_id}: doctorate={$result['doctorate_mode']}, award={$result['award_mode']}, score={$result['weighted_score_at_calc']}");
-        flashMessage('success', 'Auto Sub-Rank assessed automatically based on your current score and entries.');
-        echo "<script>window.location.href='index.php?page=apply&tab=autosubrank';</script>"; exit;
-    }
-
-    if ($kra_action === 'save_position_requirements') {
-        // Handle file uploads for position requirements
-        $files = ['cav_file' => 'cav_transcript', 'article_file' => 'international_article', 'cert_file' => 'certification_form'];
-        $uploaded_files = [];
-        
-        foreach ($files as $file_field => $status_field) {
-            if (!empty($_FILES[$file_field]['name']) && $_FILES[$file_field]['error'] === UPLOAD_ERR_OK) {
-                $ext = strtolower(pathinfo($_FILES[$file_field]['name'], PATHINFO_EXTENSION));
-                $allowed_exts = ['pdf','jpg','jpeg','png'];
-                if (in_array($ext, $allowed_exts)) {
-                    $folder = __DIR__ . '/../../../uploads/pos_req/';
-                    if (!is_dir($folder)) mkdir($folder, 0755, true);
-                    $fname = uniqid($file_field . '_') . '.' . $ext;
-                    if (move_uploaded_file($_FILES[$file_field]['tmp_name'], $folder . $fname)) {
-                        $uploaded_files[$file_field] = 'uploads/pos_req/' . $fname;
-                        $uploaded_files[$status_field] = 'Uploaded';
-                    }
-                }
-            }
-        }
-        
-        // Build update query
-        $updates = [];
-        $params = [];
-        foreach ($files as $file_field => $status_field) {
-            if (isset($uploaded_files[$file_field])) {
-                $updates[] = "$file_field = ?";
-                $params[] = $uploaded_files[$file_field];
-                $updates[] = "$status_field = ?"; 
-                $params[] = 'Uploaded';
-            }
-        }
-        
-        if (!empty($updates)) {
-            $params[] = $app_id;
-            $stmt = $pdo->prepare("INSERT INTO position_requirements (application_id, " . implode(', ', array_keys($uploaded_files)) . ") 
-                                  VALUES ($app_id, " . str_repeat('?,', count($uploaded_files)-1) . "?) 
-                                  ON DUPLICATE KEY UPDATE " . implode(', ', $updates));
-            $stmt->execute($params);
-        }
-        
-        flashMessage('success', 'Position requirements updated.');
-        echo "<script>window.location.href='index.php?page=apply&tab=posreq';</script>"; exit;
-    }
-
-    if ($kra_action === 'submit_application') {
-        if ($_submission_not_open) {
-            flashMessage('danger', 'The faculty submission period is not open yet.');
-            echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}';</script>"; exit;
-        }
-        // Block if deadline has passed
-        if ($_deadline_passed) {
-            flashMessage('danger', 'The submission deadline has passed. You can no longer submit for this cycle.');
-            echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}';</script>"; exit;
-        }
-
-        try { recalcApplicationScore($pdo, $app_id); } catch (\Exception $e) {}
-
-        // Block if weighted score is below 41
-        $faculty_rank_check = $faculty['rank'] ?? '';
-        $score_check = getApplicationScoreSummary($pdo, (int)$app_id);
-        if ($score_check['weighted_score'] < 41) {
-            flashMessage('danger', 'Your weighted score (' . number_format($score_check['weighted_score'], 2) . ') is below the minimum of <strong>41.00</strong> required for reclassification. Improve your KRA scores before submitting.');
-            echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}';</script>"; exit;
-        }
-        // If checker already assigned, go straight back to under_review
-        $new_status = !empty($app['checker_id']) ? 'under_review' : 'submitted';
-        $pdo->prepare("UPDATE applications SET status=?, submitted_at=NOW() WHERE application_id=?")
-            ->execute([$new_status, $app_id]);
-        // Stamp faculty_original_score on every submission so checker edits can be diffed
-        $pdo->prepare("UPDATE kra_submissions
-            SET faculty_original_score = computed_points
-            WHERE application_id = ? AND faculty_original_score IS NULL")
-            ->execute([$app_id]);
-        logAudit($pdo, $uid, 'Application Submitted', "Application {$app_id} submitted. Status: {$new_status}");
-        // Notify all active Subcommittee reviewers
-        $campus_checkers = $pdo->query("SELECT user_id FROM users WHERE role = 'evaluator' AND status='active'")->fetchAll(PDO::FETCH_COLUMN);
-        $faculty_name = $_SESSION['full_name'] ?? "Faculty #{$uid}";
-        foreach ($campus_checkers as $cid) {
-            createNotif($pdo, (int)$cid, 'new_submission',
-                "New application submitted by {$faculty_name} ... awaiting your review.",
-                $app_id);
-        }
-        $msg = $new_status === 'under_review'
-            ? 'Application resubmitted. Your evaluator will continue the review.'
-            : 'Application submitted successfully for review.';
-        flashMessage('success', $msg);
-        echo "<script>window.location.href='index.php?page=dashboard';</script>"; exit;
-    }
-}
-
-// -- Load data -------------------------------------------------
-$subs_raw2 = $pdo->prepare("SELECT * FROM kra_submissions WHERE application_id=? ORDER BY submitted_at ASC");
-$subs_raw2->execute([$app_id]);
-$all_subs2 = $subs_raw2->fetchAll();
-
-$subs_by_cat = [];
-foreach ($all_subs2 as $s) $subs_by_cat[$s['kra_category']][] = $s;
-
-$kra_totals2 = step2OfficialKraTotals($pdo, $app_id);
-$grand2 = array_sum($kra_totals2);
-
-$tabs = [
-    'instruction' => ['label'=>'Instruction',            'cat'=>'Instruction',              'icon'=>'bi-book'],
-    'research'    => ['label'=>'Research & Innovation',  'cat'=>'Research',                 'icon'=>'bi-journal-text'],
-    'extension'   => ['label'=>'Extension',              'cat'=>'Extension',                'icon'=>'bi-people'],
-    'profdev'     => ['label'=>'Prof. Development',      'cat'=>'Professional Development', 'icon'=>'bi-award'],
-    'autosubrank' => ['label'=>'Auto Sub Rank',          'cat'=>'Auto Sub Rank',           'icon'=>'bi-arrow-up-circle'],
-    'posreq'      => ['label'=>'Position Requirements',  'cat'=>'Position Requirements',   'icon'=>'bi-file-earmark-check'],
-];
-
-$cur_tab = $tabs[$active_tab];
-$cur_cat = $cur_tab['cat'];
-
-// Load criteria strictly scoped to this application's cycle AND the faculty's target position.
-// Each position has its own criteria - no cycle-wide fallback.
-$target_position = $app['position_title'] ?? null;
-if (!$target_position && !empty($faculty['rank'])) {
-    $target_position = $faculty['rank'];
-}
-if (!$target_position && !empty($app['position_title'])) {
-    $target_position = $app['position_title'];
-}
-$cycle_id_for_criteria = $app['cycle_id'] ?? null;
-
-$criteria_order_sql = "CASE WHEN criterion_label LIKE 'Criterion A%' THEN 1 WHEN criterion_label LIKE 'Criterion B%' THEN 2 WHEN criterion_label LIKE 'Criterion C%' THEN 3 WHEN criterion_label LIKE 'Criterion D%' THEN 4 ELSE 5 END ASC, max_points DESC";
-$criteria_by_key = [];
-$criteria_order = [];
-$mergeCriteriaRows = function (array $rows) use (&$criteria_by_key, &$criteria_order): void {
-    foreach ($rows as $row) {
-        $key = trim((string)($row['criterion_key'] ?? ''));
-        if ($key === '') {
-            $key = 'label:' . trim((string)($row['criterion_label'] ?? ''));
-        }
-        if (!isset($criteria_by_key[$key])) {
-            $criteria_order[] = $key;
-        }
-        $criteria_by_key[$key] = $row;
-    }
-};
-
-// Load least-specific first, then let cycle/position rows override by key.
-// This keeps newly added global criteria visible on existing seeded cycles,
-// while preserving cycle/position customisations where they exist.
-$cs = $pdo->prepare("SELECT * FROM scoring_criteria WHERE cycle_id IS NULL AND position_rank IS NULL AND kra_category=? AND is_active=1 ORDER BY {$criteria_order_sql}");
-$cs->execute([$cur_cat]);
-$mergeCriteriaRows($cs->fetchAll());
-
-if ($cycle_id_for_criteria) {
-    $cs = $pdo->prepare("SELECT * FROM scoring_criteria WHERE cycle_id=? AND position_rank IS NULL AND kra_category=? AND is_active=1 ORDER BY {$criteria_order_sql}");
-    $cs->execute([$cycle_id_for_criteria, $cur_cat]);
-    $mergeCriteriaRows($cs->fetchAll());
-}
-
-if ($cycle_id_for_criteria && $target_position) {
-    $cs = $pdo->prepare("SELECT * FROM scoring_criteria WHERE cycle_id=? AND position_rank=? AND kra_category=? AND is_active=1 ORDER BY {$criteria_order_sql}");
-    $cs->execute([$cycle_id_for_criteria, $target_position, $cur_cat]);
-    $mergeCriteriaRows($cs->fetchAll());
-}
-
-$criteria_list = array_values(array_filter(array_map(
-    fn($key) => $criteria_by_key[$key] ?? null,
-    $criteria_order
-)));
-
-// Defensive cleanup for duplicated criteria configuration rows. Older MySQL
-// unique keys allowed repeated NULL cycle/position scopes, so a repeated seed
-// could duplicate Criterion A SET/SEF and other criteria.
-$criteria_seen = [];
-$criteria_list = array_values(array_filter($criteria_list, function ($c) use (&$criteria_seen) {
-    $key = implode('|', [
-        $c['cycle_id'] ?? '',
-        $c['position_rank'] ?? '',
-        $c['kra_category'] ?? '',
-        trim((string)($c['criterion_label'] ?? '')),
-    ]);
-    if (isset($criteria_seen[$key])) return false;
-    $criteria_seen[$key] = true;
-    return true;
-}));
-usort($criteria_list, function ($a, $b) {
-    $normaliseNumbering = function ($row): array {
-        $numbering = kraNumberingEntryByKey((string)($row['criterion_key'] ?? ''));
-        if (!is_array($numbering)) {
-            $numbering = [];
-        }
-        $label = (string)($row['criterion_label'] ?? '');
-        $fallback_criterion = '';
-        if (preg_match('/Criterion\s+([A-Z])[\.:\s]/i', $label, $m)) {
-            $fallback_criterion = strtoupper($m[1]);
-        }
-        return [
-            'criterion' => (string)($numbering['criterion'] ?? $fallback_criterion),
-            'group_no'  => isset($numbering['group_no']) ? (int)$numbering['group_no'] : 99,
-            'item_no'   => isset($numbering['item_no']) && $numbering['item_no'] !== null ? (int)$numbering['item_no'] : 0,
-            'label'     => $label,
-        ];
-    };
-    $na = $normaliseNumbering(is_array($a) ? $a : []);
-    $nb = $normaliseNumbering(is_array($b) ? $b : []);
-    $letterOrder = ['A' => 1, 'B' => 2, 'C' => 3, 'D' => 4];
-    $oa = [
-        $letterOrder[$na['criterion']] ?? 9,
-        $na['group_no'],
-        $na['item_no'],
-        $na['label'],
-    ];
-    $ob = [
-        $letterOrder[$nb['criterion']] ?? 9,
-        $nb['group_no'],
-        $nb['item_no'],
-        $nb['label'],
-    ];
-    return $oa <=> $ob;
-});
-
-$kra1_a_caps = ['set' => 36.0, 'sef' => 24.0];
-if ($cur_cat === 'Instruction') {
-    foreach ($criteria_list as $criterion_row) {
-        if (($criterion_row['criterion_key'] ?? '') === 'kra1_a_set' && (float)$criterion_row['max_points'] > 0) {
-            $kra1_a_caps['set'] = (float)$criterion_row['max_points'];
-        } elseif (($criterion_row['criterion_key'] ?? '') === 'kra1_a_sef' && (float)$criterion_row['max_points'] > 0) {
-            $kra1_a_caps['sef'] = (float)$criterion_row['max_points'];
-        }
-    }
-}
-
-// Pre-define cur_entries here so it's available throughout the template
-$cur_entries = $subs_by_cat[$cur_cat] ?? [];
-?>
+<?php require __DIR__ . '/../../../backend/controllers/faculty/kra_entry.php'; ?>
 
 
 <!-- -- KRA Entries Card -------------------------------------- -->
-<div class="neon-card p-0 mb-3" style="overflow:hidden;">
+<div class="neon-card p-0 mb-4 [overflow:hidden]">
   <!-- Card Header -->
-  <div style="background:linear-gradient(135deg,#1e3a6b,#1e4d8c);padding:1rem 1.5rem;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.75rem;">
+  <div class="[background:linear-gradient(135deg,#1e3a6b,#1e4d8c)] [padding:1rem_1.5rem] [display:flex] [justify-content:space-between] [align-items:center] [flex-wrap:wrap] [gap:0.75rem]">
     <div>
-      <h5 style="color:#fff;font-weight:700;font-size:0.97rem;margin:0;line-height:1.3;display:flex;align-items:center;gap:0.5rem;">
-        <i class="bi bi-file-earmark-arrow-up" style="font-size:1.1rem;opacity:0.9;"></i>
+      <h5 class="[color:#fff] [font-weight:700] [font-size:0.97rem] [margin:0] [line-height:1.3] [display:flex] [align-items:center] [gap:0.5rem]">
+        <i class="bi bi-file-earmark-arrow-up [font-size:1.1rem] [opacity:0.9]"></i>
         KRA Entries &amp; Evidence
         <?= helpBtn('KRA Entry Guide', 'For each KRA tab: 1) Open the entry table for the criterion you need. 2) Select the criterion type and fill in the details ... the score calculates automatically. 3) Click the upload button on each row to attach your evidence file. 4) Click Done. Once all entries are saved, click Submit Application.') ?>
       </h5>
       <?php if (!empty($_effective_deadline)): ?>
       <?php $dl_ts = strtotime($_effective_deadline . ' 23:59:59'); ?>
-      <div style="margin-top:0.3rem;font-size:0.78rem;color:rgba(255,255,255,0.75);display:flex;align-items:center;gap:0.4rem;">
+      <div class="[margin-top:0.3rem] [font-size:0.78rem] [color:rgba(255,255,255,0.75)] [display:flex] [align-items:center] [gap:0.4rem]">
         <i class="bi bi-clock"></i>
         Submission deadline: <strong style="color:<?= time() > $dl_ts ? '#94a3b8' : '#e2e8f0' ?>;"><?= date('M d, Y', strtotime($_effective_deadline)) ?></strong>
         <?php if ($_submission_not_open): ?>
-        <span style="background:#334155;color:#fff;border-radius:20px;padding:0.1rem 0.5rem;font-size:0.65rem;font-weight:700;">Not open</span>
+        <span class="[background:#334155] [color:#fff] [border-radius:20px] [padding:0.1rem_0.5rem] [font-size:0.65rem] [font-weight:700]">Not open</span>
         <?php elseif (time() > $dl_ts): ?>
-        <span style="background:#334155;color:#fff;border-radius:20px;padding:0.1rem 0.5rem;font-size:0.65rem;font-weight:700;">Passed</span>
+        <span class="[background:#334155] [color:#fff] [border-radius:20px] [padding:0.1rem_0.5rem] [font-size:0.65rem] [font-weight:700]">Passed</span>
         <?php else: ?>
-        <span style="background:#475569;color:#fff;border-radius:20px;padding:0.1rem 0.5rem;font-size:0.65rem;font-weight:700;"><?= ceil(($dl_ts - time()) / 86400) ?> day(s) left</span>
+        <span class="[background:#475569] [color:#fff] [border-radius:20px] [padding:0.1rem_0.5rem] [font-size:0.65rem] [font-weight:700]"><?= ceil(($dl_ts - time()) / 86400) ?> day(s) left</span>
         <?php endif; ?>
       </div>
       <?php endif; ?>
     </div>
-    <div style="display:flex;gap:0.5rem;align-items:center;" id="kra-entry-actions">
+    <div class="[display:flex] [gap:0.5rem] [align-items:center] [flex-wrap:wrap]" id="kra-entry-actions">
       <a href="index.php?page=dashboard"
-         style="background:rgba(255,255,255,0.12);color:#fff;border:1px solid rgba(255,255,255,0.25);border-radius:7px;padding:0.4rem 0.9rem;font-size:0.82rem;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:0.35rem;white-space:nowrap;transition:background 0.15s;">
+         class="[background:rgba(255,255,255,0.12)] [color:#fff] [border:1px_solid_rgba(255,255,255,0.25)] [border-radius:7px] [padding:0.4rem_0.9rem] [font-size:0.82rem] [font-weight:600] [text-decoration:none] [display:inline-flex] [align-items:center] [gap:0.35rem] [white-space:nowrap] [transition:background_0.15s]">
         <i class="bi bi-arrow-left"></i>Back
       </a>
       <?php if (!$locked && $grand2 > 0): ?>
@@ -705,14 +40,14 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
       ?>
       <?php if ($deadline_passed_step2): ?>
       <button type="button" disabled
-              style="background:rgba(255,255,255,0.1);color:rgba(255,255,255,0.5);border:1px solid rgba(255,255,255,0.15);border-radius:7px;padding:0.4rem 0.9rem;font-size:0.82rem;font-weight:600;cursor:not-allowed;display:inline-flex;align-items:center;gap:0.35rem;white-space:nowrap;">
+              class="[background:rgba(255,255,255,0.1)] [color:rgba(255,255,255,0.5)] [border:1px_solid_rgba(255,255,255,0.15)] [border-radius:7px] [padding:0.4rem_0.9rem] [font-size:0.82rem] [font-weight:600] [cursor:not-allowed] [display:inline-flex] [align-items:center] [gap:0.35rem] [white-space:nowrap]">
         <i class="bi bi-calendar-x"></i>Deadline Passed
       </button>
       <?php elseif ($can_submit_step2): ?>
-      <form method="POST" class="d-inline m-0 p-0" id="submitAppForm" style="line-height:0;">
+      <form method="POST" class="d-inline m-0 p-0 [line-height:0]" id="submitAppForm">
         <input type="hidden" name="kra_action" value="submit_application">
         <button type="button"
-                style="background:#fff;color:#1e4d8c;border:none;border-radius:7px;padding:0.4rem 1rem;font-size:0.82rem;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:0.35rem;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.15);"
+                class="[background:#fff] [color:#1e4d8c] [border:none] [border-radius:7px] [padding:0.4rem_1rem] [font-size:0.82rem] [font-weight:700] [cursor:pointer] [display:inline-flex] [align-items:center] [gap:0.35rem] [white-space:nowrap] [box-shadow:0_2px_8px_rgba(0,0,0,0.15)]"
                 onclick="openSubmitModal()">
           <i class="bi bi-send"></i>Submit Application
         </button>
@@ -720,7 +55,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
       <?php else: ?>
       <button type="button" disabled
               title="Weighted score (<?= number_format($score_btn['weighted_score'], 2) ?>) is below the minimum 41.00 required."
-              style="background:rgba(255,255,255,0.1);color:rgba(255,255,255,0.5);border:1px solid rgba(255,255,255,0.15);border-radius:7px;padding:0.4rem 0.9rem;font-size:0.82rem;font-weight:600;cursor:not-allowed;display:inline-flex;align-items:center;gap:0.35rem;white-space:nowrap;">
+              class="[background:rgba(255,255,255,0.1)] [color:rgba(255,255,255,0.5)] [border:1px_solid_rgba(255,255,255,0.15)] [border-radius:7px] [padding:0.4rem_0.9rem] [font-size:0.82rem] [font-weight:600] [cursor:not-allowed] [display:inline-flex] [align-items:center] [gap:0.35rem] [white-space:nowrap]">
         <i class="bi bi-send"></i>Submit Application
       </button>
       <?php endif; ?>
@@ -728,11 +63,11 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
       <?php if (in_array($active_tab, ['instruction','research','extension','profdev'])): ?>
       <?php $knum_map = ['instruction'=>'I','research'=>'II','extension'=>'III','profdev'=>'IV']; ?>
       <a href="backend/services/reports/kra_pdf.php?uid=<?= $_SESSION['user_id'] ?>&cycle_id=<?= $cycle['cycle_id'] ?>&kra=all" target="_blank"
-         style="background:#fff;color:#1e4d8c;border:none;border-radius:7px;padding:0.4rem 0.8rem;font-size:0.78rem;font-weight:700;text-decoration:none;display:inline-flex;align-items:center;gap:0.3rem;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.12);">
+         class="[background:#fff] [color:#1e4d8c] [border:none] [border-radius:7px] [padding:0.4rem_0.8rem] [font-size:0.78rem] [font-weight:700] [text-decoration:none] [display:inline-flex] [align-items:center] [gap:0.3rem] [white-space:nowrap] [box-shadow:0_2px_8px_rgba(0,0,0,0.12)]">
         <i class="bi bi-files"></i>ISS / All KRA
       </a>
       <a href="backend/services/reports/kra_pdf.php?uid=<?= $_SESSION['user_id'] ?>&cycle_id=<?= $cycle['cycle_id'] ?>&kra=<?= urlencode($cur_cat) ?>" target="_blank"
-         style="background:rgba(255,255,255,0.12);color:#fff;border:1px solid rgba(255,255,255,0.25);border-radius:7px;padding:0.4rem 0.7rem;font-size:0.78rem;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:0.3rem;white-space:nowrap;">
+         class="[background:rgba(255,255,255,0.12)] [color:#fff] [border:1px_solid_rgba(255,255,255,0.25)] [border-radius:7px] [padding:0.4rem_0.7rem] [font-size:0.78rem] [font-weight:600] [text-decoration:none] [display:inline-flex] [align-items:center] [gap:0.3rem] [white-space:nowrap]">
         <i class="bi bi-printer"></i>KRA <?= $knum_map[$active_tab] ?>
       </a>
       <?php endif; ?>
@@ -740,24 +75,24 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
   </div>
 
   <!-- Alert banners -->
-  <div style="padding:0 1.25rem;">
+  <div class="[padding:0_1.25rem]">
   <?php if ($locked): ?>
-  <div style="margin-top:0.85rem;padding:0.65rem 1rem;background:#eff6ff;border:1px solid #bfdbfe;border-left:4px solid #1e4d8c;border-radius:8px;font-size:0.82rem;color:#1e4d8c;">
+  <div class="[margin-top:0.85rem] [padding:0.65rem_1rem] [background:#eff6ff] [border:1px_solid_#bfdbfe] [border-left:4px_solid_#1e4d8c] [border-radius:8px] [font-size:0.82rem] [color:#1e4d8c]">
     <i class="bi bi-lock-fill me-2"></i>Evaluation complete - scores are locked.
   </div>
   <?php elseif ($_deadline_passed && !in_array($app['status'], ['needs_revision', 'rejected', 'approved', 'reclassified', 'admin_rejected'])): ?>
-  <div style="margin-top:0.85rem;padding:0.65rem 1rem;background:#fef2f2;border:1px solid #fecaca;border-left:4px solid #dc2626;border-radius:8px;font-size:0.82rem;color:#991b1b;">
+  <div class="[margin-top:0.85rem] [padding:0.65rem_1rem] [background:#fef2f2] [border:1px_solid_#fecaca] [border-left:4px_solid_#dc2626] [border-radius:8px] [font-size:0.82rem] [color:#991b1b]">
     <i class="bi bi-calendar-x-fill me-2"></i>
     <strong>Submission deadline has passed.</strong> You can no longer add or edit KRA entries for this cycle.
   </div>
   <?php elseif ($app['status'] === 'needs_revision'): ?>
-  <div style="margin-top:0.85rem;padding:0.65rem 1rem;background:#f8fafc;border:1px solid #e2e8f0;border-left:4px solid #475569;border-radius:8px;font-size:0.82rem;color:#334155;">
-    <i class="bi bi-exclamation-triangle-fill me-2" style="color:#475569;"></i>
+  <div class="[margin-top:0.85rem] [padding:0.65rem_1rem] [background:#f8fafc] [border:1px_solid_#e2e8f0] [border-left:4px_solid_#475569] [border-radius:8px] [font-size:0.82rem] [color:#334155]">
+    <i class="bi bi-exclamation-triangle-fill me-2 [color:#475569]"></i>
     <strong>Revision requested by evaluator.</strong> Only flagged entries can be edited. Fix the highlighted entries and submit your revision from the Dashboard.
   </div>
   <?php elseif ($app['status'] === 'rejected'): ?>
-  <div style="margin-top:0.85rem;padding:0.65rem 1rem;background:#f8fafc;border:1px solid #e2e8f0;border-left:4px solid #475569;border-radius:8px;font-size:0.82rem;color:#334155;">
-    <i class="bi bi-arrow-counterclockwise me-2" style="color:#475569;"></i>
+  <div class="[margin-top:0.85rem] [padding:0.65rem_1rem] [background:#f8fafc] [border:1px_solid_#e2e8f0] [border-left:4px_solid_#475569] [border-radius:8px] [font-size:0.82rem] [color:#334155]">
+    <i class="bi bi-arrow-counterclockwise me-2 [color:#475569]"></i>
     <strong>Returned for revision by evaluator.</strong> You can edit your entries and resubmit.
   </div>
   <?php endif; ?>
@@ -774,30 +109,30 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
 
   if ($has_advisory && !$locked):
   ?>
-  <div style="margin-top:0.85rem;border:1px solid #fde68a;border-left:4px solid #f59e0b;border-radius:8px;overflow:hidden;font-size:0.8rem;">
-    <div style="padding:0.5rem 0.85rem;background:#fffbeb;display:flex;align-items:center;gap:0.5rem;font-weight:700;color:#92400e;">
+  <div class="[margin-top:0.85rem] [border:1px_solid_#fde68a] [border-left:4px_solid_#f59e0b] [border-radius:8px] [overflow:hidden] [font-size:0.8rem]">
+    <div class="[padding:0.5rem_0.85rem] [background:#fffbeb] [display:flex] [align-items:center] [gap:0.5rem] [font-weight:700] [color:#92400e]">
       <i class="bi bi-clipboard2-pulse"></i> Self-Assessment Advisory (JC01 s.2026)
-      <span style="margin-left:auto;font-weight:400;color:#b45309;font-size:0.72rem;">Advisory only ... your evaluator makes the binding decision</span>
+      <span class="[margin-left:auto] [font-weight:400] [color:#b45309] [font-size:0.72rem]">Advisory only ... your evaluator makes the binding decision</span>
     </div>
-    <div style="padding:0.6rem 0.85rem;background:#fffdf0;">
+    <div class="[padding:0.6rem_0.85rem] [background:#fffdf0]">
       <?php if (!$eval_period_ok): ?>
-      <div style="color:#dc2626;margin-bottom:0.35rem;"><i class="bi bi-calendar-x me-1"></i>Application is linked to an archived cycle. Contact your administrator.</div>
+      <div class="[color:#dc2626] [margin-bottom:0.35rem]"><i class="bi bi-calendar-x me-1"></i>Application is linked to an archived cycle. Contact your administrator.</div>
       <?php endif; ?>
       <?php foreach (array_slice($app_previous_reuse, 0, 5) as $reuse): ?>
-      <div style="color:#dc2626;margin-bottom:0.25rem;"><i class="bi bi-file-earmark-x me-1"></i><strong>Previous unsuccessful application reuse:</strong> <?= htmlspecialchars($reuse['message'] ?? ($reuse['title'] ?? 'Evidence file')) ?></div>
+      <div class="[color:#dc2626] [margin-bottom:0.25rem]"><i class="bi bi-file-earmark-x me-1"></i><strong>Previous unsuccessful application reuse:</strong> <?= htmlspecialchars($reuse['message'] ?? ($reuse['title'] ?? 'Evidence file')) ?></div>
       <?php endforeach; ?>
       <?php foreach (array_slice($app_double, 0, 3) as $d): ?>
-      <div style="color:#c2410c;margin-bottom:0.25rem;"><i class="bi bi-copy me-1"></i><strong>Double-counting flagged:</strong> "<?= htmlspecialchars($d['title'] ?? '') ?>"</div>
+      <div class="[color:#c2410c] [margin-bottom:0.25rem]"><i class="bi bi-copy me-1"></i><strong>Double-counting flagged:</strong> "<?= htmlspecialchars($d['title'] ?? '') ?>"</div>
       <?php endforeach; ?>
       <?php foreach (array_slice($app_pending, 0, 5) as $pd): ?>
-      <div style="color:#92400e;margin-bottom:0.2rem;"><i class="bi bi-file-earmark-x me-1"></i><?= htmlspecialchars($pd) ?></div>
+      <div class="[color:#92400e] [margin-bottom:0.2rem]"><i class="bi bi-file-earmark-x me-1"></i><?= htmlspecialchars($pd) ?></div>
       <?php endforeach; ?>
       <?php foreach (array_slice($app_config, 0, 3) as $ci): ?>
-      <div style="color:#7c3aed;margin-bottom:0.2rem;"><i class="bi bi-wrench me-1"></i><?= htmlspecialchars($ci) ?></div>
+      <div class="[color:#7c3aed] [margin-bottom:0.2rem]"><i class="bi bi-wrench me-1"></i><?= htmlspecialchars($ci) ?></div>
       <?php endforeach; ?>
       <?php $total_items = count($app_pending) + count($app_config) + count($app_double) + count($app_previous_reuse); ?>
       <?php if ($total_items > 16): ?>
-      <div style="color:#94a3b8;font-size:0.72rem;margin-top:0.25rem;">+ more items ... full details visible to your evaluator.</div>
+      <div class="[color:#94a3b8] [font-size:0.72rem] [margin-top:0.25rem]">+ more items ... full details visible to your evaluator.</div>
       <?php endif; ?>
     </div>
   </div>
@@ -806,7 +141,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
   </div>
 
   <!-- KRA Tabs -->
-  <div style="background:#f8fafc;padding:0.6rem 1rem;display:flex;gap:0.4rem;overflow-x:auto;flex-wrap:nowrap;border-bottom:1px solid #e2e8f0;">
+  <div class="[background:#f8fafc] [padding:0.6rem_1rem] [display:flex] [gap:0.4rem] [overflow-x:auto] [flex-wrap:nowrap] [border-bottom:1px_solid_#e2e8f0]">
     <?php foreach ($tabs as $slug => $t): 
         // Only show points badge for KRA tabs, not for Auto Sub Rank or Position Requirements
         $is_kra_tab = in_array($slug, ['instruction', 'research', 'extension', 'profdev']);
@@ -871,14 +206,14 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
   </div>
 
   <!-- Toolbar strip -->
-  <div style="background:#f8fafc;padding:0.5rem 1rem;display:flex;align-items:center;border-bottom:1px solid #e2e8f0;font-size:0.8rem;">
-    <button onclick="location.reload()" style="background:none;border:none;color:#1e4d8c;cursor:pointer;font-size:0.78rem;display:flex;align-items:center;gap:0.3rem;margin-left:auto;">
+  <div class="[background:#f8fafc] [padding:0.5rem_1rem] [display:flex] [align-items:center] [border-bottom:1px_solid_#e2e8f0] [font-size:0.8rem]">
+    <button onclick="location.reload()" class="[background:none] [border:none] [color:#1e4d8c] [cursor:pointer] [font-size:0.78rem] [display:flex] [align-items:center] [gap:0.3rem] [margin-left:auto]">
       <i class="bi bi-arrow-clockwise"></i> Refresh
     </button>
   </div>
 
   <!-- Tab Content -->
-  <div style="background:#ffffff;padding:1rem;min-height:300px;">
+  <div class="[background:#ffffff] [padding:1rem] [min-height:300px]">
     
     <?php if ($cur_cat === 'Auto Sub Rank'): ?>
     <!-- AUTO SUB RANK TAB CONTENT  -  fully automatic, read-only -->
@@ -912,36 +247,36 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
     ?>
 
     <!-- Section header -->
-    <div style="display:flex;align-items:center;gap:0.65rem;margin-bottom:1.25rem;">
-      <div style="width:38px;height:38px;border-radius:10px;background:#1e4d8c;display:flex;align-items:center;justify-content:center;flex-shrink:0;box-shadow:0 2px 8px rgba(0,0,0,0.15);">
-        <i class="bi bi-arrow-up-circle" style="color:#fff;font-size:1.1rem;"></i>
+    <div class="[display:flex] [align-items:center] [gap:0.65rem] [margin-bottom:1.25rem]">
+      <div class="[width:38px] [height:38px] [border-radius:10px] [background:#1e4d8c] [display:flex] [align-items:center] [justify-content:center] [flex-shrink:0] [box-shadow:0_2px_8px_rgba(0,0,0,0.15)]">
+        <i class="bi bi-arrow-up-circle [color:#fff] [font-size:1.1rem]"></i>
       </div>
       <div>
-        <h6 style="font-weight:700;color:#1a3a6b;margin:0;font-size:0.95rem;line-height:1.2;">Automatic Sub-Rank Assessment</h6>
-        <div style="font-size:0.73rem;color:#64748b;margin-top:2px;">
+        <h6 class="[font-weight:700] [color:#1a3a6b] [margin:0] [font-size:0.95rem] [line-height:1.2]">Automatic Sub-Rank Assessment</h6>
+        <div class="[font-size:0.73rem] [color:#64748b] [margin-top:2px]">
           <i class="bi bi-cpu me-1"></i>System-calculated  -  no manual choice required
         </div>
       </div>
       <?php if ($rank_increase > 0): ?>
-      <div style="margin-left:auto;background:#f0fdf4;border:1.5px solid #bbf7d0;border-radius:8px;padding:0.35rem 0.85rem;display:flex;align-items:center;gap:0.4rem;">
-        <i class="bi bi-arrow-up-circle-fill" style="color:#16a34a;font-size:1rem;"></i>
-        <span style="font-weight:700;color:#16a34a;font-size:0.88rem;">+<?= $rank_increase ?> sub-rank<?= $rank_increase > 1 ? 's' : '' ?></span>
+      <div class="[margin-left:auto] [background:#f0fdf4] [border:1.5px_solid_#bbf7d0] [border-radius:8px] [padding:0.35rem_0.85rem] [display:flex] [align-items:center] [gap:0.4rem]">
+        <i class="bi bi-arrow-up-circle-fill [color:#16a34a] [font-size:1rem]"></i>
+        <span class="[font-weight:700] [color:#16a34a] [font-size:0.88rem]">+<?= $rank_increase ?> sub-rank<?= $rank_increase > 1 ? 's' : '' ?></span>
       </div>
       <?php else: ?>
-      <div style="margin-left:auto;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:0.35rem 0.85rem;display:flex;align-items:center;gap:0.4rem;">
-        <i class="bi bi-dash-circle" style="color:#64748b;font-size:1rem;"></i>
-        <span style="font-weight:600;color:#64748b;font-size:0.88rem;">No sub-rank increase</span>
+      <div class="[margin-left:auto] [background:#f8fafc] [border:1px_solid_#e2e8f0] [border-radius:8px] [padding:0.35rem_0.85rem] [display:flex] [align-items:center] [gap:0.4rem]">
+        <i class="bi bi-dash-circle [color:#64748b] [font-size:1rem]"></i>
+        <span class="[font-weight:600] [color:#64748b] [font-size:0.88rem]">No sub-rank increase</span>
       </div>
       <?php endif; ?>
     </div>
 
     <!-- Criterion 1: Doctorate -->
-    <div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:0.85rem;">
-      <div style="background:#f8fafc;border-bottom:1px solid #e2e8f0;padding:0.55rem 1rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;">
-        <span style="font-size:0.72rem;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.06em;">
+    <div class="[border:1px_solid_#e2e8f0] [border-radius:10px] [overflow:hidden] [margin-bottom:0.85rem]">
+      <div class="[background:#f8fafc] [border-bottom:1px_solid_#e2e8f0] [padding:0.55rem_1rem] [display:flex] [align-items:center] [justify-content:space-between] [flex-wrap:wrap] [gap:0.5rem]">
+        <span class="[font-size:0.72rem] [font-weight:700] [color:#475569] [text-transform:uppercase] [letter-spacing:0.06em]">
           <i class="bi bi-mortarboard me-1"></i>Criterion 1  -  Doctorate Degree
         </span>
-        <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;">
+        <div class="[display:flex] [align-items:center] [gap:0.5rem] [flex-wrap:wrap]">
           <span style="background:<?= $d_color ?>18;color:<?= $d_color ?>;border:1px solid <?= $d_color ?>40;padding:0.2rem 0.7rem;border-radius:20px;font-size:0.68rem;font-weight:700;">
             <?= htmlspecialchars($d_label) ?>
           </span>
@@ -950,19 +285,19 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
           </span>
         </div>
       </div>
-      <div style="padding:0.85rem 1rem;">
+      <div class="[padding:0.85rem_1rem]">
         <?php if ($asr_result['has_doctorate']): ?>
-        <div style="display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-start;">
-          <div style="flex:1;min-width:180px;">
-            <div style="font-size:0.72rem;color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.3rem;">Detected From</div>
-            <div style="font-size:0.85rem;color:#1e293b;font-weight:500;"><?= htmlspecialchars($asr_result['doctorate_details'] ?: 'Doctorate (Professional Development)') ?></div>
+        <div class="[display:flex] [gap:1rem] [flex-wrap:wrap] [align-items:flex-start]">
+          <div class="[flex:1] [min-width:180px]">
+            <div class="[font-size:0.72rem] [color:#94a3b8] [font-weight:600] [text-transform:uppercase] [letter-spacing:0.05em] [margin-bottom:0.3rem]">Detected From</div>
+            <div class="[font-size:0.85rem] [color:#1e293b] [font-weight:500]"><?= htmlspecialchars($asr_result['doctorate_details'] ?: 'Doctorate (Professional Development)') ?></div>
           </div>
-          <div style="flex:1;min-width:200px;">
-            <div style="font-size:0.72rem;color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.3rem;">Why This Decision</div>
-            <div style="font-size:0.82rem;color:#475569;line-height:1.5;"><?= htmlspecialchars($asr_result['doctorate_reason']) ?></div>
+          <div class="[flex:1] [min-width:200px]">
+            <div class="[font-size:0.72rem] [color:#94a3b8] [font-weight:600] [text-transform:uppercase] [letter-spacing:0.05em] [margin-bottom:0.3rem]">Why This Decision</div>
+            <div class="[font-size:0.82rem] [color:#475569] [line-height:1.5]"><?= htmlspecialchars($asr_result['doctorate_reason']) ?></div>
           </div>
           <?php if ($d_mode === 'points_only' || $d_mode === 'blocked_historical'): ?>
-          <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:0.5rem 0.75rem;font-size:0.75rem;color:#1e4d8c;width:100%;">
+          <div class="[background:#eff6ff] [border:1px_solid_#bfdbfe] [border-radius:6px] [padding:0.5rem_0.75rem] [font-size:0.75rem] [color:#1e4d8c] [width:100%]">
             <i class="bi bi-info-circle me-1"></i>Doctorate contributes <strong><?= (int)\Scoring\AutoSubRankCalculator::DOCTORATE_POINTS ?> points</strong> to your KRA IV score.
           </div>
           <?php endif; ?>
@@ -973,10 +308,10 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
           <?php endif; ?>
         </div>
         <?php else: ?>
-        <div style="display:flex;align-items:center;gap:0.75rem;color:#64748b;font-size:0.84rem;">
-          <i class="bi bi-exclamation-circle" style="font-size:1.1rem;color:#94a3b8;flex-shrink:0;"></i>
+        <div class="[display:flex] [align-items:center] [gap:0.75rem] [color:#64748b] [font-size:0.84rem]">
+          <i class="bi bi-exclamation-circle [font-size:1.1rem] [color:#94a3b8] [flex-shrink:0]"></i>
           <div>No doctorate entry found in Professional Development.
-            <a href="?page=apply&tab=profdev" style="color:#1e4d8c;font-weight:600;margin-left:0.3rem;">
+            <a href="?page=apply&tab=profdev" class="[color:#1e4d8c] [font-weight:600] [margin-left:0.3rem]">
               <i class="bi bi-plus-circle me-1"></i>Add doctorate in Prof. Development
             </a>
           </div>
@@ -986,12 +321,12 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
     </div>
 
     <!-- Criterion 2: Prestigious Award -->
-    <div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:0.85rem;">
-      <div style="background:#f8fafc;border-bottom:1px solid #e2e8f0;padding:0.55rem 1rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;">
-        <span style="font-size:0.72rem;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.06em;">
+    <div class="[border:1px_solid_#e2e8f0] [border-radius:10px] [overflow:hidden] [margin-bottom:0.85rem]">
+      <div class="[background:#f8fafc] [border-bottom:1px_solid_#e2e8f0] [padding:0.55rem_1rem] [display:flex] [align-items:center] [justify-content:space-between] [flex-wrap:wrap] [gap:0.5rem]">
+        <span class="[font-size:0.72rem] [font-weight:700] [color:#475569] [text-transform:uppercase] [letter-spacing:0.06em]">
           <i class="bi bi-trophy me-1"></i>Criterion 2  -  National / International Award
         </span>
-        <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;">
+        <div class="[display:flex] [align-items:center] [gap:0.5rem] [flex-wrap:wrap]">
           <span style="background:<?= $a_color ?>18;color:<?= $a_color ?>;border:1px solid <?= $a_color ?>40;padding:0.2rem 0.7rem;border-radius:20px;font-size:0.68rem;font-weight:700;">
             <?= htmlspecialchars($a_label) ?>
           </span>
@@ -1002,21 +337,21 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
           <?php endif; ?>
         </div>
       </div>
-      <div style="padding:0.85rem 1rem;">
+      <div class="[padding:0.85rem_1rem]">
         <?php if ($asr_result['has_award']): ?>
-        <div style="display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-start;">
-          <div style="flex:1;min-width:180px;">
-            <div style="font-size:0.72rem;color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.3rem;">Award</div>
-            <div style="font-size:0.85rem;color:#1e293b;font-weight:500;"><?= htmlspecialchars($asr_result['award_details'] ?: 'National/International Award (KRA IV)') ?></div>
+        <div class="[display:flex] [gap:1rem] [flex-wrap:wrap] [align-items:flex-start]">
+          <div class="[flex:1] [min-width:180px]">
+            <div class="[font-size:0.72rem] [color:#94a3b8] [font-weight:600] [text-transform:uppercase] [letter-spacing:0.05em] [margin-bottom:0.3rem]">Award</div>
+            <div class="[font-size:0.85rem] [color:#1e293b] [font-weight:500]"><?= htmlspecialchars($asr_result['award_details'] ?: 'National/International Award (KRA IV)') ?></div>
           </div>
-          <div style="flex:1;min-width:200px;">
-            <div style="font-size:0.72rem;color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.3rem;">Why This Decision</div>
-            <div style="font-size:0.82rem;color:#475569;line-height:1.5;"><?= htmlspecialchars($asr_result['award_reason']) ?></div>
+          <div class="[flex:1] [min-width:200px]">
+            <div class="[font-size:0.72rem] [color:#94a3b8] [font-weight:600] [text-transform:uppercase] [letter-spacing:0.05em] [margin-bottom:0.3rem]">Why This Decision</div>
+            <div class="[font-size:0.82rem] [color:#475569] [line-height:1.5]"><?= htmlspecialchars($asr_result['award_reason']) ?></div>
           </div>
           <?php if (!empty($asr_row['award_evidence'])): ?>
-          <div style="width:100%;">
+          <div class="[width:100%]">
             <a href="../<?= htmlspecialchars($asr_row['award_evidence']) ?>" target="_blank"
-               style="font-size:0.78rem;color:#1e4d8c;text-decoration:none;display:inline-flex;align-items:center;gap:0.3rem;">
+               class="[font-size:0.78rem] [color:#1e4d8c] [text-decoration:none] [display:inline-flex] [align-items:center] [gap:0.3rem]">
               <i class="bi bi-file-earmark-pdf"></i>View uploaded evidence
             </a>
           </div>
@@ -1028,10 +363,10 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
           <?php endif; ?>
         </div>
         <?php else: ?>
-        <div style="display:flex;align-items:center;gap:0.75rem;color:#64748b;font-size:0.84rem;">
-          <i class="bi bi-exclamation-circle" style="font-size:1.1rem;color:#94a3b8;flex-shrink:0;"></i>
+        <div class="[display:flex] [align-items:center] [gap:0.75rem] [color:#64748b] [font-size:0.84rem]">
+          <i class="bi bi-exclamation-circle [font-size:1.1rem] [color:#94a3b8] [flex-shrink:0]"></i>
           <div>No national/international award found in your entries.
-            <a href="?page=apply&tab=profdev" style="color:#1e4d8c;font-weight:600;margin-left:0.3rem;">
+            <a href="?page=apply&tab=profdev" class="[color:#1e4d8c] [font-weight:600] [margin-left:0.3rem]">
               <i class="bi bi-plus-circle me-1"></i>Add award in Prof. Development (Crit. C)
             </a>
           </div>
@@ -1042,33 +377,33 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
 
     <!-- Summary card -->
     <div style="border:1.5px solid <?= $rank_increase > 0 ? '#bbf7d0' : '#e2e8f0' ?>;border-radius:10px;padding:1rem;background:<?= $rank_increase > 0 ? '#f0fdf4' : '#f8fafc' ?>;">
-      <div style="font-size:0.73rem;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.6rem;">
+      <div class="[font-size:0.73rem] [font-weight:700] [color:#475569] [text-transform:uppercase] [letter-spacing:0.06em] [margin-bottom:0.6rem]">
         <i class="bi bi-calculator me-1"></i>Summary
       </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:0.6rem;">
-        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:7px;padding:0.6rem 0.75rem;">
-          <div style="font-size:0.68rem;color:#94a3b8;font-weight:600;text-transform:uppercase;margin-bottom:0.2rem;">Current Score</div>
-          <div style="font-size:1rem;font-weight:700;color:#1e293b;"><?= number_format((float)($asr_result['weighted_score_at_calc'] ?? 0), 2) ?></div>
+      <div class="[display:grid] [grid-template-columns:repeat(auto-fit,minmax(130px,1fr))] [gap:0.6rem]">
+        <div class="[background:#fff] [border:1px_solid_#e2e8f0] [border-radius:7px] [padding:0.6rem_0.75rem]">
+          <div class="[font-size:0.68rem] [color:#94a3b8] [font-weight:600] [text-transform:uppercase] [margin-bottom:0.2rem]">Current Score</div>
+          <div class="[font-size:1rem] [font-weight:700] [color:#1e293b]"><?= number_format((float)($asr_result['weighted_score_at_calc'] ?? 0), 2) ?></div>
         </div>
-        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:7px;padding:0.6rem 0.75rem;">
-          <div style="font-size:0.68rem;color:#94a3b8;font-weight:600;text-transform:uppercase;margin-bottom:0.2rem;">Doctorate Mode</div>
+        <div class="[background:#fff] [border:1px_solid_#e2e8f0] [border-radius:7px] [padding:0.6rem_0.75rem]">
+          <div class="[font-size:0.68rem] [color:#94a3b8] [font-weight:600] [text-transform:uppercase] [margin-bottom:0.2rem]">Doctorate Mode</div>
           <div style="font-size:0.8rem;font-weight:700;color:<?= $d_color ?>;"><?= htmlspecialchars($d_label) ?></div>
         </div>
-        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:7px;padding:0.6rem 0.75rem;">
-          <div style="font-size:0.68rem;color:#94a3b8;font-weight:600;text-transform:uppercase;margin-bottom:0.2rem;">Award Mode</div>
+        <div class="[background:#fff] [border:1px_solid_#e2e8f0] [border-radius:7px] [padding:0.6rem_0.75rem]">
+          <div class="[font-size:0.68rem] [color:#94a3b8] [font-weight:600] [text-transform:uppercase] [margin-bottom:0.2rem]">Award Mode</div>
           <div style="font-size:0.8rem;font-weight:700;color:<?= $a_color ?>;"><?= htmlspecialchars($a_label) ?></div>
         </div>
         <div style="background:<?= $rank_increase > 0 ? '#f0fdf4' : '#fff' ?>;border:1px solid <?= $rank_increase > 0 ? '#bbf7d0' : '#e2e8f0' ?>;border-radius:7px;padding:0.6rem 0.75rem;">
-          <div style="font-size:0.68rem;color:#94a3b8;font-weight:600;text-transform:uppercase;margin-bottom:0.2rem;">Auto Sub-Rank</div>
+          <div class="[font-size:0.68rem] [color:#94a3b8] [font-weight:600] [text-transform:uppercase] [margin-bottom:0.2rem]">Auto Sub-Rank</div>
           <div style="font-size:1rem;font-weight:700;color:<?= $rank_increase > 0 ? '#16a34a' : '#64748b' ?>;">
             <?= $rank_increase > 0 ? "+{$rank_increase}" : '0' ?> rank<?= $rank_increase !== 1 ? 's' : '' ?>
           </div>
         </div>
       </div>
-      <div style="margin-top:0.6rem;font-size:0.71rem;color:#94a3b8;display:flex;align-items:center;gap:0.35rem;flex-wrap:wrap;">
+      <div class="[margin-top:0.6rem] [font-size:0.71rem] [color:#94a3b8] [display:flex] [align-items:center] [gap:0.35rem] [flex-wrap:wrap]">
         <i class="bi bi-arrow-repeat"></i>Recalculated automatically  -  updates when you add/edit KRA IV entries.
         <?php if ($d_verified === 'rejected' || $a_verified === 'rejected'): ?>
-        <span style="color:#dc2626;font-weight:600;"><i class="bi bi-exclamation-triangle me-1"></i>Item marked not acceptable by evaluator - see notes above.</span>
+        <span class="[color:#dc2626] [font-weight:600]"><i class="bi bi-exclamation-triangle me-1"></i>Item marked not acceptable by evaluator - see notes above.</span>
         <?php endif; ?>
       </div>
     </div>
@@ -1087,13 +422,13 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
     $is_univ_prof = strpos($faculty_rank, 'University Professor') !== false;
     ?>
     
-    <div style="display:flex;align-items:center;gap:0.65rem;margin-bottom:1.5rem;">
-      <div style="width:38px;height:38px;border-radius:10px;background:#1e4d8c;display:flex;align-items:center;justify-content:center;flex-shrink:0;box-shadow:0 3px 10px rgba(0,0,0,0.15);">
-        <i class="bi bi-file-earmark-check" style="color:#fff;font-size:1.1rem;"></i>
+    <div class="[display:flex] [align-items:center] [gap:0.65rem] [margin-bottom:1.5rem]">
+      <div class="[width:38px] [height:38px] [border-radius:10px] [background:#1e4d8c] [display:flex] [align-items:center] [justify-content:center] [flex-shrink:0] [box-shadow:0_3px_10px_rgba(0,0,0,0.15)]">
+        <i class="bi bi-file-earmark-check [color:#fff] [font-size:1.1rem]"></i>
       </div>
       <div>
-        <h6 style="font-weight:700;color:#1a3a6b;margin:0;font-size:0.97rem;line-height:1.2;">Position Requirements</h6>
-        <div style="font-size:0.75rem;color:#64748b;margin-top:2px;">
+        <h6 class="[font-weight:700] [color:#1a3a6b] [margin:0] [font-size:0.97rem] [line-height:1.2]">Position Requirements</h6>
+        <div class="[font-size:0.75rem] [color:#64748b] [margin-top:2px]">
           <i class="bi bi-info-circle me-1"></i>Document checklist for <?= sanitize($faculty_rank) ?>
         </div>
       </div>
@@ -1101,10 +436,10 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
 
     <?php if ($is_instructor || $is_asst_assoc): ?>
     <!-- No requirements for Instructor and Assistant/Associate Professor -->
-    <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:2rem;text-align:center;">
-      <i class="bi bi-check-circle-fill" style="color:#16a34a;font-size:2rem;margin-bottom:1rem;display:block;"></i>
-      <h6 style="color:#16a34a;font-weight:700;margin-bottom:0.5rem;">No Additional Documents Required</h6>
-      <p style="color:#15803d;margin:0;font-size:0.9rem;">Your current position (<?= sanitize($faculty_rank) ?>) does not require additional documentation.</p>
+    <div class="[background:#f0fdf4] [border:1px_solid_#bbf7d0] [border-radius:8px] [padding:2rem] [text-align:center]">
+      <i class="bi bi-check-circle-fill [color:#16a34a] [font-size:2rem] [margin-bottom:1rem] [display:block]"></i>
+      <h6 class="[color:#16a34a] [font-weight:700] [margin-bottom:0.5rem]">No Additional Documents Required</h6>
+      <p class="[color:#15803d] [margin:0] [font-size:0.9rem]">Your current position (<?= sanitize($faculty_rank) ?>) does not require additional documentation.</p>
     </div>
 
     <?php elseif ($is_professor && !$is_univ_prof): ?>
@@ -1112,33 +447,33 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
     <form method="POST" enctype="multipart/form-data">
       <input type="hidden" name="kra_action" value="save_position_requirements">
       
-      <div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:1rem;box-shadow:0 1px 4px rgba(0,0,0,0.04);">
-        <div style="background:#1e4d8c;padding:0.5rem 0.9rem;">
-          <span style="color:#fff;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;">Professor Position Requirements</span>
+      <div class="[border:1px_solid_#e2e8f0] [border-radius:10px] [overflow:hidden] [margin-bottom:1rem] [box-shadow:0_1px_4px_rgba(0,0,0,0.04)]">
+        <div class="[background:#1e4d8c] [padding:0.5rem_0.9rem]">
+          <span class="[color:#fff] [font-size:0.72rem] [font-weight:700] [text-transform:uppercase] [letter-spacing:0.07em]">Professor Position Requirements</span>
         </div>
         
-        <table style="width:100%;border-collapse:collapse;background:#fff;font-size:0.84rem;">
+        <table class="table table-modern mb-0 [background:#fff] [font-size:0.84rem]">
           <thead>
-            <tr style="background:#f8fafc;border-bottom:1px solid #e2e8f0;">
-              <th style="width:40px;padding:0.7rem 0.75rem;color:#64748b;font-size:0.68rem;font-weight:700;text-transform:uppercase;">#</th>
-              <th style="padding:0.7rem 0.75rem;color:#64748b;font-size:0.68rem;font-weight:700;text-transform:uppercase;">Requirement</th>
-              <th style="padding:0.7rem 0.75rem;color:#64748b;font-size:0.68rem;font-weight:700;text-transform:uppercase;">Upload</th>
-              <th style="padding:0.7rem 0.75rem;color:#64748b;font-size:0.68rem;font-weight:700;text-transform:uppercase;">Status</th>
+            <tr class="[background:#f8fafc] [border-bottom:1px_solid_#e2e8f0]">
+              <th class="[width:40px] [padding:0.7rem_0.75rem] [color:#64748b] [font-size:0.68rem] [font-weight:700] [text-transform:uppercase]">#</th>
+              <th class="[padding:0.7rem_0.75rem] [color:#64748b] [font-size:0.68rem] [font-weight:700] [text-transform:uppercase]">Requirement</th>
+              <th class="[padding:0.7rem_0.75rem] [color:#64748b] [font-size:0.68rem] [font-weight:700] [text-transform:uppercase]">Upload</th>
+              <th class="[padding:0.7rem_0.75rem] [color:#64748b] [font-size:0.68rem] [font-weight:700] [text-transform:uppercase]">Status</th>
             </tr>
           </thead>
           <tbody>
-            <tr style="border-bottom:1px solid #f1f5f9;">
-              <td style="padding:0.75rem;text-align:center;font-weight:700;color:#64748b;">1</td>
-              <td style="padding:0.75rem;font-weight:600;color:#1e293b;">CAV Transcript of Records</td>
-              <td style="padding:0.75rem;">
-                <input type="file" name="cav_file" accept=".pdf,.jpg,.jpeg,.png" style="font-size:0.78rem;">
+            <tr class="[border-bottom:1px_solid_#f1f5f9]">
+              <td class="[padding:0.75rem] [text-align:center] [font-weight:700] [color:#64748b]">1</td>
+              <td class="[padding:0.75rem] [font-weight:600] [color:#1e293b]">CAV Transcript of Records</td>
+              <td class="[padding:0.75rem]">
+                <input type="file" name="cav_file" accept=".pdf,.jpg,.jpeg,.png" class="form-control form-control-sm [font-size:0.78rem]">
                 <?php if (!empty($pos_data['cav_file'])): ?>
-                <div style="margin-top:0.3rem;">
-                  <a href="<?= $pos_data['cav_file'] ?>" target="_blank" style="font-size:0.7rem;color:#1e4d8c;"><i class="bi bi-file-earmark"></i> View Current</a>
+                <div class="[margin-top:0.3rem]">
+                  <a href="<?= $pos_data['cav_file'] ?>" target="_blank" class="[font-size:0.7rem] [color:#1e4d8c]"><i class="bi bi-file-earmark"></i> View Current</a>
                 </div>
                 <?php endif; ?>
               </td>
-              <td style="padding:0.75rem;text-align:center;">
+              <td class="[padding:0.75rem] [text-align:center]">
                 <?php
                 $cav_status = $pos_data['cav_transcript'] ?? 'Missing';
                 $cav_color = $cav_status === 'Uploaded' ? '#16a34a' : '#dc2626';
@@ -1148,20 +483,20 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
             </tr>
             
             <tr>
-              <td style="padding:0.75rem;text-align:center;font-weight:700;color:#64748b;">2</td>
-              <td style="padding:0.75rem;font-weight:600;color:#1e293b;">
+              <td class="[padding:0.75rem] [text-align:center] [font-weight:700] [color:#64748b]">2</td>
+              <td class="[padding:0.75rem] [font-weight:600] [color:#1e293b]">
                 Internationally Indexed Article
-                <div style="font-size:0.75rem;color:#64748b;font-weight:normal;margin-top:0.2rem;">Scopus, WoS, or ACI, published within the last 3 years</div>
+                <div class="[font-size:0.75rem] [color:#64748b] [font-weight:normal] [margin-top:0.2rem]">Scopus, WoS, or ACI, published within the last 3 years</div>
               </td>
-              <td style="padding:0.75rem;">
-                <input type="file" name="article_file" accept=".pdf,.jpg,.jpeg,.png" style="font-size:0.78rem;">
+              <td class="[padding:0.75rem]">
+                <input type="file" name="article_file" accept=".pdf,.jpg,.jpeg,.png" class="form-control form-control-sm [font-size:0.78rem]">
                 <?php if (!empty($pos_data['article_file'])): ?>
-                <div style="margin-top:0.3rem;">
-                  <a href="<?= $pos_data['article_file'] ?>" target="_blank" style="font-size:0.7rem;color:#1e4d8c;"><i class="bi bi-file-earmark"></i> View Current</a>
+                <div class="[margin-top:0.3rem]">
+                  <a href="<?= $pos_data['article_file'] ?>" target="_blank" class="[font-size:0.7rem] [color:#1e4d8c]"><i class="bi bi-file-earmark"></i> View Current</a>
                 </div>
                 <?php endif; ?>
               </td>
-              <td style="padding:0.75rem;text-align:center;">
+              <td class="[padding:0.75rem] [text-align:center]">
                 <?php
                 $article_status = $pos_data['international_article'] ?? 'Missing';
                 $article_color = $article_status === 'Uploaded' ? '#16a34a' : '#dc2626';
@@ -1174,23 +509,23 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
       </div>
 
       <!-- Result Line -->
-      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:1rem;margin-bottom:1rem;">
-        <div style="font-weight:700;color:#1a3a6b;margin-bottom:0.5rem;">Result:</div>
+      <div class="[background:#f8fafc] [border:1px_solid_#e2e8f0] [border-radius:8px] [padding:1rem] [margin-bottom:1rem]">
+        <div class="[font-weight:700] [color:#1a3a6b] [margin-bottom:0.5rem]">Result:</div>
         <?php
         $all_uploaded = (($pos_data['cav_transcript'] ?? 'Missing') === 'Uploaded' && ($pos_data['international_article'] ?? 'Missing') === 'Uploaded');
         if ($all_uploaded) {
-            echo '<div style="color:#16a34a;font-weight:600;font-size:0.95rem;"><i class="bi bi-check-circle-fill me-1"></i>Requirements Complete</div>';
+            echo '<div class="[color:#16a34a] [font-weight:600] [font-size:0.95rem]"><i class="bi bi-check-circle-fill me-1"></i>Requirements Complete</div>';
         } else {
             $missing = [];
             if (($pos_data['cav_transcript'] ?? 'Missing') === 'Missing') $missing[] = 'CAV Transcript';
             if (($pos_data['international_article'] ?? 'Missing') === 'Missing') $missing[] = 'International Article';
-            echo '<div style="color:#dc2626;font-weight:600;font-size:0.95rem;"><i class="bi bi-x-circle me-1"></i>Requirements Incomplete ... missing: ' . implode(', ', $missing) . '</div>';
+            echo '<div class="[color:#dc2626] [font-weight:600] [font-size:0.95rem]"><i class="bi bi-x-circle me-1"></i>Requirements Incomplete ... missing: ' . implode(', ', $missing) . '</div>';
         }
         ?>
       </div>
 
       <?php if (!$locked): ?>
-      <button type="submit" class="btn btn-primary" style="border-radius:8px;padding:0.55rem 1.25rem;font-weight:600;">
+      <button type="submit" class="btn btn-primary [border-radius:8px] [padding:0.55rem_1.25rem] [font-weight:600]">
         <i class="bi bi-upload me-2"></i>Save Requirements
       </button>
       <?php endif; ?>
@@ -1201,33 +536,33 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
     <form method="POST" enctype="multipart/form-data">
       <input type="hidden" name="kra_action" value="save_position_requirements">
       
-      <div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:1rem;box-shadow:0 1px 4px rgba(0,0,0,0.04);">
-        <div style="background:#1e4d8c;padding:0.5rem 0.9rem;">
-          <span style="color:#fff;font-size:0.72rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;">University Professor Requirements</span>
+      <div class="[border:1px_solid_#e2e8f0] [border-radius:10px] [overflow:hidden] [margin-bottom:1rem] [box-shadow:0_1px_4px_rgba(0,0,0,0.04)]">
+        <div class="[background:#1e4d8c] [padding:0.5rem_0.9rem]">
+          <span class="[color:#fff] [font-size:0.72rem] [font-weight:700] [text-transform:uppercase] [letter-spacing:0.07em]">University Professor Requirements</span>
         </div>
         
-        <table style="width:100%;border-collapse:collapse;background:#fff;font-size:0.84rem;">
+        <table class="table table-modern mb-0 [background:#fff] [font-size:0.84rem]">
           <thead>
-            <tr style="background:#f8fafc;border-bottom:1px solid #e2e8f0;">
-              <th style="width:40px;padding:0.7rem 0.75rem;color:#64748b;font-size:0.68rem;font-weight:700;text-transform:uppercase;">#</th>
-              <th style="padding:0.7rem 0.75rem;color:#64748b;font-size:0.68rem;font-weight:700;text-transform:uppercase;">Requirement</th>
-              <th style="padding:0.7rem 0.75rem;color:#64748b;font-size:0.68rem;font-weight:700;text-transform:uppercase;">Upload</th>
-              <th style="padding:0.7rem 0.75rem;color:#64748b;font-size:0.68rem;font-weight:700;text-transform:uppercase;">Status</th>
+            <tr class="[background:#f8fafc] [border-bottom:1px_solid_#e2e8f0]">
+              <th class="[width:40px] [padding:0.7rem_0.75rem] [color:#64748b] [font-size:0.68rem] [font-weight:700] [text-transform:uppercase]">#</th>
+              <th class="[padding:0.7rem_0.75rem] [color:#64748b] [font-size:0.68rem] [font-weight:700] [text-transform:uppercase]">Requirement</th>
+              <th class="[padding:0.7rem_0.75rem] [color:#64748b] [font-size:0.68rem] [font-weight:700] [text-transform:uppercase]">Upload</th>
+              <th class="[padding:0.7rem_0.75rem] [color:#64748b] [font-size:0.68rem] [font-weight:700] [text-transform:uppercase]">Status</th>
             </tr>
           </thead>
           <tbody>
             <tr>
-              <td style="padding:0.75rem;text-align:center;font-weight:700;color:#64748b;">1</td>
-              <td style="padding:0.75rem;font-weight:600;color:#1e293b;">College/University Professor Certification Form</td>
-              <td style="padding:0.75rem;">
-                <input type="file" name="cert_file" accept=".pdf,.jpg,.jpeg,.png" style="font-size:0.78rem;">
+              <td class="[padding:0.75rem] [text-align:center] [font-weight:700] [color:#64748b]">1</td>
+              <td class="[padding:0.75rem] [font-weight:600] [color:#1e293b]">College/University Professor Certification Form</td>
+              <td class="[padding:0.75rem]">
+                <input type="file" name="cert_file" accept=".pdf,.jpg,.jpeg,.png" class="form-control form-control-sm [font-size:0.78rem]">
                 <?php if (!empty($pos_data['cert_file'])): ?>
-                <div style="margin-top:0.3rem;">
-                  <a href="<?= $pos_data['cert_file'] ?>" target="_blank" style="font-size:0.7rem;color:#1e4d8c;"><i class="bi bi-file-earmark"></i> View Current</a>
+                <div class="[margin-top:0.3rem]">
+                  <a href="<?= $pos_data['cert_file'] ?>" target="_blank" class="[font-size:0.7rem] [color:#1e4d8c]"><i class="bi bi-file-earmark"></i> View Current</a>
                 </div>
                 <?php endif; ?>
               </td>
-              <td style="padding:0.75rem;text-align:center;">
+              <td class="[padding:0.75rem] [text-align:center]">
                 <?php
                 $cert_status = $pos_data['certification_form'] ?? 'Missing';
                 $cert_color = $cert_status === 'Uploaded' ? '#16a34a' : '#dc2626';
@@ -1240,20 +575,20 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
       </div>
 
       <!-- Result Line -->
-      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:1rem;margin-bottom:1rem;">
-        <div style="font-weight:700;color:#1a3a6b;margin-bottom:0.5rem;">Result:</div>
+      <div class="[background:#f8fafc] [border:1px_solid_#e2e8f0] [border-radius:8px] [padding:1rem] [margin-bottom:1rem]">
+        <div class="[font-weight:700] [color:#1a3a6b] [margin-bottom:0.5rem]">Result:</div>
         <?php
         $cert_complete = (($pos_data['certification_form'] ?? 'Missing') === 'Uploaded');
         if ($cert_complete) {
-            echo '<div style="color:#16a34a;font-weight:600;font-size:0.95rem;"><i class="bi bi-check-circle-fill me-1"></i>Requirements Complete</div>';
+            echo '<div class="[color:#16a34a] [font-weight:600] [font-size:0.95rem]"><i class="bi bi-check-circle-fill me-1"></i>Requirements Complete</div>';
         } else {
-            echo '<div style="color:#dc2626;font-weight:600;font-size:0.95rem;"><i class="bi bi-x-circle me-1"></i>Requirements Incomplete ... missing: Certification Form</div>';
+            echo '<div class="[color:#dc2626] [font-weight:600] [font-size:0.95rem]"><i class="bi bi-x-circle me-1"></i>Requirements Incomplete ... missing: Certification Form</div>';
         }
         ?>
       </div>
 
       <?php if (!$locked): ?>
-      <button type="submit" class="btn btn-primary" style="border-radius:8px;padding:0.55rem 1.25rem;font-weight:600;">
+      <button type="submit" class="btn btn-primary [border-radius:8px] [padding:0.55rem_1.25rem] [font-weight:600]">
         <i class="bi bi-upload me-2"></i>Save Requirements
       </button>
       <?php endif; ?>
@@ -1344,8 +679,8 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
 
     <?php if (empty($criteria_list)): ?>
     <!-- No criteria configured -->
-    <div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:8px;padding:2rem;text-align:center;color:#94a3b8;font-size:0.85rem;">
-      <i class="bi bi-inbox" style="font-size:1.5rem;display:block;margin-bottom:0.5rem;color:#cbd5e1;"></i>
+    <div class="[background:#ffffff] [border:1px_solid_#e2e8f0] [border-radius:8px] [padding:2rem] [text-align:center] [color:#94a3b8] [font-size:0.85rem]">
+      <i class="bi bi-inbox [font-size:1.5rem] [display:block] [margin-bottom:0.5rem] [color:#cbd5e1]"></i>
       No criteria configured for this KRA. Contact your administrator.
     </div>
     <?php else: ?>
@@ -1647,9 +982,8 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
     <?php if ($group_count > 1): ?>
     <!-- Criterion stepper nav -->
     <div id="criterionStepperNav"
-         style="display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap;margin-bottom:1rem;padding:0.65rem 0.85rem;
-                background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;">
-        <span style="font-size:0.68rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;margin-right:0.25rem;">Criterion:</span>
+         class="[display:flex] [align-items:center] [gap:0.4rem] [flex-wrap:wrap] [margin-bottom:1rem] [padding:0.65rem_0.85rem] [background:#f8fafc] [border:1px_solid_#e2e8f0] [border-radius:8px]">
+        <span class="[font-size:0.68rem] [font-weight:700] [color:#64748b] [text-transform:uppercase] [letter-spacing:0.06em] [margin-right:0.25rem]">Criterion:</span>
         <?php foreach ($dark_groups as $gk => $g): $gi = array_search($gk, $group_keys); ?>
         <button type="button"
                 onclick="goCriterion(<?= $gi ?>)"
@@ -1659,11 +993,11 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
             <?= htmlspecialchars($g['letter']) ?>
         </button>
         <?php if ($gi < $group_count - 1): ?>
-        <span style="color:#cbd5e1;font-size:0.7rem;">›</span>
+        <span class="[color:#cbd5e1] [font-size:0.7rem]">›</span>
         <?php endif; ?>
         <?php endforeach; ?>
         <span id="criterionStepLabel"
-              style="margin-left:auto;font-size:0.75rem;font-weight:600;color:#1e3a5f;">
+              class="[margin-left:auto] [font-size:0.75rem] [font-weight:600] [color:#1e3a5f]">
             <?= htmlspecialchars($dark_groups[$group_keys[0]]['header']) ?>
         </span>
     </div>
@@ -1792,12 +1126,12 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
         $ci_scores['sef'] = round(($avg_sef / 100) * $kra1_a_caps['sef'], 2);
     }
     ?>
-    <div <?= $group_count > 1 ? 'class="criterion-step" data-step="' . $gi . '" style="display:' . ($gi === 0 ? 'block' : 'none') . ';"' : '' ?>
-         style="background:#ffffff;border:1px solid #dde3ee;border-radius:8px;margin-bottom:1rem;overflow:hidden;">
+    <div class="<?= $group_count > 1 ? 'criterion-step' : '' ?> [background:#ffffff] [border:1px_solid_#dde3ee] [border-radius:8px] [margin-bottom:1rem] [overflow:hidden]"
+         <?= $group_count > 1 ? 'data-step="' . $gi . '" style="display:' . ($gi === 0 ? 'block' : 'none') . ';"' : '' ?>>
 
       <!-- Criterion group header -->
-      <div style="background:#1e3a5f;padding:0.55rem 1rem;display:flex;justify-content:space-between;align-items:center;">
-        <span style="color:#fff;font-weight:700;font-size:0.85rem;letter-spacing:0.01em;"><?= htmlspecialchars($group['header']) ?> <span style="font-weight:400;color:rgba(255,255,255,0.55);font-size:0.75rem;">(maximum of <?= number_format($group_max, 0) ?> points)</span></span>
+      <div class="[background:#1e3a5f] [padding:0.55rem_1rem] [display:flex] [justify-content:space-between] [align-items:center]">
+        <span class="[color:#fff] [font-weight:700] [font-size:0.85rem] [letter-spacing:0.01em]"><?= htmlspecialchars($group['header']) ?> <span class="[font-weight:400] [color:rgba(255,255,255,0.55)] [font-size:0.75rem]">(maximum of <?= number_format($group_max, 0) ?> points)</span></span>
       </div>
 
       <?php
@@ -1900,7 +1234,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
       ?>
       <?php if (!empty($ci_numbering) && $ci_group_no !== $last_numbering_group): ?>
       <?php $last_numbering_group = $ci_group_no; ?>
-      <div style="background:#f1f5f9;border-top:1px solid #dbe3ee;padding:0.55rem 1rem;color:#1e3a5f;font-size:0.8rem;font-weight:800;">
+      <div class="[background:#f1f5f9] [border-top:1px_solid_#dbe3ee] [padding:0.55rem_1rem] [color:#1e3a5f] [font-size:0.8rem] [font-weight:800]">
         <?= htmlspecialchars((int)$ci_numbering['group_no'] . '. ' . $ci_numbering['group_title']) ?>
       </div>
       <?php endif; ?>
@@ -1909,7 +1243,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
           if ($slot_key !== $last_numbering_slot):
               $last_numbering_slot = $slot_key;
       ?>
-      <div style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:0.48rem 1rem 0.48rem 2.75rem;color:#334155;font-size:0.76rem;font-weight:800;">
+      <div class="[background:#f8fafc] [border-top:1px_solid_#e2e8f0] [padding:0.48rem_1rem_0.48rem_2.75rem] [color:#334155] [font-size:0.76rem] [font-weight:800]">
         <?= htmlspecialchars(kraNumberingPrefix($ci_numbering) . ' ' . kraNumberingSubLabel($ci_numbering)) ?>
       </div>
       <?php endif; endif; ?>
@@ -1917,17 +1251,17 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
            style="display:grid;grid-template-columns:28px 1fr auto auto;align-items:start;gap:0;padding:0;border-top:1px solid #e8edf4;<?= $ci_idx % 2 === 0 ? 'background:#fafbfd;' : 'background:#fff;' ?>">
 
         <!-- Number badge -->
-        <div style="padding:0.65rem 0 0.65rem 1rem;color:#94a3b8;font-size:0.72rem;font-weight:700;padding-top:0.78rem;"><?= htmlspecialchars($ci_number) ?></div>
+        <div class="[padding:0.65rem_0_0.65rem_1rem] [color:#94a3b8] [font-size:0.72rem] [font-weight:700] [padding-top:0.78rem]"><?= htmlspecialchars($ci_number) ?></div>
 
         <!-- Label + description -->
-        <div style="padding:0.6rem 0.75rem 0.6rem 0.5rem;min-width:0;">
-          <div style="color:#1a2e4a;font-size:0.82rem;font-weight:600;line-height:1.3;"><?= htmlspecialchars($ci_item_label) ?></div>
+        <div class="[padding:0.6rem_0.75rem_0.6rem_0.5rem] [min-width:0]">
+          <div class="[color:#1a2e4a] [font-size:0.82rem] [font-weight:600] [line-height:1.3]"><?= htmlspecialchars($ci_item_label) ?></div>
           <?php if ($show_desc): ?>
-          <div style="color:#64748b;font-size:0.72rem;margin-top:0.2rem;line-height:1.4;"><?= htmlspecialchars($desc_clean) ?></div>
+          <div class="[color:#64748b] [font-size:0.72rem] [margin-top:0.2rem] [line-height:1.4]"><?= htmlspecialchars($desc_clean) ?></div>
           <?php endif; ?>
           <?php if (!empty($ci_entries)): ?>
           <!-- Existing entries list under the label -->
-            <div style="margin-top:0.45rem;display:flex;flex-direction:column;gap:0.25rem;">
+            <div class="[margin-top:0.45rem] [display:flex] [flex-direction:column] [gap:0.25rem]">
             <?php foreach ($ci_entries as $_ce):
                 $_ce_parts = explode('|||', $_ce['remarks'] ?? '');
                 $_ce_title = trim($_ce_parts[1] ?? '');
@@ -1957,47 +1291,44 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
                     'evidence_files'  => $_ev_files_btn,
                 ]), ENT_QUOTES);
             ?>
-            <div style="display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap;">
+            <div class="[display:flex] [align-items:center] [gap:0.4rem] [flex-wrap:wrap]">
               <?php if ($_ce_title !== ''): ?>
-              <span style="color:#1e293b;font-size:0.72rem;font-weight:700;"><?= htmlspecialchars($_ce_title) ?></span>
+              <span class="[color:#1e293b] [font-size:0.72rem] [font-weight:700]"><?= htmlspecialchars($_ce_title) ?></span>
               <?php endif; ?>
               <?php if ($_ce_meta !== ''): ?>
-              <span style="color:#64748b;font-size:0.7rem;"><?= htmlspecialchars($_ce_meta) ?></span>
+              <span class="[color:#64748b] [font-size:0.7rem]"><?= htmlspecialchars($_ce_meta) ?></span>
               <?php endif; ?>
-              <span style="color:#475569;font-size:0.72rem;font-weight:600;"><?= number_format($_ce_points, 2) ?> pts</span>
+              <span class="[color:#475569] [font-size:0.72rem] [font-weight:600]"><?= number_format($_ce_points, 2) ?> pts</span>
               <?php if (!empty($_ce['_ev_files'])): ?>
-              <span style="color:#64748b;font-size:0.7rem;">
-                <i class="bi bi-file-earmark" style="font-size:0.65rem;"></i>
+              <span class="[color:#64748b] [font-size:0.7rem]">
+                <i class="bi bi-file-earmark [font-size:0.65rem]"></i>
                 <?= count($_ce['_ev_files']) ?> file<?= count($_ce['_ev_files']) > 1 ? 's' : '' ?>
               </span>
               <?php endif; ?>
               <?php if ($_ce_verified): ?>
-              <span style="color:#16a34a;font-size:0.7rem;"><i class="bi bi-patch-check-fill"></i> Acceptable</span>
+              <span class="[color:#16a34a] [font-size:0.7rem]"><i class="bi bi-patch-check-fill"></i> Acceptable</span>
               <?php elseif ($_ce_can_edit): ?>
               <button type="button"
                       onclick="openEditModal(<?= (int)$_ce['submission_id'] ?>)"
                       id="editBtn_<?= (int)$_ce['submission_id'] ?>"
                       data-entry="<?= $_entry_json ?>"
-                      style="height:22px;padding:0 8px;background:#f1f5f9;border:1px solid #cbd5e1;border-radius:4px;
-                             color:#334155;font-size:0.68rem;font-weight:600;cursor:pointer;
-                             display:inline-flex;align-items:center;gap:3px;"
+                      class="[height:22px] [padding:0_8px] [border:1px_solid_#cbd5e1] [border-radius:4px] [color:#334155] [font-size:0.68rem] [font-weight:600] [cursor:pointer] [display:inline-flex] [align-items:center] [gap:3px]" style="background:#f1f5f9;"
                       onmouseover="this.style.background='#e2e8f0'" onmouseout="this.style.background='#f1f5f9'">
-                <i class="bi bi-pencil" style="font-size:0.6rem;"></i> Edit
+                <i class="bi bi-pencil [font-size:0.6rem]"></i> Edit
               </button>
               <?php if (!$locked): ?>
-              <form method="POST" id="delEntry_<?= (int)$_ce['submission_id'] ?>" style="display:inline;">
+              <form method="POST" id="delEntry_<?= (int)$_ce['submission_id'] ?>" class="[display:inline]">
                 <input type="hidden" name="kra_action" value="delete_kra">
                 <input type="hidden" name="submission_id" value="<?= (int)$_ce['submission_id'] ?>">
                 <button type="button"
                         onclick="rememberKraEntryScroll(); confirmDelete('Remove this entry?','delEntry_<?= (int)$_ce['submission_id'] ?>','Remove','bi-trash')"
-                        style="height:22px;padding:0 6px;background:#fef2f2;border:1px solid #fecaca;border-radius:4px;
-                               color:#dc2626;font-size:0.68rem;cursor:pointer;display:inline-flex;align-items:center;">
-                  <i class="bi bi-trash" style="font-size:0.6rem;"></i>
+                        class="[height:22px] [padding:0_6px] [background:#fef2f2] [border:1px_solid_#fecaca] [border-radius:4px] [color:#dc2626] [font-size:0.68rem] [cursor:pointer] [display:inline-flex] [align-items:center]">
+                  <i class="bi bi-trash [font-size:0.6rem]"></i>
                 </button>
               </form>
               <?php endif; ?>
               <?php else: ?>
-              <span style="color:#94a3b8;font-size:0.7rem;font-style:italic;">Submitted</span>
+              <span class="[color:#94a3b8] [font-size:0.7rem] [font-style:italic]">Submitted</span>
               <?php endif; ?>
             </div>
             <?php endforeach; ?>
@@ -2006,25 +1337,23 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
         </div>
 
         <!-- Score -->
-        <div style="padding:0.6rem 0.75rem;text-align:right;white-space:nowrap;min-width:64px;">
+        <div class="[padding:0.6rem_0.75rem] [text-align:right] [white-space:nowrap] [min-width:64px]">
           <?php if ($row_score !== null): ?>
-          <span style="color:#1e293b;font-weight:700;font-size:0.88rem;"><?= number_format($row_score, 2) ?></span>
+          <span class="[color:#1e293b] [font-weight:700] [font-size:0.88rem]"><?= number_format($row_score, 2) ?></span>
           <?php endif; ?>
         </div>
 
         <!-- Add Entry button -->
-        <div style="padding:0.5rem 0.85rem 0.5rem 0;">
+        <div class="[padding:0.5rem_0.85rem_0.5rem_0]">
           <?php if ($can_edit): ?>
           <button type="button"
                   onclick="<?= $btn_onclick ?>"
-                  style="height:28px;padding:0 12px;background:#1e3a5f;border:none;border-radius:5px;color:#fff;
-                         font-size:0.72rem;font-weight:700;cursor:pointer;white-space:nowrap;
-                         display:inline-flex;align-items:center;gap:5px;transition:background 0.15s;"
+                  class="[height:28px] [padding:0_12px] [border:none] [border-radius:5px] [color:#fff] [font-size:0.72rem] [font-weight:700] [cursor:pointer] [white-space:nowrap] [display:inline-flex] [align-items:center] [gap:5px] [transition:background_0.15s]" style="background:#1e3a5f;"
                   onmouseover="this.style.background='#152e4d'" onmouseout="this.style.background='#1e3a5f'">
             <i class="bi bi-plus-lg"></i> Add Entry
           </button>
           <?php else: ?>
-          <span style="color:#94a3b8;font-size:0.72rem;font-style:italic;">
+          <span class="[color:#94a3b8] [font-size:0.72rem] [font-style:italic]">
             <?php if ($locked): ?>Locked
             <?php elseif ($_deadline_passed): ?>Closed
             <?php else: ?>Submitted<?php endif; ?>
@@ -2036,15 +1365,13 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
       <?php endforeach; // end group items ?>
 
       <!-- Group total row -->
-      <div style="background:#1e3a5f;padding:0.45rem 0.85rem;display:flex;justify-content:space-between;align-items:center;gap:1rem;">
+      <div class="[background:#1e3a5f] [padding:0.45rem_0.85rem] [display:flex] [justify-content:space-between] [align-items:center] [gap:1rem]">
         <!-- Prev / Next navigation -->
         <?php if ($group_count > 1): ?>
-        <div style="display:flex;gap:0.4rem;">
+        <div class="[display:flex] [gap:0.4rem]">
             <?php if ($gi > 0): ?>
             <button type="button" onclick="goCriterion(<?= $gi - 1 ?>)"
-                    style="height:26px;padding:0 10px;background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.25);
-                           border-radius:5px;color:#fff;font-size:0.72rem;font-weight:600;cursor:pointer;
-                           display:inline-flex;align-items:center;gap:4px;"
+                    class="[height:26px] [padding:0_10px] [border:1px_solid_rgba(255,255,255,0.25)] [border-radius:5px] [color:#fff] [font-size:0.72rem] [font-weight:600] [cursor:pointer] [display:inline-flex] [align-items:center] [gap:4px]" style="background:rgba(255,255,255,0.12);"
                     onmouseover="this.style.background='rgba(255,255,255,0.2)'"
                     onmouseout="this.style.background='rgba(255,255,255,0.12)'">
                 <i class="bi bi-chevron-left"></i> Prev
@@ -2052,9 +1379,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
             <?php endif; ?>
             <?php if ($gi < $group_count - 1): ?>
             <button type="button" onclick="goCriterion(<?= $gi + 1 ?>)"
-                    style="height:26px;padding:0 10px;background:#fff;border:1px solid rgba(255,255,255,0.4);
-                           border-radius:5px;color:#1e293b;font-size:0.72rem;font-weight:700;cursor:pointer;
-                           display:inline-flex;align-items:center;gap:4px;"
+                    class="[height:26px] [padding:0_10px] [border:1px_solid_rgba(255,255,255,0.4)] [border-radius:5px] [color:#1e293b] [font-size:0.72rem] [font-weight:700] [cursor:pointer] [display:inline-flex] [align-items:center] [gap:4px]" style="background:#fff;"
                     onmouseover="this.style.background='#f1f5f9'"
                     onmouseout="this.style.background='#fff'">
                 Next <i class="bi bi-chevron-right"></i>
@@ -2065,9 +1390,9 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
         <div></div>
         <?php endif; ?>
         <!-- Total -->
-        <div style="display:flex;align-items:center;gap:2rem;">
-            <span style="color:rgba(255,255,255,0.55);font-size:0.72rem;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;">Total criterion</span>
-            <span style="color:#fff;font-weight:800;font-size:0.92rem;min-width:80px;text-align:right;">
+        <div class="[display:flex] [align-items:center] [gap:2rem]">
+            <span class="[color:rgba(255,255,255,0.55)] [font-size:0.72rem] [font-weight:600] [text-transform:uppercase] [letter-spacing:0.04em]">Total criterion</span>
+            <span class="[color:#fff] [font-weight:800] [font-size:0.92rem] [min-width:80px] [text-align:right]">
                 <?= number_format($group_score, 2) ?> &nbsp;/&nbsp; <?= number_format($group_max, 2) ?>
             </span>
         </div>
@@ -2094,11 +1419,11 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
         'Professional Development' => round($score_step2['kra4'] * $weights2['Professional Development'], 2),
     ];
     ?>
-    <div style="background:#1a3a6b;border-radius:0 0 8px 8px;padding:0.6rem 1rem;display:flex;justify-content:flex-end;align-items:center;gap:1.5rem;margin-top:0.5rem;flex-wrap:wrap;">
-      <div style="color:#fff;font-weight:700;font-size:0.9rem;white-space:nowrap;">
-        Grand Total: <span style="color:#fff;font-size:1rem;font-weight:800;"><?= number_format($weighted2, 2) ?></span>
+    <div class="[background:#1a3a6b] [border-radius:0_0_8px_8px] [padding:0.6rem_1rem] [display:flex] [justify-content:flex-end] [align-items:center] [gap:1.5rem] [margin-top:0.5rem] [flex-wrap:wrap]">
+      <div class="[color:#fff] [font-weight:700] [font-size:0.9rem] [white-space:nowrap]">
+        Grand Total: <span class="[color:#fff] [font-size:1rem] [font-weight:800]"><?= number_format($weighted2, 2) ?></span>
         <?php if ($inc2 > 0): ?>
-        <span style="background:rgba(255,255,255,0.15);color:#fff;border-radius:20px;padding:0.1rem 0.5rem;font-size:0.65rem;font-weight:700;margin-left:0.4rem;">+<?= $inc2 ?> sub-rank<?= $inc2 > 1 ? 's' : '' ?></span>
+        <span class="[background:rgba(255,255,255,0.15)] [color:#fff] [border-radius:20px] [padding:0.1rem_0.5rem] [font-size:0.65rem] [font-weight:700] [margin-left:0.4rem]">+<?= $inc2 ?> sub-rank<?= $inc2 > 1 ? 's' : '' ?></span>
         <?php endif; ?>
       </div>
     </div>
@@ -2110,12 +1435,12 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
 
 <!-- KRA ENTRY MODAL -->
 <div class="modal fade" id="kraEntryModal" tabindex="-1">
-  <div class="modal-dialog modal-fullscreen-lg-down modal-dialog-centered modal-dialog-scrollable" style="width:96vw;max-width:96vw;">
-    <div class="modal-content" style="border-radius:14px;overflow:hidden;border:none;box-shadow:0 24px 60px rgba(0,0,0,0.18);">
+  <div class="modal-dialog modal-fullscreen-lg-down modal-dialog-centered modal-dialog-scrollable [width:96vw] [max-width:96vw]">
+    <div class="modal-content [border-radius:14px] [overflow:hidden] [border:none] [box-shadow:0_24px_60px_rgba(0,0,0,0.18)]">
 
       <!-- Modal Header -->
-      <div class="modal-header" style="background:linear-gradient(135deg,#1a3a6b,#1e4d8c);border:none;padding:1.1rem 1.5rem;">
-        <div class="d-flex align-items-center gap-3 flex-grow-1 min-w-0">
+      <div class="modal-header [background:linear-gradient(135deg,#1a3a6b,#1e4d8c)] [border:none] [padding:1.1rem_1.5rem]">
+        <div class="d-flex align-items-center gap-4 flex-grow-1 min-w-0">
           <?php
           $kra_titles = [
               'Instruction'              => ['title' => 'KRA I ... Teaching Effectiveness',             'max' => 100, 'icon' => 'bi-book'],
@@ -2125,15 +1450,14 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
           ];
           $kra_info_modal = $kra_titles[$cur_cat] ?? ['title' => $cur_cat, 'max' => 100, 'icon' => 'bi-table'];
           ?>
-          <div style="width:36px;height:36px;border-radius:8px;background:rgba(255,255,255,0.12);
-                      display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-            <i class="bi <?= $kra_info_modal['icon'] ?>" style="color:#e2e8f0;font-size:1rem;"></i>
+          <div class="[width:36px] [height:36px] [border-radius:8px] [background:rgba(255,255,255,0.12)] [display:flex] [align-items:center] [justify-content:center] [flex-shrink:0]">
+            <i class="bi <?= $kra_info_modal['icon'] ?> [color:#e2e8f0] [font-size:1rem]"></i>
           </div>
           <div class="min-w-0">
-            <div style="color:#fff;font-weight:700;font-size:0.95rem;line-height:1.2;">
+            <div class="[color:#fff] [font-weight:700] [font-size:0.95rem] [line-height:1.2]">
               <?= htmlspecialchars($kra_info_modal['title']) ?>
             </div>
-            <div style="color:rgba(255,255,255,0.55);font-size:0.72rem;margin-top:2px;">
+            <div class="[color:rgba(255,255,255,0.55)] [font-size:0.72rem] [margin-top:2px]">
               Max <?= $kra_info_modal['max'] ?> pts &nbsp;&middot;&nbsp; Entries save automatically
             </div>
           </div>
@@ -2144,192 +1468,188 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
                        letter-spacing:0.06em;text-transform:uppercase;margin-left:0.5rem;flex-shrink:0;"></span>
           <?php endif; ?>
         </div>
-        <button type="button" class="btn-close btn-close-white ms-3" data-bs-dismiss="modal"
-                style="opacity:0.7;transition:opacity 0.15s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'"></button>
+        <button type="button" class="btn-close btn-close-white ms-4 [transition:opacity_0.15s]" data-bs-dismiss="modal"
+                style="opacity:0.7;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.7'"></button>
       </div>
 
       <!-- Modal Body -->
-      <div class="modal-body p-0" style="background:#f8fafc;">
+      <div class="modal-body p-0 [background:#f8fafc]">
         <div class="table-responsive">
-          <table class="kra-entry-table kra-entry-table-<?= strtolower(str_replace(' ', '-', $cur_cat)) ?>" style="width:100%;border-collapse:collapse;font-size:0.82rem;" id="kraTable">
+          <table class="table table-modern kra-entry-table kra-entry-table-<?= strtolower(str_replace(' ', '-', $cur_cat)) ?> mb-0 [font-size:0.82rem] [&_th]:bg-transparent" id="kraTable">
             <?php if ($cur_cat==='Research'): ?>
             <colgroup>
-              <col style="width:56px;">
-              <col style="width:48px;">
+              <col class="[width:56px]">
+              <col class="[width:48px]">
               <col>
-              <col style="width:118px;">
-              <col style="width:106px;">
-              <col style="width:92px;">
-              <col style="width:112px;">
+              <col class="[width:118px]">
+              <col class="[width:106px]">
+              <col class="[width:92px]">
+              <col class="[width:112px]">
             </colgroup>
             <?php elseif ($cur_cat==='Extension'): ?>
             <colgroup>
-              <col style="width:56px;">
-              <col style="width:48px;">
+              <col class="[width:56px]">
+              <col class="[width:48px]">
               <col>
               <col>
-              <col style="width:106px;">
-              <col style="width:92px;">
-              <col style="width:112px;">
+              <col class="[width:106px]">
+              <col class="[width:92px]">
+              <col class="[width:112px]">
             </colgroup>
             <?php else: ?>
             <colgroup>
-              <col style="width:56px;">
-              <col style="width:48px;">
+              <col class="[width:56px]">
+              <col class="[width:48px]">
               <col>
               <col>
-              <col style="width:118px;">
-              <col style="width:106px;">
-              <col style="width:92px;">
-              <col style="width:112px;">
+              <col class="[width:118px]">
+              <col class="[width:106px]">
+              <col class="[width:92px]">
+              <col class="[width:112px]">
             </colgroup>
             <?php endif; ?>
             <thead>
-              <tr style="background:#1e4d8c;">
-                <th style="width:56px;padding:0.7rem 1rem;">
+              <tr class="[background:#1e4d8c]">
+                <th class="[width:56px] [padding:0.7rem_1rem]">
                   <button type="button" onclick="addKraRow()" title="Add new row"
-                          style="width:36px;height:36px;padding:0;background:#16a34a;border:2px solid rgba(255,255,255,0.3);border-radius:8px;
-                                 color:#fff;font-size:1.3rem;font-weight:900;cursor:pointer;
-                                 display:flex;align-items:center;justify-content:center;
-                                 box-shadow:0 2px 6px rgba(0,0,0,0.25);
-                                 transition:background 0.15s,transform 0.1s;position:relative;z-index:10;"
+                          class="[width:36px] [height:36px] [padding:0] [border:2px_solid_rgba(255,255,255,0.3)] [border-radius:8px] [color:#fff] [font-size:1.3rem] [font-weight:900] [cursor:pointer] [display:flex] [align-items:center] [justify-content:center] [box-shadow:0_2px_6px_rgba(0,0,0,0.25)] [transition:background_0.15s,transform_0.1s] [position:relative] [z-index:10]" style="background:#16a34a;"
                           onmouseover="this.style.background='#15803d';this.style.transform='scale(1.08)'"
                           onmouseout="this.style.background='#16a34a';this.style.transform='scale(1)'">
                     <i class="bi bi-plus-lg"></i>
                   </button>
                 </th>
-                <th style="padding:0.7rem 0.5rem;color:rgba(255,255,255,0.65);font-size:0.68rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;">#</th>
+                <th class="[padding:0.7rem_0.5rem] [color:rgba(255,255,255,0.65)] [font-size:0.68rem] [font-weight:700] [letter-spacing:0.06em] [text-transform:uppercase]">#</th>
                 <?php if ($cur_cat==='Research'): ?>
-                <th style="padding:0.7rem 0.75rem;color:rgba(255,255,255,0.65);font-size:0.68rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;">Type / Details</th>
-                <th style="padding:0.7rem 0.75rem;color:rgba(255,255,255,0.65);font-size:0.68rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;width:110px;">Contribution</th>
+                <th class="[padding:0.7rem_0.75rem] [color:rgba(255,255,255,0.65)] [font-size:0.68rem] [font-weight:700] [letter-spacing:0.06em] [text-transform:uppercase]">Type / Details</th>
+                <th class="[padding:0.7rem_0.75rem] [color:rgba(255,255,255,0.65)] [font-size:0.68rem] [font-weight:700] [letter-spacing:0.06em] [text-transform:uppercase] [width:110px]">Contribution</th>
                 <?php elseif ($cur_cat==='Extension'): ?>
-                <th style="padding:0.7rem 0.75rem;color:rgba(255,255,255,0.65);font-size:0.68rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;min-width:160px;">Criterion / Type</th>
-                <th style="padding:0.7rem 0.75rem;color:rgba(255,255,255,0.65);font-size:0.68rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;min-width:200px;">Details</th>
+                <th class="[padding:0.7rem_0.75rem] [color:rgba(255,255,255,0.65)] [font-size:0.68rem] [font-weight:700] [letter-spacing:0.06em] [text-transform:uppercase] [min-width:160px]">Criterion / Type</th>
+                <th class="[padding:0.7rem_0.75rem] [color:rgba(255,255,255,0.65)] [font-size:0.68rem] [font-weight:700] [letter-spacing:0.06em] [text-transform:uppercase] [min-width:200px]">Details</th>
                 <?php elseif ($cur_cat==='Professional Development'): ?>
-                <th style="padding:0.7rem 0.75rem;color:rgba(255,255,255,0.65);font-size:0.68rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;min-width:160px;">Criterion</th>
-                <th style="padding:0.7rem 0.75rem;color:rgba(255,255,255,0.65);font-size:0.68rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;min-width:200px;">Description / Details</th>
-                <th style="padding:0.7rem 0.75rem;color:rgba(255,255,255,0.65);font-size:0.68rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;width:110px;">Sub-value</th>
+                <th class="[padding:0.7rem_0.75rem] [color:rgba(255,255,255,0.65)] [font-size:0.68rem] [font-weight:700] [letter-spacing:0.06em] [text-transform:uppercase] [min-width:160px]">Criterion</th>
+                <th class="[padding:0.7rem_0.75rem] [color:rgba(255,255,255,0.65)] [font-size:0.68rem] [font-weight:700] [letter-spacing:0.06em] [text-transform:uppercase] [min-width:200px]">Description / Details</th>
+                <th class="[padding:0.7rem_0.75rem] [color:rgba(255,255,255,0.65)] [font-size:0.68rem] [font-weight:700] [letter-spacing:0.06em] [text-transform:uppercase] [width:110px]">Sub-value</th>
                 <?php else: ?>
-                <th style="padding:0.7rem 0.75rem;color:rgba(255,255,255,0.65);font-size:0.68rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;min-width:140px;">Criterion</th>
-                <th style="padding:0.7rem 0.75rem;color:rgba(255,255,255,0.65);font-size:0.68rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;min-width:200px;">Details</th>
-                <th style="padding:0.7rem 0.75rem;color:rgba(255,255,255,0.65);font-size:0.68rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;width:110px;">Sub-value</th>
+                <th class="[padding:0.7rem_0.75rem] [color:rgba(255,255,255,0.65)] [font-size:0.68rem] [font-weight:700] [letter-spacing:0.06em] [text-transform:uppercase] [min-width:140px]">Criterion</th>
+                <th class="[padding:0.7rem_0.75rem] [color:rgba(255,255,255,0.65)] [font-size:0.68rem] [font-weight:700] [letter-spacing:0.06em] [text-transform:uppercase] [min-width:200px]">Details</th>
+                <th class="[padding:0.7rem_0.75rem] [color:rgba(255,255,255,0.65)] [font-size:0.68rem] [font-weight:700] [letter-spacing:0.06em] [text-transform:uppercase] [width:110px]">Sub-value</th>
                 <?php endif; ?>
-                <th style="padding:0.7rem 0.75rem;color:rgba(255,255,255,0.65);font-size:0.68rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;width:90px;text-align:center;"><?= $cur_cat==='Research' ? 'Faculty Score' : 'Score' ?></th>
-                <th style="padding:0.7rem 0.75rem;color:rgba(255,255,255,0.65);font-size:0.68rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;width:90px;text-align:center;">Evidence</th>
-                <th style="width:112px;text-align:center;"></th>
+                <th class="[padding:0.7rem_0.75rem] [color:rgba(255,255,255,0.65)] [font-size:0.68rem] [font-weight:700] [letter-spacing:0.06em] [text-transform:uppercase] [width:90px] [text-align:center]"><?= $cur_cat==='Research' ? 'Faculty Score' : 'Score' ?></th>
+                <th class="[padding:0.7rem_0.75rem] [color:rgba(255,255,255,0.65)] [font-size:0.68rem] [font-weight:700] [letter-spacing:0.06em] [text-transform:uppercase] [width:90px] [text-align:center]">Evidence</th>
+                <th class="[width:112px] [text-align:center]"></th>
               </tr>
             </thead>
             <tbody id="kraTableBody"></tbody>
             <tfoot>
-              <tr style="background:#eff6ff;border-top:2px solid #1a3a6b;">
+              <tr class="[background:#eff6ff] [border-top:2px_solid_#1a3a6b]">
                 <td colspan="<?= $cur_cat==='Research'?4:($cur_cat==='Extension'?4:5) ?>"
-                    style="padding:0.75rem 1rem;font-size:0.78rem;font-weight:700;color:#1a3a6b;">
+                    class="[padding:0.75rem_1rem] [font-size:0.78rem] [font-weight:700] [color:#1a3a6b]">
                   TOTAL
-                  <span style="font-weight:400;color:#64748b;margin-left:6px;font-size:0.72rem;">
+                  <span class="[font-weight:400] [color:#64748b] [margin-left:6px] [font-size:0.72rem]">
                     <?= $cur_cat === 'Extension' ? '(A+B+C max 100 + Criterion D bonus max 20)' : ($cur_cat === 'Instruction' ? '(capped at 60)' : '(capped at 100)') ?>
                   </span>
                 </td>
-                <td style="padding:0.75rem;text-align:center;font-weight:800;color:#1e4d8c;font-size:1.15rem;" id="kraGrandTotalDefault">0.00</td>
+                <td class="[padding:0.75rem] [text-align:center] [font-weight:800] [color:#1e4d8c] [font-size:1.15rem]" id="kraGrandTotalDefault">0.00</td>
                 <td colspan="2"></td>
               </tr>
             </tfoot>
           </table>
         </div>
         <div id="criteriaASections" style="display:none;padding:1rem;background:#f8fafc;">
-          <div class="criteria-a-section" data-section-type="set" style="background:#fff;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:1rem;">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:0.65rem 1rem;background:#f8fafc;border-bottom:1px solid #e2e8f0;">
-              <div style="display:flex;align-items:center;gap:0.6rem;min-width:0;">
-                <span style="font-size:0.8rem;font-weight:700;color:#1a3a6b;">Student Evaluation of Teaching (SET)</span>
-                <span style="background:#eff6ff;color:#1e4d8c;font-size:0.65rem;font-weight:700;padding:2px 8px;border-radius:4px;border:1px solid #bfdbfe;"><?= number_format($kra1_a_caps['set'], 2) ?> pts max</span>
+          <div class="criteria-a-section [background:#fff] [border:1px_solid_#e2e8f0] [border-radius:8px] [overflow:hidden] [margin-bottom:1rem]" data-section-type="set">
+            <div class="[display:flex] [align-items:center] [justify-content:space-between] [gap:1rem] [padding:0.65rem_1rem] [background:#f8fafc] [border-bottom:1px_solid_#e2e8f0]">
+              <div class="[display:flex] [align-items:center] [gap:0.6rem] [min-width:0]">
+                <span class="[font-size:0.8rem] [font-weight:700] [color:#1a3a6b]">Student Evaluation of Teaching (SET)</span>
+                <span class="[background:#eff6ff] [color:#1e4d8c] [font-size:0.65rem] [font-weight:700] [padding:2px_8px] [border-radius:4px] [border:1px_solid_#bfdbfe]"><?= number_format($kra1_a_caps['set'], 2) ?> pts max</span>
               </div>
               <button type="button" data-add-type="set" onclick="addKraRow('set')" title="Add SET entry"
-                      style="height:28px;padding:0 10px;background:#1a3a6b;border:none;border-radius:5px;color:#fff;font-size:0.72rem;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:4px;white-space:nowrap;"
+                      class="[height:28px] [padding:0_10px] [border:none] [border-radius:5px] [color:#fff] [font-size:0.72rem] [font-weight:700] [cursor:pointer] [display:inline-flex] [align-items:center] [gap:4px] [white-space:nowrap]" style="background:#1a3a6b;"
                       onmouseover="this.style.background='#1e4d8c'" onmouseout="this.style.background='#1a3a6b'">
                 <i class="bi bi-plus-lg"></i> Add Entry
               </button>
             </div>
             <div class="table-responsive">
-              <table class="kra-entry-table kra-entry-table-instruction" style="width:100%;border-collapse:collapse;font-size:0.82rem;table-layout:fixed;">
+              <table class="table table-modern kra-entry-table kra-entry-table-instruction mb-0 [font-size:0.82rem] [table-layout:fixed] [&_th]:bg-transparent">
                 <colgroup>
-                  <col style="width:44px;">
-                  <col style="width:40px;">
-                  <col style="min-width:140px;">
-                  <col style="width:150px;">
-                  <col style="width:80px;">
-                  <col style="width:150px;">
-                  <col style="width:80px;">
-                  <col style="width:88px;">
+                  <col class="[width:44px]">
+                  <col class="[width:40px]">
+                  <col class="[min-width:140px]">
+                  <col class="[width:150px]">
+                  <col class="[width:80px]">
+                  <col class="[width:150px]">
+                  <col class="[width:80px]">
+                  <col class="[width:88px]">
                 </colgroup>
-                <thead><tr style="background:#1a3a6b;">
-                  <th style="padding:0.55rem 0.5rem;"></th>
-                  <th style="padding:0.55rem 0.4rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">No.</th>
-                  <th style="padding:0.55rem 0.75rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">Evaluation Period</th>
-                  <th style="padding:0.55rem 0.5rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;text-align:center;">1st Semester</th>
-                  <th style="padding:0.55rem 0.4rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;text-align:center;">Evidence</th>
-                  <th style="padding:0.55rem 0.5rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;text-align:center;">2nd Semester</th>
-                  <th style="padding:0.55rem 0.4rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;text-align:center;">Evidence</th>
-                  <th style="padding:0.55rem 0.5rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;text-align:center;">Actions</th>
+                <thead><tr class="[background:#1a3a6b]">
+                  <th class="[padding:0.55rem_0.5rem]"></th>
+                  <th class="[padding:0.55rem_0.4rem] [color:rgba(255,255,255,0.6)] [font-size:0.62rem] [font-weight:700] [letter-spacing:0.05em] [text-transform:uppercase]">No.</th>
+                  <th class="[padding:0.55rem_0.75rem] [color:rgba(255,255,255,0.6)] [font-size:0.62rem] [font-weight:700] [letter-spacing:0.05em] [text-transform:uppercase]">Evaluation Period</th>
+                  <th class="[padding:0.55rem_0.5rem] [color:rgba(255,255,255,0.6)] [font-size:0.62rem] [font-weight:700] [letter-spacing:0.05em] [text-transform:uppercase] [text-align:center]">1st Semester</th>
+                  <th class="[padding:0.55rem_0.4rem] [color:rgba(255,255,255,0.6)] [font-size:0.62rem] [font-weight:700] [letter-spacing:0.05em] [text-transform:uppercase] [text-align:center]">Evidence</th>
+                  <th class="[padding:0.55rem_0.5rem] [color:rgba(255,255,255,0.6)] [font-size:0.62rem] [font-weight:700] [letter-spacing:0.05em] [text-transform:uppercase] [text-align:center]">2nd Semester</th>
+                  <th class="[padding:0.55rem_0.4rem] [color:rgba(255,255,255,0.6)] [font-size:0.62rem] [font-weight:700] [letter-spacing:0.05em] [text-transform:uppercase] [text-align:center]">Evidence</th>
+                  <th class="[padding:0.55rem_0.5rem] [color:rgba(255,255,255,0.6)] [font-size:0.62rem] [font-weight:700] [letter-spacing:0.05em] [text-transform:uppercase] [text-align:center]">Actions</th>
                 </tr></thead>
                 <tbody id="criteriaASetBody"></tbody>
-                <tfoot><tr style="background:#f8fafc;border-top:1px solid #e2e8f0;">
-                  <td colspan="6" style="padding:0.6rem 0.75rem;font-size:0.75rem;font-weight:700;color:#475569;text-align:right;">SET AVG: <span id="kraSetAverage" style="color:#1a3a6b;font-size:0.95rem;font-weight:800;">0.00</span></td>
-                  <td colspan="2" style="padding:0.6rem 0.75rem;font-size:0.75rem;font-weight:700;color:#475569;text-align:right;">SET SUBTOTAL: <span id="kraSetSubtotal" style="color:#1a3a6b;font-size:0.95rem;font-weight:800;">0.00</span></td>
+                <tfoot><tr class="[background:#f8fafc] [border-top:1px_solid_#e2e8f0]">
+                  <td colspan="6" class="[padding:0.6rem_0.75rem] [font-size:0.75rem] [font-weight:700] [color:#475569] [text-align:right]">SET AVG: <span id="kraSetAverage" class="[color:#1a3a6b] [font-size:0.95rem] [font-weight:800]">0.00</span></td>
+                  <td colspan="2" class="[padding:0.6rem_0.75rem] [font-size:0.75rem] [font-weight:700] [color:#475569] [text-align:right]">SET SUBTOTAL: <span id="kraSetSubtotal" class="[color:#1a3a6b] [font-size:0.95rem] [font-weight:800]">0.00</span></td>
                 </tr></tfoot>
               </table>
             </div>
           </div>
-          <div class="criteria-a-section" data-section-type="sef" style="background:#fff;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:1rem;">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:0.65rem 1rem;background:#f8fafc;border-bottom:1px solid #e2e8f0;">
-              <div style="display:flex;align-items:center;gap:0.6rem;min-width:0;">
-                <span style="font-size:0.8rem;font-weight:700;color:#1a3a6b;">Supervisor Evaluation Form (SEF)</span>
-                <span style="background:#f0fdfa;color:#0f766e;font-size:0.65rem;font-weight:700;padding:2px 8px;border-radius:4px;border:1px solid #99f6e4;"><?= number_format($kra1_a_caps['sef'], 2) ?> pts max</span>
+          <div class="criteria-a-section [background:#fff] [border:1px_solid_#e2e8f0] [border-radius:8px] [overflow:hidden] [margin-bottom:1rem]" data-section-type="sef">
+            <div class="[display:flex] [align-items:center] [justify-content:space-between] [gap:1rem] [padding:0.65rem_1rem] [background:#f8fafc] [border-bottom:1px_solid_#e2e8f0]">
+              <div class="[display:flex] [align-items:center] [gap:0.6rem] [min-width:0]">
+                <span class="[font-size:0.8rem] [font-weight:700] [color:#1a3a6b]">Supervisor Evaluation Form (SEF)</span>
+                <span class="[background:#f0fdfa] [color:#0f766e] [font-size:0.65rem] [font-weight:700] [padding:2px_8px] [border-radius:4px] [border:1px_solid_#99f6e4]"><?= number_format($kra1_a_caps['sef'], 2) ?> pts max</span>
               </div>
               <button type="button" data-add-type="sef" onclick="addKraRow('sef')" title="Add SEF entry"
-                      style="height:28px;padding:0 10px;background:#0f766e;border:none;border-radius:5px;color:#fff;font-size:0.72rem;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:4px;white-space:nowrap;"
+                      class="[height:28px] [padding:0_10px] [border:none] [border-radius:5px] [color:#fff] [font-size:0.72rem] [font-weight:700] [cursor:pointer] [display:inline-flex] [align-items:center] [gap:4px] [white-space:nowrap]" style="background:#0f766e;"
                       onmouseover="this.style.background='#115e59'" onmouseout="this.style.background='#0f766e'">
                 <i class="bi bi-plus-lg"></i> Add Entry
               </button>
             </div>
             <div class="table-responsive">
-              <table class="kra-entry-table kra-entry-table-instruction" style="width:100%;border-collapse:collapse;font-size:0.82rem;table-layout:fixed;">
+              <table class="table table-modern kra-entry-table kra-entry-table-instruction mb-0 [font-size:0.82rem] [table-layout:fixed] [&_th]:bg-transparent">
                 <colgroup>
-                  <col style="width:44px;">
-                  <col style="width:40px;">
-                  <col style="min-width:140px;">
-                  <col style="width:150px;">
-                  <col style="width:80px;">
-                  <col style="width:150px;">
-                  <col style="width:80px;">
-                  <col style="width:88px;">
+                  <col class="[width:44px]">
+                  <col class="[width:40px]">
+                  <col class="[min-width:140px]">
+                  <col class="[width:150px]">
+                  <col class="[width:80px]">
+                  <col class="[width:150px]">
+                  <col class="[width:80px]">
+                  <col class="[width:88px]">
                 </colgroup>
-                <thead><tr style="background:#1a3a6b;">
-                  <th style="padding:0.55rem 0.5rem;"></th>
-                  <th style="padding:0.55rem 0.4rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">No.</th>
-                  <th style="padding:0.55rem 0.75rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">Evaluation Period</th>
-                  <th style="padding:0.55rem 0.5rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;text-align:center;">1st Semester</th>
-                  <th style="padding:0.55rem 0.4rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;text-align:center;">Evidence</th>
-                  <th style="padding:0.55rem 0.5rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;text-align:center;">2nd Semester</th>
-                  <th style="padding:0.55rem 0.4rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;text-align:center;">Evidence</th>
-                  <th style="padding:0.55rem 0.5rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;text-align:center;">Actions</th>
+                <thead><tr class="[background:#1a3a6b]">
+                  <th class="[padding:0.55rem_0.5rem]"></th>
+                  <th class="[padding:0.55rem_0.4rem] [color:rgba(255,255,255,0.6)] [font-size:0.62rem] [font-weight:700] [letter-spacing:0.05em] [text-transform:uppercase]">No.</th>
+                  <th class="[padding:0.55rem_0.75rem] [color:rgba(255,255,255,0.6)] [font-size:0.62rem] [font-weight:700] [letter-spacing:0.05em] [text-transform:uppercase]">Evaluation Period</th>
+                  <th class="[padding:0.55rem_0.5rem] [color:rgba(255,255,255,0.6)] [font-size:0.62rem] [font-weight:700] [letter-spacing:0.05em] [text-transform:uppercase] [text-align:center]">1st Semester</th>
+                  <th class="[padding:0.55rem_0.4rem] [color:rgba(255,255,255,0.6)] [font-size:0.62rem] [font-weight:700] [letter-spacing:0.05em] [text-transform:uppercase] [text-align:center]">Evidence</th>
+                  <th class="[padding:0.55rem_0.5rem] [color:rgba(255,255,255,0.6)] [font-size:0.62rem] [font-weight:700] [letter-spacing:0.05em] [text-transform:uppercase] [text-align:center]">2nd Semester</th>
+                  <th class="[padding:0.55rem_0.4rem] [color:rgba(255,255,255,0.6)] [font-size:0.62rem] [font-weight:700] [letter-spacing:0.05em] [text-transform:uppercase] [text-align:center]">Evidence</th>
+                  <th class="[padding:0.55rem_0.5rem] [color:rgba(255,255,255,0.6)] [font-size:0.62rem] [font-weight:700] [letter-spacing:0.05em] [text-transform:uppercase] [text-align:center]">Actions</th>
                 </tr></thead>
                 <tbody id="criteriaASefBody"></tbody>
-                <tfoot><tr style="background:#f8fafc;border-top:1px solid #e2e8f0;">
-                  <td colspan="6" style="padding:0.6rem 0.75rem;font-size:0.75rem;font-weight:700;color:#475569;text-align:right;">SEF AVG: <span id="kraSefAverage" style="color:#0f766e;font-size:0.95rem;font-weight:800;">0.00</span></td>
-                  <td colspan="2" style="padding:0.6rem 0.75rem;font-size:0.75rem;font-weight:700;color:#475569;text-align:right;">SEF SUBTOTAL: <span id="kraSefSubtotal" style="color:#0f766e;font-size:0.95rem;font-weight:800;">0.00</span></td>
+                <tfoot><tr class="[background:#f8fafc] [border-top:1px_solid_#e2e8f0]">
+                  <td colspan="6" class="[padding:0.6rem_0.75rem] [font-size:0.75rem] [font-weight:700] [color:#475569] [text-align:right]">SEF AVG: <span id="kraSefAverage" class="[color:#0f766e] [font-size:0.95rem] [font-weight:800]">0.00</span></td>
+                  <td colspan="2" class="[padding:0.6rem_0.75rem] [font-size:0.75rem] [font-weight:700] [color:#475569] [text-align:right]">SEF SUBTOTAL: <span id="kraSefSubtotal" class="[color:#0f766e] [font-size:0.95rem] [font-weight:800]">0.00</span></td>
                 </tr></tfoot>
               </table>
             </div>
           </div>
-          <div style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:0.65rem 0.75rem;text-align:right;font-size:0.75rem;font-weight:700;color:#475569;">
-            Criterion A Total: <span id="kraGrandTotalCriteriaA" style="color:#1a3a6b;font-size:1rem;font-weight:800;">0.00</span>
+          <div class="[background:#f8fafc] [border-top:1px_solid_#e2e8f0] [padding:0.65rem_0.75rem] [text-align:right] [font-size:0.75rem] [font-weight:700] [color:#475569]">
+            Criterion A Total: <span id="kraGrandTotalCriteriaA" class="[color:#1a3a6b] [font-size:1rem] [font-weight:800]">0.00</span>
           </div>
         </div>
       </div>
 
       <!-- Modal Footer -->
-      <div class="modal-footer" style="background:#fff;border-top:1px solid #e2e8f0;padding:0.75rem 1.25rem;justify-content:space-between;align-items:center;">
-        <span style="font-size:0.75rem;color:#94a3b8;display:flex;align-items:center;gap:0.4rem;">
-          <i class="bi bi-info-circle" style="color:#475569;"></i>
+      <div class="modal-footer [background:#fff] [border-top:1px_solid_#e2e8f0] [padding:0.75rem_1.25rem] [justify-content:space-between] [align-items:center]">
+        <span class="[font-size:0.75rem] [color:#94a3b8] [display:flex] [align-items:center] [gap:0.4rem]">
+          <i class="bi bi-info-circle [color:#475569]"></i>
           Fill fields &amp; upload evidence ... row saves automatically
         </span>
         <button type="button" id="doneBtn" onclick="handleDone()"
@@ -2344,47 +1664,43 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
       <!-- Inline alert area -->
       <div id="kraAlertBox" style="display:none;background:#f8fafc;border-top:2px solid #475569;
                 padding:0.85rem 1.25rem;align-items:flex-start;gap:0.75rem;">
-        <i class="bi bi-exclamation-triangle-fill" style="color:#475569;font-size:1rem;flex-shrink:0;margin-top:2px;"></i>
-        <span id="kraAlertMsg" style="font-size:0.82rem;color:#334155;line-height:1.6;"></span>
+        <i class="bi bi-exclamation-triangle-fill [color:#475569] [font-size:1rem] [flex-shrink:0] [margin-top:2px]"></i>
+        <span id="kraAlertMsg" class="[font-size:0.82rem] [color:#334155] [line-height:1.6]"></span>
       </div>
     </div>
   </div>
 </div>
 
 <!-- Upload Sub-Modal -->
-<div class="modal fade" id="uploadModal" tabindex="-1" style="z-index:10060;" data-bs-focus="false">
-  <div class="modal-dialog modal-dialog-centered" style="max-width:500px;">
-    <div class="modal-content" style="border-radius:12px;overflow:hidden;border:none;box-shadow:0 20px 60px rgba(0,0,0,0.18);">
+<div class="modal fade [z-index:10060]" id="uploadModal" tabindex="-1" data-bs-focus="false">
+  <div class="modal-dialog modal-dialog-centered [max-width:500px]">
+    <div class="modal-content [border-radius:12px] [overflow:hidden] [border:none] [box-shadow:0_20px_60px_rgba(0,0,0,0.18)]">
 
       <!-- Header -->
-      <div style="background:#1a3a6b;padding:1rem 1.25rem;display:flex;align-items:center;justify-content:space-between;">
-        <div style="display:flex;align-items:center;gap:0.6rem;">
-          <div style="width:30px;height:30px;border-radius:7px;background:rgba(255,255,255,0.12);
-                      display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-            <i class="bi bi-cloud-arrow-up" style="color:#fff;font-size:0.9rem;"></i>
+      <div class="modal-header [background:#1a3a6b]">
+        <div class="[display:flex] [align-items:center] [gap:0.6rem]">
+          <div class="[width:30px] [height:30px] [border-radius:7px] [background:rgba(255,255,255,0.12)] [display:flex] [align-items:center] [justify-content:center] [flex-shrink:0]">
+            <i class="bi bi-cloud-arrow-up [color:#fff] [font-size:0.9rem]"></i>
           </div>
           <div>
-            <div style="color:#fff;font-weight:700;font-size:0.9rem;line-height:1.2;">Upload Evidence</div>
-            <div id="uploadContext" style="color:#93c5fd;font-size:0.68rem;margin-top:1px;"></div>
+            <div class="[color:#fff] [font-weight:700] [font-size:0.9rem] [line-height:1.2]">Upload Evidence</div>
+            <div id="uploadContext" class="[color:#93c5fd] [font-size:0.68rem] [margin-top:1px]"></div>
           </div>
         </div>
         <button type="button" data-bs-dismiss="modal"
-                style="background:rgba(255,255,255,0.1);border:none;border-radius:6px;
-                       width:28px;height:28px;color:#fff;font-size:0.85rem;cursor:pointer;
-                       display:flex;align-items:center;justify-content:center;"
+                class="[border:none] [border-radius:6px] [width:28px] [height:28px] [color:#fff] [font-size:0.85rem] [cursor:pointer] [display:flex] [align-items:center] [justify-content:center]" style="background:rgba(255,255,255,0.1);"
                 onmouseover="this.style.background='rgba(255,255,255,0.2)'"
                 onmouseout="this.style.background='rgba(255,255,255,0.1)'">
           <i class="bi bi-x-lg"></i>
         </button>
       </div>
 
-      <div class="modal-body" style="padding:1.1rem 1.25rem;">
+      <div class="modal-body [padding:1.1rem_1.25rem]">
 
         <!-- Disclaimer -->
-        <div style="display:flex;align-items:flex-start;gap:0.5rem;padding:0.55rem 0.75rem;
-                    background:#fffbeb;border:1px solid #fde68a;border-radius:7px;margin-bottom:1rem;">
-          <i class="bi bi-exclamation-triangle-fill" style="color:#d97706;font-size:0.75rem;flex-shrink:0;margin-top:2px;"></i>
-          <span style="font-size:0.72rem;color:#92400e;line-height:1.5;">
+        <div class="[display:flex] [align-items:flex-start] [gap:0.5rem] [padding:0.55rem_0.75rem] [background:#fffbeb] [border:1px_solid_#fde68a] [border-radius:7px] [margin-bottom:1rem]">
+          <i class="bi bi-exclamation-triangle-fill [color:#d97706] [font-size:0.75rem] [flex-shrink:0] [margin-top:2px]"></i>
+          <span class="[font-size:0.72rem] [color:#92400e] [line-height:1.5]">
             <strong>Before uploading —</strong> select a criterion and fill all required score fields first.
             Evidence on an incomplete entry may not count during evaluation.
           </span>
@@ -2394,11 +1710,11 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
         <div id="uploadCapInfo" style="display:flex;align-items:center;justify-content:space-between;
                     padding:0.5rem 0.75rem;background:#f0f4fb;border:1px solid #dbeafe;
                     border-radius:7px;margin-bottom:0.9rem;">
-          <div style="display:flex;align-items:center;gap:0.4rem;">
-            <i class="bi bi-paperclip" style="color:#1a3a6b;font-size:0.75rem;"></i>
-            <span id="uploadCapText" style="font-size:0.75rem;color:#1a3a6b;font-weight:600;">0 / 10 files</span>
+          <div class="[display:flex] [align-items:center] [gap:0.4rem]">
+            <i class="bi bi-paperclip [color:#1a3a6b] [font-size:0.75rem]"></i>
+            <span id="uploadCapText" class="[font-size:0.75rem] [color:#1a3a6b] [font-weight:600]">0 / 10 files</span>
           </div>
-          <span style="font-size:0.68rem;color:#64748b;">PDF, JPG, PNG · max 50 MB each</span>
+          <span class="[font-size:0.68rem] [color:#64748b]">PDF, JPG, PNG · max 50 MB each</span>
         </div>
 
         <!-- File input (outside drop zone — prevents Bootstrap focus re-trigger) -->
@@ -2415,19 +1731,19 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
              ondrop="handleDrop(event)">
           <i class="bi bi-cloud-arrow-up" id="uploadDropIcon"
              style="font-size:1.75rem;color:#94a3b8;display:block;margin-bottom:6px;"></i>
-          <div id="uploadDropText" style="font-size:0.8rem;color:#475569;font-weight:500;">
+          <div id="uploadDropText" class="[font-size:0.8rem] [color:#475569] [font-weight:500]">
             Click or drag &amp; drop files here
           </div>
-          <div style="font-size:0.7rem;color:#94a3b8;margin-top:3px;">Multiple files allowed</div>
+          <div class="[font-size:0.7rem] [color:#94a3b8] [margin-top:3px]">Multiple files allowed</div>
         </div>
 
         <!-- Upload progress -->
         <div id="uploadProgress" style="display:none;margin-bottom:0.75rem;">
-          <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:5px;">
-            <div class="spinner-border spinner-border-sm" style="color:#1a3a6b;width:14px;height:14px;border-width:2px;"></div>
-            <span id="batchStatusText" style="font-size:0.78rem;color:#475569;">Uploading…</span>
+          <div class="[display:flex] [align-items:center] [gap:0.5rem] [margin-bottom:5px]">
+            <div class="spinner-border spinner-border-sm [color:#1a3a6b] [width:14px] [height:14px] [border-width:2px]"></div>
+            <span id="batchStatusText" class="[font-size:0.78rem] [color:#475569]">Uploading…</span>
           </div>
-          <div style="height:5px;background:#e2e8f0;border-radius:99px;overflow:hidden;">
+          <div class="[height:5px] [background:#e2e8f0] [border-radius:99px] [overflow:hidden]">
             <div id="batchProgressBar" class="progress-bar"
                  style="height:100%;width:0%;background:#1a3a6b;border-radius:99px;transition:width 0.3s;"></div>
           </div>
@@ -2435,16 +1751,15 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
 
         <!-- Uploaded files list -->
         <div>
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem;">
-            <span style="font-size:0.75rem;font-weight:700;color:#374151;text-transform:uppercase;letter-spacing:0.04em;">
+          <div class="[display:flex] [align-items:center] [justify-content:space-between] [margin-bottom:0.5rem]">
+            <span class="[font-size:0.75rem] [font-weight:700] [color:#374151] [text-transform:uppercase] [letter-spacing:0.04em]">
               Uploaded Files
             </span>
             <span id="uploadFileCount"
-                  style="background:#1a3a6b;color:#fff;font-size:0.65rem;font-weight:700;
-                         border-radius:20px;padding:1px 8px;">0</span>
+                  class="[background:#1a3a6b] [color:#fff] [font-size:0.65rem] [font-weight:700] [border-radius:20px] [padding:1px_8px]">0</span>
           </div>
           <div id="uploadFileList"
-               style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;min-height:48px;">
+               class="[border:1px_solid_#e2e8f0] [border-radius:8px] [overflow:hidden] [min-height:48px]">
             <!-- populated by renderUploadFileList() -->
           </div>
         </div>
@@ -2452,10 +1767,9 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
       </div>
 
       <!-- Footer -->
-      <div style="padding:0.75rem 1.25rem;border-top:1px solid #f1f5f9;display:flex;justify-content:flex-end;">
+      <div class="modal-footer">
         <button type="button" data-bs-dismiss="modal"
-                style="padding:0.4rem 1.1rem;border:1px solid #cbd5e1;border-radius:7px;
-                       background:#fff;color:#475569;font-size:0.8rem;font-weight:600;cursor:pointer;"
+                class="[padding:0.4rem_1.1rem] [border:1px_solid_#cbd5e1] [border-radius:7px] [color:#475569] [font-size:0.8rem] [font-weight:600] [cursor:pointer]" style="background:#fff;"
                 onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='#fff'">
           Close
         </button>
@@ -2466,21 +1780,19 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
 </div>
 
 <!-- Submit Confirm Modal -->
-<div id="submitConfirmModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:99999;align-items:center;justify-content:center;">
-  <div id="submitModalBox" style="background:#fff;border-radius:0;width:100%;max-width:520px;margin:1rem;box-shadow:0 20px 60px rgba(0,0,0,0.2);overflow:hidden;">
+<div id="submitConfirmModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="submitConfirmTitle" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:99999;align-items:center;justify-content:center;">
+  <div id="submitModalBox" class="modal-dialog modal-dialog-centered modal-content" style="background:#fff;border-radius:0;width:100%;max-width:520px;margin:1rem;box-shadow:0 20px 60px rgba(0,0,0,0.2);overflow:hidden;">
 
     <!-- Header -->
-    <div style="background:#1e4d8c;padding:1.1rem 1.5rem;display:flex;align-items:center;gap:0.875rem;">
+    <div class="modal-header [background:#1e4d8c]">
       <img src="frontend/assets/images/logo.jpg" alt="SUCFRMS Logo"
-           style="width:36px;height:36px;border-radius:50%;object-fit:cover;border:2px solid rgba(255,255,255,0.3);flex-shrink:0;">
+           class="[width:36px] [height:36px] [border-radius:50%] [object-fit:cover] [border:2px_solid_rgba(255,255,255,0.3)] [flex-shrink:0]">
       <div>
-        <div style="color:#fff;font-weight:700;font-size:0.9rem;line-height:1.2;">Submit Application</div>
-        <div style="color:#bfdbfe;font-size:0.7rem;margin-top:1px;">SUCFRMS — Faculty Reclassification</div>
+        <div id="submitConfirmTitle" class="modal-title [color:#fff]">Submit Application</div>
+        <div class="[color:#bfdbfe] [font-size:0.7rem] [margin-top:1px]">SUCFRMS — Faculty Reclassification</div>
       </div>
       <button onclick="document.getElementById('submitConfirmModal').style.display='none'"
-              style="margin-left:auto;background:rgba(255,255,255,0.1);border:none;border-radius:6px;
-                     width:26px;height:26px;color:#fff;font-size:0.8rem;cursor:pointer;
-                     display:flex;align-items:center;justify-content:center;"
+              class="[margin-left:auto] [border:none] [border-radius:6px] [width:26px] [height:26px] [color:#fff] [font-size:0.8rem] [cursor:pointer] [display:flex] [align-items:center] [justify-content:center]" style="background:rgba(255,255,255,0.1);"
               onmouseover="this.style.background='rgba(255,255,255,0.2)'"
               onmouseout="this.style.background='rgba(255,255,255,0.1)'">
         <i class="bi bi-x-lg"></i>
@@ -2489,35 +1801,29 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
 
     <!-- Step 1: Review -->
     <div id="submitStateReview">
-      <div style="padding:1.1rem 1.5rem 0.5rem;">
-        <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem;">
-          <div style="width:22px;height:22px;border-radius:50%;background:#1e4d8c;color:#fff;
-                      font-size:0.65rem;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;">1</div>
-          <span style="font-weight:700;color:#1e293b;font-size:0.88rem;">Review Your Application</span>
-          <span style="font-size:0.7rem;color:#94a3b8;margin-left:auto;">Check before submitting</span>
+      <div class="[padding:1.1rem_1.5rem_0.5rem]">
+        <div class="[display:flex] [align-items:center] [gap:0.5rem] [margin-bottom:0.75rem]">
+          <div class="[width:22px] [height:22px] [border-radius:50%] [background:#1e4d8c] [color:#fff] [font-size:0.65rem] [font-weight:700] [display:flex] [align-items:center] [justify-content:center] [flex-shrink:0]">1</div>
+          <span class="[font-weight:700] [color:#1e293b] [font-size:0.88rem]">Review Your Application</span>
+          <span class="[font-size:0.7rem] [color:#94a3b8] [margin-left:auto]">Check before submitting</span>
         </div>
 
         <!-- KRA summary table -->
-        <div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:0.85rem;">
-          <div style="background:#f8fafc;padding:0.45rem 0.85rem;display:grid;
-                      grid-template-columns:1fr 46px;gap:0.5rem;
-                      font-size:0.62rem;font-weight:700;text-transform:uppercase;
-                      letter-spacing:0.06em;color:#94a3b8;border-bottom:1px solid #e2e8f0;">
-            <span>KRA / Entry</span><span style="text-align:center;">Evidence</span>
+        <div class="[border:1px_solid_#e2e8f0] [border-radius:8px] [overflow:hidden] [margin-bottom:0.85rem]">
+          <div class="[background:#f8fafc] [padding:0.45rem_0.85rem] [display:grid] [grid-template-columns:1fr_46px] [gap:0.5rem] [font-size:0.62rem] [font-weight:700] [text-transform:uppercase] [letter-spacing:0.06em] [color:#94a3b8] [border-bottom:1px_solid_#e2e8f0]">
+            <span>KRA / Entry</span><span class="[text-align:center]">Evidence</span>
           </div>
-          <div id="submitReviewBody" style="max-height:260px;overflow-y:auto;">
-            <div style="padding:1rem;text-align:center;color:#94a3b8;font-size:0.8rem;">
-              <div class="spinner-border spinner-border-sm" style="width:14px;height:14px;border-width:2px;"></div>
+          <div id="submitReviewBody" class="[max-height:260px] [overflow-y:auto]">
+            <div class="[padding:1rem] [text-align:center] [color:#94a3b8] [font-size:0.8rem]">
+              <div class="spinner-border spinner-border-sm [width:14px] [height:14px] [border-width:2px]"></div>
               Loading…
             </div>
           </div>
         </div>
 
         <!-- Weighted score summary -->
-        <div id="submitScoreSummary" style="display:flex;align-items:center;justify-content:space-between;
-                    padding:0.65rem 0.85rem;background:#f0f4fb;border:1px solid #dbeafe;
-                    border-radius:8px;margin-bottom:0.85rem;">
-          <span style="font-size:0.78rem;color:#1a3a6b;font-weight:600;">Current Weighted Score</span>
+        <div id="submitScoreSummary" class="[display:flex] [align-items:center] [justify-content:space-between] [padding:0.65rem_0.85rem] [background:#f0f4fb] [border:1px_solid_#dbeafe] [border-radius:8px] [margin-bottom:0.85rem]">
+          <span class="[font-size:0.78rem] [color:#1a3a6b] [font-weight:600]">Current Weighted Score</span>
           <span id="submitScoreVal" style="font-size:1rem;font-weight:800;color:#1a3a6b;">—</span>
         </div>
 
@@ -2525,22 +1831,19 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
         <div id="submitReviewWarning" style="display:none;align-items:flex-start;gap:0.5rem;
                     padding:0.6rem 0.85rem;background:#fffbeb;border:1px solid #fde68a;
                     border-radius:7px;margin-bottom:0.85rem;font-size:0.75rem;color:#92400e;">
-          <i class="bi bi-exclamation-triangle-fill" style="flex-shrink:0;margin-top:2px;"></i>
+          <i class="bi bi-exclamation-triangle-fill [flex-shrink:0] [margin-top:2px]"></i>
           <span id="submitReviewWarningText"></span>
         </div>
       </div>
 
-      <div style="height:1px;background:#e2e8f0;"></div>
-      <div style="padding:0.9rem 1.5rem;display:flex;gap:0.6rem;justify-content:flex-end;">
+      <div class="[height:1px] [background:#e2e8f0]"></div>
+      <div class="[padding:0.9rem_1.5rem] [display:flex] [gap:0.6rem] [justify-content:flex-end]">
         <button onclick="document.getElementById('submitConfirmModal').style.display='none'"
-                style="padding:0.5rem 1rem;border:1px solid #cbd5e1;border-radius:7px;
-                       background:#fff;color:#475569;font-size:0.82rem;font-weight:600;cursor:pointer;">
+                class="[padding:0.5rem_1rem] [border:1px_solid_#cbd5e1] [border-radius:7px] [background:#fff] [color:#475569] [font-size:0.82rem] [font-weight:600] [cursor:pointer]">
           Cancel
         </button>
         <button onclick="goToSubmitConfirm()"
-                style="padding:0.5rem 1.2rem;border:none;border-radius:7px;
-                       background:#1e4d8c;color:#fff;font-size:0.82rem;font-weight:700;cursor:pointer;
-                       display:inline-flex;align-items:center;gap:0.4rem;"
+                class="[padding:0.5rem_1.2rem] [border:none] [border-radius:7px] [color:#fff] [font-size:0.82rem] [font-weight:700] [cursor:pointer] [display:inline-flex] [align-items:center] [gap:0.4rem]" style="background:#1e4d8c;"
                 onmouseover="this.style.background='#1a3a6b'" onmouseout="this.style.background='#1e4d8c'">
           Continue <i class="bi bi-arrow-right"></i>
         </button>
@@ -2549,31 +1852,26 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
 
     <!-- Step 2: Confirm -->
     <div id="submitStateConfirm" style="display:none;">
-      <div style="padding:1.25rem 1.5rem 1rem;">
-        <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem;">
-          <div style="width:22px;height:22px;border-radius:50%;background:#1e4d8c;color:#fff;
-                      font-size:0.65rem;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;">2</div>
-          <span style="font-weight:700;color:#1e293b;font-size:0.88rem;">Confirm Submission</span>
+      <div class="[padding:1.25rem_1.5rem_1rem]">
+        <div class="[display:flex] [align-items:center] [gap:0.5rem] [margin-bottom:0.75rem]">
+          <div class="[width:22px] [height:22px] [border-radius:50%] [background:#1e4d8c] [color:#fff] [font-size:0.65rem] [font-weight:700] [display:flex] [align-items:center] [justify-content:center] [flex-shrink:0]">2</div>
+          <span class="[font-weight:700] [color:#1e293b] [font-size:0.88rem]">Confirm Submission</span>
         </div>
-        <p style="color:#64748b;font-size:0.82rem;margin:0 0 0.5rem;line-height:1.6;">
+        <p class="[color:#64748b] [font-size:0.82rem] [margin:0_0_0.5rem] [line-height:1.6]">
           You are about to submit your application for evaluator review.
         </p>
-        <p style="font-size:0.75rem;color:#94a3b8;margin:0;">
+        <p class="[font-size:0.75rem] [color:#94a3b8] [margin:0]">
           The evaluation result is a recommendation only, not a final decision.
         </p>
       </div>
-      <div style="height:1px;background:#e2e8f0;"></div>
-      <div style="padding:0.9rem 1.5rem;display:flex;gap:0.6rem;justify-content:flex-end;">
+      <div class="[height:1px] [background:#e2e8f0]"></div>
+      <div class="[padding:0.9rem_1.5rem] [display:flex] [gap:0.6rem] [justify-content:flex-end]">
         <button onclick="goBackToReview()"
-                style="padding:0.5rem 0.9rem;border:1px solid #cbd5e1;border-radius:7px;
-                       background:#fff;color:#475569;font-size:0.82rem;font-weight:600;cursor:pointer;
-                       display:inline-flex;align-items:center;gap:0.4rem;">
+                class="[padding:0.5rem_0.9rem] [border:1px_solid_#cbd5e1] [border-radius:7px] [background:#fff] [color:#475569] [font-size:0.82rem] [font-weight:600] [cursor:pointer] [display:inline-flex] [align-items:center] [gap:0.4rem]">
           <i class="bi bi-arrow-left"></i> Back
         </button>
         <button onclick="doSubmitWithAnimation()"
-                style="padding:0.5rem 1.2rem;border:none;border-radius:7px;
-                       background:#1e4d8c;color:#fff;font-size:0.82rem;font-weight:700;cursor:pointer;
-                       display:inline-flex;align-items:center;gap:0.4rem;"
+                class="[padding:0.5rem_1.2rem] [border:none] [border-radius:7px] [color:#fff] [font-size:0.82rem] [font-weight:700] [cursor:pointer] [display:inline-flex] [align-items:center] [gap:0.4rem]" style="background:#1e4d8c;"
                 onmouseover="this.style.background='#1a3a6b'" onmouseout="this.style.background='#1e4d8c'">
           <i class="bi bi-send"></i> Confirm &amp; Submit
         </button>
@@ -2582,8 +1880,8 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
 
     <!-- Step 3: Submitting -->
     <div id="submitStateProgress" style="display:none;padding:2.5rem 1.75rem;text-align:center;">
-      <div style="width:72px;height:72px;background:#f0f4fb;display:flex;align-items:center;justify-content:center;margin:0 auto 1.5rem;border-radius:50%;overflow:hidden;">
-        <svg id="submitCheckSvg" viewBox="0 0 52 52" width="52" height="52" style="display:block;">
+      <div class="[width:72px] [height:72px] [background:#f0f4fb] [display:flex] [align-items:center] [justify-content:center] [margin:0_auto_1.5rem] [border-radius:50%] [overflow:hidden]">
+        <svg id="submitCheckSvg" viewBox="0 0 52 52" width="52" height="52" class="[display:block]">
           <circle cx="26" cy="26" r="24" fill="#e8edf5"/>
           <circle id="submitCircle" cx="26" cy="26" r="24" fill="none" stroke="#1a3a6b" stroke-width="4"
                   stroke-dasharray="151" stroke-dashoffset="151"
@@ -2595,9 +1893,9 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
                     style="transition:stroke-dashoffset 0.35s ease 0.55s;"/>
         </svg>
       </div>
-      <h5 style="font-weight:700;color:#1e293b;margin-bottom:0.5rem;font-size:1.1rem;">Submitting Application</h5>
-      <p style="color:#64748b;font-size:0.85rem;margin:0 0 1.5rem;">Please wait while your application is being processed...</p>
-      <div style="background:#e2e8f0;border-radius:0;height:4px;overflow:hidden;">
+      <h5 class="[font-weight:700] [color:#1e293b] [margin-bottom:0.5rem] [font-size:1.1rem]">Submitting Application</h5>
+      <p class="[color:#64748b] [font-size:0.85rem] [margin:0_0_1.5rem]">Please wait while your application is being processed...</p>
+      <div class="[background:#e2e8f0] [border-radius:0] [height:4px] [overflow:hidden]">
         <div id="submitProgressBar" style="height:100%;width:0%;background:#1e4d8c;transition:width 1.2s cubic-bezier(0.4,0,0.2,1);"></div>
       </div>
     </div>
@@ -3246,7 +2544,7 @@ function criteriaABodyForType(type) {
 
 function criteriaAEmptyRow(type) {
     const label = type === 'sef' ? 'SEF' : 'SET';
-    return `<tr class="kra-a-empty-row"><td colspan="8" class="text-center text-muted py-5"><i class="bi bi-inbox fs-2 d-block mb-2 text-secondary"></i>No ${label} entries yet. Click <strong>Add Entry</strong> to add a row.</td></tr>`;
+    return `<tr class="kra-a-empty-row"><td colspan="8" class="text-center text-muted py-12"><i class="bi bi-inbox fs-2 d-block mb-2 text-secondary"></i>No ${label} entries yet. Click <strong>Add Entry</strong> to add a row.</td></tr>`;
 }
 
 function setKraTableHeaderForCriteriaA() {
@@ -4532,7 +3830,7 @@ function loadRows() {
     const modalBody = document.querySelector('#kraEntryModal .modal-body');
     const hadRows = !!tbody?.querySelector('tr[data-sid]');
     if (tbody && !hadRows) {
-        tbody.innerHTML = `<tr id="kraEmptyRow"><td colspan="20" class="text-center text-muted py-5">Loading entries...</td></tr>`;
+        tbody.innerHTML = `<tr id="kraEmptyRow"><td colspan="20" class="text-center text-muted py-12">Loading entries...</td></tr>`;
     }
     fetch(`${AJAX_URL}?kra_action=get_entries&app_id=${APP_ID}&cat=${encodeURIComponent(KRA_CAT)}`)
         .then(r => r.json())
@@ -4644,8 +3942,8 @@ function loadCriteriaARows() {
             const setBody = criteriaABodyForType('set');
             const sefBody = criteriaABodyForType('sef');
             if (!data.ok) {
-                if (setBody) setBody.innerHTML = `<tr class="kra-a-empty-row"><td colspan="8" class="text-center text-muted py-5">Unable to load entries.</td></tr>`;
-                if (sefBody) sefBody.innerHTML = `<tr class="kra-a-empty-row"><td colspan="8" class="text-center text-muted py-5">Unable to load entries.</td></tr>`;
+                if (setBody) setBody.innerHTML = `<tr class="kra-a-empty-row"><td colspan="8" class="text-center text-muted py-12">Unable to load entries.</td></tr>`;
+                if (sefBody) sefBody.innerHTML = `<tr class="kra-a-empty-row"><td colspan="8" class="text-center text-muted py-12">Unable to load entries.</td></tr>`;
                 updateCriteriaASummary();
                 return;
             }

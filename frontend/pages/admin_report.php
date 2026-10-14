@@ -1,92 +1,82 @@
-<?php
-session_start();
-header('Content-Type: text/html; charset=UTF-8');
-require_once __DIR__ . '/../../backend/core/functions.php';
-require_once __DIR__ . '/../../backend/database/config/db.php';
-
-if (!isLoggedIn() || !isAdmin()) {
-    http_response_code(403); die('Access denied.');
-}
-
-// -- Filters from query string ---------------------------------
-$cycle_id = intval($_GET['cycle_id'] ?? 0);
-$status   = trim($_GET['status'] ?? '');
-$campus   = intval($_GET['campus_id'] ?? 0);
-
-// -- Load cycles for filter dropdown --------------------------
-$all_cycles  = $pdo->query("SELECT cycle_id, cycle_name, status FROM cycles ORDER BY created_at DESC")->fetchAll();
-$all_campuses = $pdo->query("SELECT campus_id, campus_name FROM campuses WHERE is_active=1 ORDER BY campus_name")->fetchAll();
-
-// -- Active cycle fallback -------------------------------------
-if (!$cycle_id) {
-    foreach ($all_cycles as $cy) {
-        if ($cy['status'] === 'open') { $cycle_id = $cy['cycle_id']; break; }
-    }
-}
-$selected_cycle = null;
-foreach ($all_cycles as $cy) {
-    if ($cy['cycle_id'] === $cycle_id) { $selected_cycle = $cy; break; }
-}
-
-// -- Build query -----------------------------------------------
-$where  = "WHERE u.role = 'faculty'";
-$params = [];
-if ($cycle_id) { $where .= ' AND a.cycle_id = ?'; $params[] = $cycle_id; }
-if ($status && in_array($status, ['submitted','under_review','approved','rejected','reclassified','admin_rejected'])) {
-    $where .= ' AND a.status = ?'; $params[] = $status;
-}
-if ($campus) { $where .= ' AND u.campus_id = ?'; $params[] = $campus; }
-
-$apps = $pdo->prepare("
-    SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, u.employee_id, u.rank,
-           COALESCE(camp.campus_name, '-') as campus_name,
-           c.cycle_name,
-           chk.checker_label as checker_name, chk.user_id as checker_uid
-    FROM applications a
-    JOIN users u ON a.user_id = u.user_id
-    LEFT JOIN campuses camp ON u.campus_id = camp.campus_id
-    LEFT JOIN cycles c ON a.cycle_id = c.cycle_id
-    LEFT JOIN users chk ON a.checker_id = chk.user_id
-    $where
-    ORDER BY camp.campus_name, u.full_name
-");
-$apps->execute($params);
-$apps = $apps->fetchAll();
-
-// -- Summary stats ---------------------------------------------
-$total_faculty = $pdo->query("SELECT COUNT(*) FROM users WHERE role = 'faculty' AND status='active'")->fetchColumn();
-$status_counts = [];
-foreach ($apps as $a) {
-    $status_counts[$a['status']] = ($status_counts[$a['status']] ?? 0) + 1;
-}
-
-// -- KRA averages for selected cycle --------------------------
-$kra_q = $cycle_id
-    ? $pdo->prepare("SELECT ks.kra_category, AVG(ks.computed_points) as avg_pts FROM kra_submissions ks JOIN applications a ON ks.application_id=a.application_id WHERE a.cycle_id=? GROUP BY ks.kra_category")
-    : $pdo->prepare("SELECT kra_category, AVG(computed_points) as avg_pts FROM kra_submissions GROUP BY kra_category");
-$cycle_id ? $kra_q->execute([$cycle_id]) : $kra_q->execute();
-$kra_avgs = ['Instruction'=>0,'Research'=>0,'Extension'=>0,'Professional Development'=>0];
-foreach ($kra_q->fetchAll() as $k) $kra_avgs[$k['kra_category']] = round($k['avg_pts'], 2);
-
-$generated_at = date('F d, Y h:i A');
-$admin_name   = $_SESSION['full_name'] ?? 'Administrator';
-$status_labels = [
-    'submitted'      => 'Submitted',
-    'under_review'   => 'Under Evaluation',
-    'approved'       => 'Evaluation Complete',
-    'rejected'       => 'Returned for Revision',
-    'reclassified'   => 'Evaluation Complete',
-    'admin_rejected' => 'Evaluation Complete',
-    'edit_requested' => 'Edit Requested',
-    'draft'          => 'Draft',
-];
-?>
+<?php require __DIR__ . '/../../backend/controllers/pages/admin_report.php'; ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SUCFRMS - Admin Report</title>
+<link href="../assets/vendor/bootstrap-icons/bootstrap-icons.min.css" rel="stylesheet">
+<style>
+@font-face { font-family:'Inter'; src:url('../assets/fonts/InterVariable.woff2') format('woff2'); font-weight:100 900; font-style:normal; font-display:swap; }
+*,*::before,*::after { box-sizing:border-box; }
+html,body { margin:0; }
+body { font-family:'Inter',Arial,sans-serif; color:#172033; background:#eef2f7; font-size:13px; line-height:1.45; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+.controls { position:sticky; top:0; z-index:20; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:13px 22px; color:#fff; background:#17365f; box-shadow:0 1px 8px rgba(15,23,42,.16); }
+.controls h6 { margin:0; font-size:14px; font-weight:700; }
+.btn-group { display:flex; flex-wrap:wrap; gap:8px; }
+.btn { display:inline-flex; align-items:center; gap:6px; padding:7px 13px; border:1px solid transparent; border-radius:7px; font:700 11px/1.2 'Inter',Arial,sans-serif; text-decoration:none; }
+.btn-light { color:#17365f; background:#fff; }
+.btn-outline { color:#fff; border-color:rgba(255,255,255,.5); background:transparent; }
+.filter-bar { display:flex; align-items:center; flex-wrap:wrap; gap:9px; padding:10px 22px; border-bottom:1px solid #dbe3ee; background:#fff; }
+.filter-bar label { color:#475569; font-size:11px; font-weight:700; }
+.filter-bar select { min-width:150px; padding:6px 9px; border:1px solid #cbd5e1; border-radius:6px; color:#334155; background:#fff; font:500 11px/1.2 'Inter',Arial,sans-serif; }
+.report-body { width:min(1180px,calc(100% - 32px)); margin:20px auto 32px; }
+.report-card { margin-bottom:16px; padding:20px; border:1px solid #dbe3ee; border-radius:10px; background:#fff; box-shadow:0 4px 18px rgba(15,23,42,.06); }
+.section-title { margin-bottom:14px; padding-bottom:7px; border-bottom:2px solid #17365f; color:#17365f; font-size:12px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; }
+.summary-grid { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:10px; margin-bottom:14px; }
+.summary-card { padding:13px 12px; border:1px solid #dbe3ee; border-radius:8px; background:#f8fafc; }
+.summary-card .val { color:#17365f; font-size:22px; line-height:1.1; font-weight:800; }
+.summary-card .lbl { margin-top:5px; color:#64748b; font-size:10px; font-weight:700; letter-spacing:.03em; text-transform:uppercase; }
+.status-row { display:flex; flex-wrap:wrap; gap:6px; }
+.status-pill,.badge { display:inline-flex; align-items:center; border-radius:999px; padding:3px 8px; font-size:10px; font-weight:700; white-space:nowrap; }
+.kra-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
+.kra-card { padding:13px; border:1px solid #dbe3ee; border-radius:8px; background:#f8fafc; }
+.kra-name { color:#17365f; font-size:11px; font-weight:700; }
+.kra-val { margin-top:3px; font-size:20px; font-weight:800; }
+.kra-val span { color:#64748b; font-size:10px; font-weight:500; }
+.kra-bar { height:5px; margin-top:8px; overflow:hidden; border-radius:999px; background:#e2e8f0; }
+.kra-fill { height:100%; border-radius:999px; background:#1e4d8c; }
+.table-wrapper { overflow-x:auto; }
+table { width:100%; border-collapse:collapse; font-size:10px; }
+th { padding:7px 6px; border:1px solid #334155; color:#fff; background:#17365f; font-size:9px; text-align:left; white-space:nowrap; }
+td { padding:7px 6px; border:1px solid #dbe3ee; vertical-align:middle; }
+tbody tr:nth-child(even) { background:#f8fafc; }
+.score-high { color:#17365f; font-weight:800; }
+.score-mid { color:#475569; font-weight:800; }
+.score-low { color:#7f1d1d; font-weight:800; }
+.badge-reclassified,.badge-approved,.badge-submitted { color:#1e4d8c; background:#dbeafe; }
+.badge-under_review,.badge-draft,.badge-edit_requested { color:#475569; background:#f1f5f9; }
+.badge-rejected,.badge-admin_rejected { color:#9f1239; background:#fff1f2; }
+.empty-state { padding:28px; color:#64748b; text-align:center; }
+.report-footer { display:flex; justify-content:flex-end; margin-top:14px; padding-top:8px; border-top:1px solid #dbe3ee; color:#64748b; font-size:10px; }
+@media (max-width:900px) {
+    .summary-grid { grid-template-columns:repeat(3,minmax(0,1fr)); }
+    .kra-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+@media (max-width:600px) {
+    .controls { align-items:flex-start; padding:12px 14px; }
+    .filter-bar { align-items:stretch; padding:10px 14px; }
+    .filter-bar label { width:100%; }
+    .filter-bar select { width:100%; }
+    .report-body { width:100%; margin:0; }
+    .report-card { margin:0; padding:15px 12px; border-width:0 0 1px; border-radius:0; box-shadow:none; }
+    .summary-grid,.kra-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+@page { size:A4 landscape; margin:12mm; }
+@media print {
+    body { background:#fff; color:#000; font-size:9pt; }
+    .screen-only { display:none !important; }
+    .report-body { width:100%; margin:0; }
+    .report-card { margin:0 0 10px; padding:0; border:0; border-radius:0; box-shadow:none; break-inside:avoid; }
+    .summary-grid { grid-template-columns:repeat(6,1fr); }
+    .kra-grid { grid-template-columns:repeat(4,1fr); }
+    .summary-card,.kra-card { padding:7px; border-color:#94a3b8; }
+    .summary-card .val,.kra-val { font-size:13pt; }
+    .table-wrapper { overflow:visible; }
+    table { font-size:6.5pt; }
+    th,td { padding:3px 4px; }
+}
+</style>
 </head>
 <body>
 

@@ -1,3 +1,16 @@
+<?php
+$_page_titles = [
+    'dashboard' => 'Dashboard', 'my_application' => 'Application Status', 'apply' => 'Apply / KRA Entry',
+    'score_comparison' => 'Score Comparison', 'appeals' => 'Appeals', 'my_audit' => 'My Activity Log',
+    'checker_audit' => 'My Activity Log', 'audit' => 'Audit Logs', 'profile' => 'Profile',
+    'profile_entry' => 'Profile Entry', 'review_queue' => 'Review Queue', 'review_application' => 'Review Application',
+    'view_application' => 'Application Details', 'all_applications' => 'All Applications', 'analytics' => 'Analytics',
+    'cycles' => 'Cycles & Criteria', 'config' => 'Cycles & Criteria', 'manage_users' => 'Manage Users',
+    'manage_campuses' => 'Manage Campuses', 'feedback' => 'Feedback', 'help' => 'Help & Guide',
+];
+$_page_title = $_page_titles[$page ?? 'dashboard'] ?? 'Dashboard';
+$_role_label = ['admin' => 'Administrator', 'evaluator' => 'Evaluator'][$_SESSION['role'] ?? ''] ?? 'Faculty';
+?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -5,59 +18,27 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="theme-color" content="#1a3a6b">
-    <title>SUCFRMS - SUC Faculty Reclassification Management System</title>
+    <title><?= htmlspecialchars($_page_title) ?> · SUCFRMS</title>
+    <link rel="preload" href="frontend/assets/fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin>
     <link href="frontend/assets/vendor/bootstrap-icons/bootstrap-icons.min.css" rel="stylesheet">
     <link rel="stylesheet" href="frontend/assets/css/app.css?v=<?= filemtime(__DIR__ . '/../assets/css/app.css') ?>">
+    <link rel="stylesheet" href="frontend/assets/css/legacy.css?v=<?= filemtime(__DIR__ . '/../assets/css/legacy.css') ?>">
     <style>
-    #page-loader {
-        position: fixed;
-        inset: 0;
-        z-index: 99999;
-        background: #f0f3f8;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        gap: 1.25rem;
-        transition: opacity 0.3s ease;
-    }
-    #page-loader.fade-out {
-        opacity: 0;
-        pointer-events: none;
-    }
-    .loader-logo {
-        width: 56px;
-        height: 56px;
-        border-radius: 50%;
-        object-fit: cover;
-        border: 3px solid #1a3a6b;
-        box-shadow: 0 4px 16px rgba(26,58,107,0.2);
-    }
-    .loader-spinner {
-        width: 38px;
-        height: 38px;
-        border: 3px solid #dbeafe;
-        border-top-color: #1a3a6b;
-        border-radius: 50%;
-        animation: spin 0.7s linear infinite;
-    }
-    .loader-text {
-        font-family: 'Segoe UI', Arial, sans-serif;
-        font-size: 0.75rem;
-        font-weight: 600;
-        color: #94a3b8;
-        letter-spacing: 0.04em;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes bellRing { 0%,100%{transform:rotate(0)} 10%{transform:rotate(14deg)} 20%{transform:rotate(-12deg)} 30%{transform:rotate(10deg)} 40%{transform:rotate(-8deg)} 50%{transform:rotate(5deg)} 60%{transform:rotate(0)} }
+    @keyframes badgePop { from{transform:scale(0)} to{transform:scale(1)} }
+    @keyframes sucfrmsToastIn { from{opacity:0;transform:translateY(1rem)} to{opacity:1;transform:translateY(0)} }
+    @keyframes sucfrmsToastOut { from{opacity:1;transform:translateY(0)} to{opacity:0;transform:translateY(1rem)} }
     </style>
 </head>
-<body>
+<body class="bg-canvas text-ink antialiased">
 
-<!-- Page loader — shown immediately, hidden once DOM is ready -->
-<div id="page-loader">
-    <img src="frontend/assets/images/logo.jpg" class="loader-logo" alt="SUCFRMS">
-    <div class="loader-spinner"></div>
-    <div class="loader-text">Loading&hellip;</div>
+<!-- Page loader: shown immediately, hidden once the DOM is ready -->
+<div id="page-loader" class="fixed inset-0 z-[99999] flex flex-col items-center justify-center gap-5 bg-canvas transition-opacity duration-300 [&.fade-out]:pointer-events-none [&.fade-out]:opacity-0">
+    <div class="relative">
+        <img src="frontend/assets/images/logo.jpg" alt="SUCFRMS" class="size-14 rounded-full object-cover shadow-card ring-4 ring-white">
+        <span class="absolute -inset-2 animate-spin rounded-full border-2 border-brand-100 border-t-brand-700"></span>
+    </div>
+    <div class="text-xs font-medium tracking-wide text-slate-400">Loading&hellip;</div>
 </div>
 <script>
 document.addEventListener('DOMContentLoaded', function() {
@@ -84,219 +65,144 @@ window.addEventListener('pageshow', function(e) {
 });
 </script>
 
-<nav class="navbar navbar-expand-lg navbar-dark sticky-top" style="z-index:1030;">
-    <div class="container-fluid px-4">
-        <!-- Hamburger  -  mobile only, opens slide-out sidebar -->
-        <button class="d-md-none me-2" id="mobileMenuBtn" onclick="toggleMobileSidebar()"
-                style="background:none;border:none;color:#fff;padding:0.3rem 0.4rem;cursor:pointer;
-                       display:flex;align-items:center;justify-content:center;border-radius:6px;
-                       transition:background 0.15s;"
-                onmouseover="this.style.background='rgba(255,255,255,0.15)'"
-                onmouseout="this.style.background='none'"
-                aria-label="Open menu">
-            <i class="bi bi-list" style="font-size:1.4rem;line-height:1;"></i>
+<!-- -- Top bar -- -->
+<header id="topbar" class="fixed inset-x-0 top-0 z-[1030] h-16 border-b border-slate-200/80 bg-white/85 backdrop-blur-md print:hidden md:left-64">
+    <div class="flex h-full items-center gap-3 px-4 sm:px-6 lg:px-8">
+        <button class="topbar-btn md:hidden" id="mobileMenuBtn" onclick="toggleMobileSidebar()" aria-label="Open menu">
+            <i class="bi bi-list text-2xl"></i>
         </button>
-        <a class="navbar-brand d-flex align-items-center gap-2" href="index.php">
-            <img src="frontend/assets/images/logo.jpg?v=2" alt="Institution Logo"
-                 style="width:38px;height:38px;border-radius:50%;object-fit:cover;border:2px solid #475569;clip-path:circle(50%);flex-shrink:0;">
-            <span class="fw-bold" style="color:#ffffff;font-size:1rem;">SUC Faculty Reclassification Management System</span>
-        </a>
+        <div class="min-w-0 flex-1">
+            <div class="truncate text-[0.6875rem] font-semibold tracking-wider text-slate-400 uppercase"><?= $_role_label ?></div>
+            <div class="truncate text-base font-semibold leading-tight text-slate-900"><?= htmlspecialchars($_page_title) ?></div>
+        </div>
+
         <?php if (isset($_SESSION['user_id']) && isset($pdo)): ?>
         <?php $_notif_count = getUnreadNotifCount($pdo, (int)$_SESSION['user_id']); ?>
-        <!-- Notification bell  -  always visible on ALL screen sizes, outside the collapsible nav -->
-        <div style="position:relative;margin-left:auto;margin-right:0.35rem;flex-shrink:0;">
-            <button id="notifBellBtn" onclick="toggleNotifDropdown()"
-                    style="background:none;border:none;color:#fff;cursor:pointer;padding:0.4rem 0.55rem;
-                           position:relative;font-size:1.3rem;line-height:1;border-radius:8px;
-                           transition:background 0.2s;display:flex;align-items:center;"
-                    title="Notifications"
-                    onmouseover="this.style.background='rgba(255,255,255,0.15)'"
-                    onmouseout="this.style.background='none'">
-                <i class="bi bi-bell-fill" id="notifBellIcon"
+        <!-- Notification bell -->
+        <div class="relative shrink-0">
+            <button id="notifBellBtn" onclick="toggleNotifDropdown()" class="topbar-btn" title="Notifications" aria-label="Notifications">
+                <i class="bi bi-bell" id="notifBellIcon"
                    style="<?= $_notif_count > 0 ? 'animation:bellRing 1.2s ease infinite;' : '' ?>"></i>
                 <?php if ($_notif_count > 0): ?>
                 <span id="notifBadge"
-                      style="position:absolute;top:-2px;right:-2px;background:#334155;color:#fff;
-                             font-size:0.58rem;font-weight:700;border-radius:50%;min-width:18px;height:18px;
-                             display:flex;align-items:center;justify-content:center;line-height:1;padding:0 3px;
-                             box-shadow:0 0 0 2px #1a3a6b;animation:badgePop 0.3s cubic-bezier(0.34,1.56,0.64,1);">
+                      class="absolute top-1 right-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-rose-500 px-1 text-[0.6rem] leading-none font-bold text-white ring-2 ring-white"
+                      style="animation:badgePop 0.3s cubic-bezier(0.34,1.56,0.64,1);">
                     <?= $_notif_count > 9 ? '9+' : $_notif_count ?>
                 </span>
                 <?php else: ?>
                 <span id="notifBadge"
-                      style="display:none;position:absolute;top:-2px;right:-2px;background:#334155;color:#fff;
-                             font-size:0.58rem;font-weight:700;border-radius:50%;min-width:18px;height:18px;
-                             align-items:center;justify-content:center;line-height:1;padding:0 3px;
-                             box-shadow:0 0 0 2px #1a3a6b;"></span>
+                      class="absolute top-1 right-1 h-[18px] min-w-[18px] items-center justify-center rounded-full bg-rose-500 px-1 text-[0.6rem] leading-none font-bold text-white ring-2 ring-white"
+                      style="display:none;"></span>
                 <?php endif; ?>
             </button>
 
-            <style>
-            @keyframes bellRing {
-                0%,100%{transform:rotate(0)}
-                10%{transform:rotate(14deg)}
-                20%{transform:rotate(-12deg)}
-                30%{transform:rotate(10deg)}
-                40%{transform:rotate(-8deg)}
-                50%{transform:rotate(5deg)}
-                60%{transform:rotate(0)}
-            }
-            @keyframes badgePop {
-                from{transform:scale(0)}
-                to{transform:scale(1)}
-            }
-            </style>
-
-            <!-- Notification dropdown  -  fixed position so it escapes any overflow clipping -->
-            <div id="notifDropdown"
-                 style="display:none;position:fixed;top:62px;right:12px;
-                        width:360px;max-width:calc(100vw - 24px);
-                        background:#fff;border-radius:12px;
-                        box-shadow:0 12px 40px rgba(0,0,0,0.22);
-                        z-index:99999;overflow:hidden;border:1px solid #e2e8f0;">
-                <div style="padding:0.85rem 1.1rem;background:linear-gradient(135deg,#1e4d8c,#1a3a6b);
-                            display:flex;justify-content:space-between;align-items:center;">
-                    <div style="display:flex;align-items:center;gap:0.6rem;">
-                        <i class="bi bi-bell-fill" style="color:#475569;font-size:0.95rem;"></i>
-                        <span style="color:#fff;font-weight:700;font-size:0.9rem;">Notifications</span>
-                        <span id="notifHeaderCount"
-                              style="background:rgba(255,255,255,0.2);color:#fff;font-size:0.68rem;
-                                     font-weight:700;border-radius:20px;padding:1px 7px;">
+            <!-- Notification panel: fixed position so it escapes any overflow clipping -->
+            <div id="notifDropdown" style="display:none;"
+                 class="fixed top-[4.5rem] right-3 z-[99999] w-[380px] max-w-[calc(100vw-24px)] overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-pop animate-fade-up">
+                <div class="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+                    <div class="flex items-center gap-2">
+                        <span class="text-sm font-semibold text-slate-900">Notifications</span>
+                        <span id="notifHeaderCount" class="rounded-full bg-brand-50 px-2 py-0.5 text-[0.6875rem] font-semibold text-brand-700">
                             <?= $_notif_count > 0 ? $_notif_count . ' unread' : 'all read' ?>
                         </span>
                     </div>
-                    <button onclick="markAllRead()"
-                            style="background:rgba(255,255,255,0.15);border:none;color:#fff;font-size:0.72rem;
-                                   cursor:pointer;padding:3px 10px;border-radius:6px;"
-                            onmouseover="this.style.background='rgba(255,255,255,0.28)'"
-                            onmouseout="this.style.background='rgba(255,255,255,0.15)'">
-                        Mark all read
+                    <button onclick="markAllRead()" class="btn btn-ghost btn-xs">
+                        <i class="bi bi-check2-all"></i>Mark all read
                     </button>
                 </div>
-                <div id="notifList" style="max-height:380px;overflow-y:auto;">
-                    <div class="text-center text-muted py-4" style="font-size:0.82rem;">
-                        <i class="bi bi-bell-slash d-block mb-2" style="font-size:1.5rem;"></i>Loading...
+                <div id="notifList" class="max-h-[380px] overflow-y-auto">
+                    <div class="py-10 text-center text-sm text-slate-400">
+                        <i class="bi bi-bell-slash mb-2 block text-2xl"></i>Loading...
                     </div>
                 </div>
-                <div style="padding:0.5rem 1rem;background:#f8fafc;border-top:1px solid #f1f5f9;text-align:center;">
-                    <span style="font-size:0.68rem;color:#94a3b8;">
-                        <i class="bi bi-arrow-clockwise me-1"></i>Updates every 30 seconds
-                    </span>
+                <div class="border-t border-slate-100 bg-slate-50/70 px-4 py-2 text-center text-[0.6875rem] text-slate-400">
+                    <i class="bi bi-arrow-clockwise me-1"></i>Updates every 30 seconds
                 </div>
             </div>
         </div>
         <?php endif; ?>
 
-<!-- Help button moved to footer -->
-
-        <!-- Send Feedback modal -->
-        <div id="feedbackModal"
-             style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);
-                    z-index:100003;align-items:center;justify-content:center;">
-            <div style="background:#fff;border-radius:14px;width:100%;max-width:460px;
-                        margin:1rem;box-shadow:0 20px 60px rgba(0,0,0,0.25);overflow:hidden;">
-                <div style="padding:1rem 1.25rem;background:linear-gradient(135deg,#1e4d8c,#1a3a6b);
-                            display:flex;justify-content:space-between;align-items:center;">
-                    <span style="color:#fff;font-weight:700;font-size:0.95rem;">
-                        <i class="bi bi-chat-square-text me-2"></i>Send Feedback
-                    </span>
-                    <button onclick="document.getElementById('feedbackModal').style.display='none'"
-                            style="background:none;border:none;color:#fff;font-size:1.2rem;cursor:pointer;line-height:1;">
-                        <i class="bi bi-x-lg"></i>
-                    </button>
+        <!-- User menu -->
+        <div class="dropdown shrink-0">
+            <button type="button" data-bs-toggle="dropdown" aria-label="Account menu"
+                    class="flex items-center gap-2.5 rounded-xl border-0 bg-transparent py-1 pr-2 pl-1 transition-colors hover:bg-slate-100">
+                <?= userAvatar('size-8', 'text-xs') ?>
+                <span class="hidden max-w-40 truncate text-sm font-medium text-slate-700 lg:block"><?= htmlspecialchars($_SESSION['first_name'] ?? ($_SESSION['full_name'] ?? '')) ?></span>
+                <i class="bi bi-chevron-down hidden text-[0.65rem] text-slate-400 lg:block"></i>
+            </button>
+            <div class="dropdown-menu right-0 w-60">
+                <div class="px-3 pt-2 pb-2.5">
+                    <div class="truncate text-sm font-semibold text-slate-900"><?= htmlspecialchars($_SESSION['full_name'] ?? '') ?></div>
+                    <div class="truncate text-xs text-slate-500"><?= htmlspecialchars($_SESSION['email'] ?? $_role_label) ?></div>
                 </div>
-                <form id="feedbackForm" style="padding:1.25rem;">
-                    <div style="margin-bottom:1rem;">
-                        <label style="font-size:0.8rem;font-weight:600;color:#475569;display:block;margin-bottom:4px;">
-                            Subject <span style="color:#334155;">*</span>
-                        </label>
-                        <input type="text" id="fbSubject" maxlength="255" required
-                               placeholder="e.g. Issue with KRA upload"
-                               style="width:100%;padding:0.5rem 0.75rem;border:1px solid #cbd5e1;
-                                      border-radius:7px;font-size:0.85rem;outline:none;box-sizing:border-box;"
-                               onfocus="this.style.borderColor='#1e4d8c'"
-                               onblur="this.style.borderColor='#cbd5e1'">
-                    </div>
-                    <div style="margin-bottom:1rem;">
-                        <label style="font-size:0.8rem;font-weight:600;color:#475569;display:block;margin-bottom:4px;">
-                            Message <span style="color:#334155;">*</span>
-                        </label>
-                        <textarea id="fbMessage" rows="4" required
-                                  placeholder="Describe your feedback, suggestion, or issue..."
-                                  style="width:100%;padding:0.5rem 0.75rem;border:1px solid #cbd5e1;
-                                         border-radius:7px;font-size:0.85rem;resize:vertical;
-                                         outline:none;box-sizing:border-box;"
-                                  onfocus="this.style.borderColor='#1e4d8c'"
-                                  onblur="this.style.borderColor='#cbd5e1'"></textarea>
-                    </div>
-                    <div style="margin-bottom:1.25rem;">
-                        <label style="font-size:0.8rem;font-weight:600;color:#475569;display:block;margin-bottom:6px;">
-                            Rating (optional)
-                        </label>
-                        <div id="starRating" style="display:flex;gap:6px;">
-                            <?php for ($s = 1; $s <= 5; $s++): ?>
-                            <i class="bi bi-star" data-star="<?= $s ?>"
-                               style="font-size:1.4rem;cursor:pointer;color:#cbd5e1;transition:color 0.15s;"
-                               onclick="setRating(<?= $s ?>)"
-                               onmouseover="hoverRating(<?= $s ?>)"
-                               onmouseout="resetRatingHover()"></i>
-                            <?php endfor; ?>
-                        </div>
-                        <input type="hidden" id="fbRating" value="">
-                    </div>
-                    <div id="fbAlert" style="display:none;margin-bottom:0.75rem;padding:0.6rem 0.9rem;
-                         border-radius:7px;font-size:0.8rem;"></div>
-                    <div style="display:flex;gap:0.75rem;justify-content:flex-end;">
-                        <button type="button"
-                                onclick="document.getElementById('feedbackModal').style.display='none'"
-                                style="padding:0.45rem 1.1rem;border:1px solid #cbd5e1;border-radius:7px;
-                                       background:#fff;font-size:0.85rem;cursor:pointer;">
-                            Cancel
-                        </button>
-                        <button type="submit"
-                                style="padding:0.45rem 1.3rem;border:none;border-radius:7px;
-                                       background:#1e4d8c;color:#fff;font-size:0.85rem;
-                                       font-weight:600;cursor:pointer;">
-                            <i class="bi bi-send me-1"></i>Submit
-                        </button>
-                    </div>
-                </form>
+                <div class="dropdown-divider"></div>
+                <a class="dropdown-item" href="index.php?page=profile"><i class="bi bi-person text-slate-400"></i>Profile</a>
+                <a class="dropdown-item" href="index.php?page=help"><i class="bi bi-book text-slate-400"></i>Help &amp; Guide</a>
+                <a class="dropdown-item" href="#" onclick="openFeedbackModal(); return false;"><i class="bi bi-chat-dots text-slate-400"></i>Send Feedback</a>
+                <div class="dropdown-divider"></div>
+                <a class="dropdown-item text-rose-600 hover:bg-rose-50 hover:text-rose-700" href="#"
+                   onclick="document.getElementById('logout-modal').style.display='flex'; return false;">
+                    <i class="bi bi-box-arrow-right"></i>Sign Out
+                </a>
             </div>
         </div>
-
-        <div class="collapse navbar-collapse" id="mainNav"></div>
     </div>
-</nav>
+</header>
 
-<style>
-/* Mobile sidebar slide-out drawer */
-@media (max-width: 767.98px) {
-    #sidebarCol {
-        display: block !important;
-        position: fixed !important;
-        top: 0;
-        left: 0;
-        height: 100vh;
-        width: 260px !important;
-        z-index: 1040;
-        transform: translateX(-100%);
-        transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-        overflow-y: auto;
-    }
-    #sidebarCol.mobile-open {
-        transform: translateX(0);
-    }
-    /* Push main content full-width on mobile */
-    .main-content {
-        padding-left: 0 !important;
-    }
-}
-</style>
+<!-- Send Feedback modal -->
+<div id="feedbackModal" style="display:none;"
+     class="fixed inset-0 z-[100003] items-center justify-center bg-slate-900/50 p-4 backdrop-blur-[2px]">
+    <div class="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-pop animate-fade-up">
+        <div class="flex items-start justify-between gap-4 px-6 pt-6">
+            <div class="flex items-center gap-3">
+                <span class="icon-chip"><i class="bi bi-chat-square-text"></i></span>
+                <div>
+                    <h3 class="m-0 text-base font-semibold text-slate-900">Send feedback</h3>
+                    <p class="m-0 text-sm text-slate-500">Report an issue or suggest an improvement.</p>
+                </div>
+            </div>
+            <button type="button" class="btn-close" aria-label="Close"
+                    onclick="document.getElementById('feedbackModal').style.display='none'"></button>
+        </div>
+        <form id="feedbackForm" class="space-y-4 px-6 pt-5 pb-6">
+            <div>
+                <label for="fbSubject" class="form-label">Subject <span class="text-rose-500">*</span></label>
+                <input type="text" id="fbSubject" maxlength="255" required class="form-control"
+                       placeholder="e.g. Issue with KRA upload">
+            </div>
+            <div>
+                <label for="fbMessage" class="form-label">Message <span class="text-rose-500">*</span></label>
+                <textarea id="fbMessage" rows="4" required class="form-control resize-y"
+                          placeholder="Describe your feedback, suggestion, or issue..."></textarea>
+            </div>
+            <div>
+                <label class="form-label">Rating <span class="font-normal text-slate-400">(optional)</span></label>
+                <div id="starRating" class="flex gap-1.5">
+                    <?php for ($s = 1; $s <= 5; $s++): ?>
+                    <i class="bi bi-star" data-star="<?= $s ?>"
+                       style="font-size:1.4rem;cursor:pointer;color:#cbd5e1;transition:color 0.15s;"
+                       onclick="setRating(<?= $s ?>)"
+                       onmouseover="hoverRating(<?= $s ?>)"
+                       onmouseout="resetRatingHover()"></i>
+                    <?php endfor; ?>
+                </div>
+                <input type="hidden" id="fbRating" value="">
+            </div>
+            <div id="fbAlert" style="display:none;"></div>
+            <div class="flex justify-end gap-2 pt-1">
+                <button type="button" class="btn btn-secondary"
+                        onclick="document.getElementById('feedbackModal').style.display='none'">Cancel</button>
+                <button type="submit" class="btn btn-primary"><i class="bi bi-send"></i>Submit</button>
+            </div>
+        </form>
+    </div>
+</div>
 
 <!-- Mobile sidebar backdrop -->
 <div id="mobileSidebarBackdrop"
      onclick="toggleMobileSidebar()"
-     style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1039;"></div>
+     class="fixed inset-0 z-[1039] bg-slate-900/40 backdrop-blur-[2px]"
+     style="display:none;"></div>
 
 <script>
 function toggleMobileSidebar() {
@@ -331,26 +237,32 @@ document.addEventListener('click', function(e) {
 <script>
 // -- Notification bell ----------------------------------------
 const NOTIF_ICONS = {
-    new_submission:       { icon: 'bi-file-earmark-plus', color: '#1e4d8c' },
-    under_review:         { icon: 'bi-hourglass-split',   color: '#475569' },
-    talisay_review:       { icon: 'bi-building-up',       color: '#1a3a6b' },
-    new_talisay_submission:{ icon: 'bi-building-exclamation', color: '#1a3a6b' },
-    score_adjusted:       { icon: 'bi-pencil-square',     color: '#475569' },
-    needs_revision:       { icon: 'bi-exclamation-triangle-fill', color: '#334155' },
-    revision_resubmitted: { icon: 'bi-arrow-repeat',      color: '#1e4d8c' },
-    appeal_opened:        { icon: 'bi-chat-square-text',  color: '#1e4d8c' },
-    appeal_message:       { icon: 'bi-chat-dots',         color: '#1a3a6b' },
-    appeal_resolved:      { icon: 'bi-check2-circle',     color: '#1e4d8c' },
-    approved:             { icon: 'bi-check-circle-fill', color: '#1e4d8c' },
-    rejected:             { icon: 'bi-x-circle-fill',     color: '#334155' },
+    new_submission:       { icon: 'bi-file-earmark-plus', tone: 'brand' },
+    under_review:         { icon: 'bi-hourglass-split',   tone: 'violet' },
+    talisay_review:       { icon: 'bi-building-up',       tone: 'violet' },
+    new_talisay_submission:{ icon: 'bi-building-exclamation', tone: 'brand' },
+    score_adjusted:       { icon: 'bi-pencil-square',     tone: 'sky' },
+    needs_revision:       { icon: 'bi-exclamation-triangle-fill', tone: 'amber' },
+    revision_resubmitted: { icon: 'bi-arrow-repeat',      tone: 'brand' },
+    appeal_opened:        { icon: 'bi-chat-square-text',  tone: 'sky' },
+    appeal_message:       { icon: 'bi-chat-dots',         tone: 'sky' },
+    appeal_resolved:      { icon: 'bi-check2-circle',     tone: 'emerald' },
+    approved:             { icon: 'bi-check-circle-fill', tone: 'emerald' },
+    rejected:             { icon: 'bi-x-circle-fill',     tone: 'rose' },
+};
+const NOTIF_TONES = {
+    brand:   'icon-chip',
+    violet:  'icon-chip icon-chip-violet',
+    sky:     'icon-chip icon-chip-sky',
+    amber:   'icon-chip icon-chip-amber',
+    emerald: 'icon-chip icon-chip-emerald',
+    rose:    'icon-chip icon-chip-rose',
+    slate:   'icon-chip icon-chip-slate',
 };
 
 function notifIconFor(type) {
-    const d = NOTIF_ICONS[type] || { icon: 'bi-bell', color: '#64748b' };
-    return `<span style="width:34px;height:34px;border-radius:50%;background:${d.color}1a;flex-shrink:0;
-                display:flex;align-items:center;justify-content:center;">
-                <i class="bi ${d.icon}" style="color:${d.color};font-size:0.95rem;"></i>
-            </span>`;
+    const d = NOTIF_ICONS[type] || { icon: 'bi-bell', tone: 'slate' };
+    return `<span class="${NOTIF_TONES[d.tone]} size-9 text-sm"><i class="bi ${d.icon}"></i></span>`;
 }
 
 function timeAgo(ts) {
@@ -368,8 +280,10 @@ function timeAgo(ts) {
 function renderNotifs(notifs) {
     const list = document.getElementById('notifList');
     if (!notifs.length) {
-        list.innerHTML = `<div class="text-center text-muted py-4" style="font-size:0.82rem;">
-            <i class="bi bi-bell-slash d-block mb-2" style="font-size:1.5rem;"></i>No notifications yet</div>`;
+        list.innerHTML = `<div class="empty-state py-10">
+            <span class="empty-state-icon size-12 text-xl"><i class="bi bi-bell-slash"></i></span>
+            <p class="empty-state-title text-sm">You're all caught up</p>
+            <p class="empty-state-text text-xs">New notifications will appear here.</p></div>`;
         return;
     }
     list.innerHTML = notifs.map(n => {
@@ -431,18 +345,13 @@ function renderNotifs(notifs) {
 
         const link = notifLink(n.type, id, n.submission_id, n.kra_category);
         return `<div onclick="markOneRead(${n.notif_id}, '${link}')"
-                     style="display:flex;gap:0.75rem;align-items:flex-start;padding:0.75rem 1rem;cursor:pointer;
-                            border-bottom:1px solid #f1f5f9;transition:background 0.15s;
-                            background:${unread ? '#f0f7ff' : '#fff'};"
-                     onmouseover="this.style.background='#f8fafc'"
-                     onmouseout="this.style.background='${unread ? '#f0f7ff' : '#fff'}'">
+                     class="flex cursor-pointer items-start gap-3 border-b border-slate-100 px-4 py-3 transition-colors last:border-b-0 hover:bg-slate-50 ${unread ? 'bg-brand-50/50' : 'bg-white'}">
                     ${notifIconFor(n.type)}
-                    <div style="flex:1;min-width:0;">
-                        <div style="font-size:0.8rem;color:#1e293b;line-height:1.4;word-break:break-word;
-                                    font-weight:${unread ? '600' : '400'};">${escHtml(n.message)}</div>
-                        <div style="font-size:0.68rem;color:#94a3b8;margin-top:3px;">${timeAgo(n.created_at)}</div>
+                    <div class="min-w-0 flex-1">
+                        <div class="text-[0.8125rem] leading-snug break-words text-slate-800 ${unread ? 'font-semibold' : ''}">${escHtml(n.message)}</div>
+                        <div class="mt-1 text-[0.6875rem] text-slate-400">${timeAgo(n.created_at)}</div>
                     </div>
-                    ${unread ? `<span style="width:8px;height:8px;border-radius:50%;background:#1e4d8c;flex-shrink:0;margin-top:5px;"></span>` : ''}
+                    ${unread ? `<span class="mt-1.5 size-2 shrink-0 rounded-full bg-brand-600"></span>` : ''}
                 </div>`;
     }).join('');
 }
@@ -468,9 +377,10 @@ function loadNotifs() {
 function showNotifError(msg) {
     const list = document.getElementById('notifList');
     if (!list) return;
-    list.innerHTML = `<div class="text-center text-muted py-4" style="font-size:0.82rem;">
-        <i class="bi bi-wifi-off d-block mb-2" style="font-size:1.5rem;"></i>${msg}
-        <div style="margin-top:6px;"><button onclick="loadNotifs()" style="font-size:0.75rem;background:none;border:1px solid #cbd5e1;border-radius:6px;padding:2px 10px;cursor:pointer;color:#475569;">Retry</button></div>
+    list.innerHTML = `<div class="empty-state py-10">
+        <span class="empty-state-icon size-12 text-xl"><i class="bi bi-wifi-off"></i></span>
+        <p class="empty-state-text text-xs">${msg}</p>
+        <button onclick="loadNotifs()" class="btn btn-secondary btn-xs mt-1">Retry</button>
     </div>`;
 }
 
@@ -529,7 +439,7 @@ document.addEventListener('click', function(e) {
 });
 
 // Auto-refresh badge every 30 seconds  -  detect new notifications
-let _lastUnreadCount = <?= $_notif_count ?>;
+let _lastUnreadCount = <?= $_notif_count ?? 0 ?>;
 setInterval(() => {
     fetch('index.php?notif_action=get_notifs')
         .then(r => r.ok ? r.json() : Promise.reject('HTTP ' + r.status))
@@ -544,7 +454,7 @@ setInterval(() => {
             // New notification arrived  -  briefly highlight the bell
             if (unread > _lastUnreadCount) {
                 if (bell) {
-                    bell.style.color = '#475569';
+                    bell.style.color = '#1a3a6b';
                     setTimeout(() => { if (bell) bell.style.color = ''; }, 1500);
                 }
             }
@@ -612,20 +522,15 @@ setInterval(() => {
     }
 
     function showPollToast(msg, type) {
-        const color = type === 'success' ? '#16a34a' : type === 'warn' ? '#d97706' : '#1e4d8c';
-        const icon  = type === 'success' ? 'bi-check-circle-fill' : 'bi-bell-fill';
-        const id    = 'pollToast_' + Date.now();
-        const el    = document.createElement('div');
-        el.id       = id;
-        el.style.cssText = 'position:fixed;bottom:1.5rem;right:1.5rem;z-index:999998;'
-            + 'min-width:260px;max-width:380px;background:#fff;border-radius:12px;'
-            + 'box-shadow:0 8px 32px rgba(0,0,0,0.16);display:flex;align-items:flex-start;gap:0.75rem;'
-            + 'padding:0.9rem 1rem;border-left:4px solid ' + color + ';'
-            + 'animation:sucfrmsToastIn 0.3s ease;';
-        el.innerHTML = '<i class="bi ' + icon + '" style="color:' + color + ';font-size:1.1rem;flex-shrink:0;margin-top:2px;"></i>'
-            + '<div style="flex:1;font-size:0.83rem;color:#1e293b;line-height:1.5;">' + msg + '</div>'
-            + '<button onclick="document.getElementById(\'' + id + '\').remove()" '
-            + 'style="background:none;border:none;color:#94a3b8;cursor:pointer;font-size:1.1rem;padding:0;flex-shrink:0;">&times;</button>';
+        const tone = type === 'success' ? 'text-emerald-600' : type === 'warn' ? 'text-amber-600' : 'text-brand-600';
+        const icon = type === 'success' ? 'bi-check-circle-fill' : 'bi-bell-fill';
+        const id   = 'pollToast_' + Date.now();
+        const el   = document.createElement('div');
+        el.id        = id;
+        el.className = 'toast';
+        el.innerHTML = '<i class="bi ' + icon + ' toast-icon ' + tone + '"></i>'
+            + '<div class="flex-1 leading-relaxed">' + msg + '</div>'
+            + '<button onclick="document.getElementById(\'' + id + '\').remove()" class="btn-close -mt-1 -mr-1" aria-label="Dismiss"></button>';
         document.body.appendChild(el);
         setTimeout(() => {
             if (document.getElementById(id)) {
@@ -677,7 +582,7 @@ function paintStars(upto, solid) {
     document.querySelectorAll('#starRating .bi').forEach(el => {
         const s = parseInt(el.dataset.star);
         el.className = s <= upto ? 'bi bi-star-fill' : 'bi bi-star';
-        el.style.color = s <= upto ? '#475569' : '#cbd5e1';
+        el.style.color = s <= upto ? '#f59e0b' : '#cbd5e1';
     });
 }
 
@@ -686,7 +591,7 @@ document.getElementById('feedbackForm').addEventListener('submit', function(e) {
     const alert = document.getElementById('fbAlert');
     const btn   = this.querySelector('button[type=submit]');
     btn.disabled = true;
-    btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Sending...';
+    btn.innerHTML = '<i class="bi bi-hourglass-split"></i>Sending...';
 
     const fd = new FormData();
     fd.append('subject', document.getElementById('fbSubject').value.trim());
@@ -697,30 +602,24 @@ document.getElementById('feedbackForm').addEventListener('submit', function(e) {
     fetch('index.php?action=submit_feedback', { method: 'POST', body: fd })
         .then(r => r.json())
         .then(d => {
-            alert.style.display = 'block';
+            alert.style.display = 'flex';
             if (d.ok) {
-                alert.style.background = '#f0f4fb';
-                alert.style.color      = '#1e4d8c';
-                alert.style.border     = '1px solid #bfdbfe';
-                alert.innerHTML = '<i class="bi bi-check-circle me-1"></i>Thank you! Your feedback has been submitted.';
+                alert.className = 'alert alert-success mb-0';
+                alert.innerHTML = '<i class="bi bi-check-circle"></i>Thank you! Your feedback has been submitted.';
                 setTimeout(() => document.getElementById('feedbackModal').style.display = 'none', 2000);
             } else {
-                alert.style.background = '#f8fafc';
-                alert.style.color      = '#334155';
-                alert.style.border     = '1px solid #e2e8f0';
-                alert.innerHTML = '<i class="bi bi-exclamation-circle me-1"></i>' + (d.error || 'Something went wrong.');
+                alert.className = 'alert alert-danger mb-0';
+                alert.innerHTML = '<i class="bi bi-exclamation-circle"></i>' + (d.error || 'Something went wrong.');
                 btn.disabled = false;
-                btn.innerHTML = '<i class="bi bi-send me-1"></i>Submit';
+                btn.innerHTML = '<i class="bi bi-send"></i>Submit';
             }
         })
         .catch(() => {
-            alert.style.display    = 'block';
-            alert.style.background = '#f8fafc';
-            alert.style.color      = '#334155';
-            alert.style.border     = '1px solid #e2e8f0';
-            alert.innerHTML = '<i class="bi bi-exclamation-circle me-1"></i>Network error. Please try again.';
+            alert.style.display = 'flex';
+            alert.className = 'alert alert-danger mb-0';
+            alert.innerHTML = '<i class="bi bi-exclamation-circle"></i>Network error. Please try again.';
             btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-send me-1"></i>Submit';
+            btn.innerHTML = '<i class="bi bi-send"></i>Submit';
         });
 });
 </script>

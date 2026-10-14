@@ -1,126 +1,45 @@
-<?php
-/**
- * ISS - Individual Score Sheet
- * Accessible by faculty (own data) or admin/checker (any faculty via ?uid=)
- */
-if (session_status() === PHP_SESSION_NONE) session_start();
-require_once __DIR__ . '/../../backend/core/functions.php';
-requireLogin();
-require_once __DIR__ . '/../../backend/database/config/db.php';
-header('Content-Type: text/html; charset=UTF-8');
-$target_uid = $_SESSION['user_id'];
-if ((isAdmin() || isChecker()) && !empty($_GET['uid'])) {
-    $target_uid = intval($_GET['uid']);
-}
-
-// Load faculty info
-$faculty_stmt = $pdo->prepare(
-    "SELECT u.*, c.campus_name FROM users u
-     LEFT JOIN campuses c ON u.campus_id = c.campus_id
-     WHERE u.user_id = ?"
-);
-$faculty_stmt->execute([$target_uid]);
-$faculty = $faculty_stmt->fetch();
-if (!$faculty) { echo '<p>Faculty not found.</p>'; exit; }
-
-// Load application - prefer cycle from ?cycle_id, else active cycle
-$cycle_id = intval($_GET['cycle_id'] ?? 0);
-if ($cycle_id) {
-    $cycle = $pdo->prepare("SELECT * FROM cycles WHERE cycle_id=?");
-    $cycle->execute([$cycle_id]);
-    $cycle = $cycle->fetch();
-} else {
-    $cycle = getActiveCycle($pdo);
-}
-if (!$cycle) { echo '<p>No cycle found.</p>'; exit; }
-
-$app_stmt = $pdo->prepare(
-    "SELECT * FROM applications WHERE user_id=? AND cycle_id=? LIMIT 1"
-);
-$app_stmt->execute([$target_uid, $cycle['cycle_id']]);
-$app = $app_stmt->fetch();
-if (!$app) { echo '<p>No application found for this cycle.</p>'; exit; }
-
-$app_id = $app['application_id'];
-
-// Load checker info
-$checker = null;
-if (!empty($app['checker_id'])) {
-    $cs = $pdo->prepare("SELECT user_id, checker_label FROM users WHERE user_id=?");
-    $cs->execute([$app['checker_id']]);
-    $checker_row = $cs->fetch();
-    if ($checker_row) $checker = checkerDisplayLabel($checker_row);
-}
-
-// Load KRA submissions
-$subs_raw = $pdo->prepare(
-    "SELECT * FROM kra_submissions WHERE application_id=? ORDER BY kra_category, submitted_at ASC"
-);
-$subs_raw->execute([$app_id]);
-$all_subs = $subs_raw->fetchAll();
-
-$subs_by_cat = [];
-foreach ($all_subs as $s) $subs_by_cat[$s['kra_category']][] = $s;
-
-$kra_info = [
-    'Instruction'              => ['num'=>'I',   'max'=>100, 'label'=>'Teaching Effectiveness'],
-    'Research'                 => ['num'=>'II',  'max'=>100, 'label'=>'Research, Innovation & Creative Work'],
-    'Extension'                => ['num'=>'III', 'max'=>120, 'label'=>'Extension Services'],
-    'Professional Development' => ['num'=>'IV',  'max'=>120, 'label'=>'Professional Development'],
-];
-
-$rank   = $faculty['rank'] ?? '';
-$result = getApplicationScoreSummary($pdo, (int)$app_id);
-$kra_totals = [
-    'Instruction'              => $result['kra1'],
-    'Research'                 => $result['kra2'],
-    'Extension'                => $result['kra3'],
-    'Professional Development' => $result['kra4'],
-];
-$grand_total = $result['grand_total'];
-
-$weights = $result['weights'];
-$printed_at = date('F d, Y h:i A');
-?>
+<?php require __DIR__ . '/../../backend/controllers/pages/kra_print.php'; ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ISS - <?= htmlspecialchars(formatDisplayName($faculty)) ?></title>
 <style>
+@font-face { font-family:'Inter'; src:url('../assets/fonts/InterVariable.woff2') format('woff2'); font-weight:100 900; font-style:normal; font-display:swap; }
 * { margin:0; padding:0; box-sizing:border-box; }
-body { font-family:'Times New Roman', Times, serif; font-size:11pt; color:#000; background:#fff;
+body { font-family:'Inter', Arial, sans-serif; font-size:10.5pt; line-height:1.45; color:#172033; background:#eef2f7;
        -webkit-print-color-adjust:exact; print-color-adjust:exact; }
 
 /* Screen toolbar */
-.toolbar { background:#1e4d8c; color:#fff; padding:8px 16px; display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
-.toolbar h2 { font-size:13px; font-weight:700; }
-.toolbar-actions { display:flex; gap:8px; }
-.btn { padding:5px 14px; border-radius:5px; border:none; font-size:11px; font-weight:700; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; gap:4px; }
+.toolbar { background:#17365f; color:#fff; padding:12px 20px; display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; box-shadow:0 1px 8px rgba(15,23,42,.16); }
+.toolbar h2 { font-size:13px; font-weight:700; letter-spacing:-.01em; }
+.toolbar-actions { display:flex; gap:8px; flex-wrap:wrap; }
+.btn { padding:7px 14px; border-radius:7px; border:none; font:700 11px/1.2 'Inter',Arial,sans-serif; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; gap:5px; }
 .btn-white { background:#fff; color:#1a3a6b; }
 .btn-outline { background:transparent; color:#fff; border:1px solid rgba(255,255,255,0.5); }
 @media print { .toolbar { display:none !important; } }
 
 /* Page */
 @page { size: A4 portrait; margin: 15mm 18mm 18mm 18mm; }
-.page { max-width: 720px; margin: 0 auto; padding: 20px 24px; }
-@media print { .page { max-width:100%; padding:0; } }
+.page { max-width: 760px; margin: 20px auto; padding: 28px 32px; background:#fff; box-shadow:0 8px 28px rgba(15,23,42,.10); }
+@media print { .page { max-width:100%; margin:0; padding:0; box-shadow:none; } }
 
 /* -- Document header -- */
 /* -- Faculty info table -- */
-.info-table { width:100%; border-collapse:collapse; margin-bottom:10px; font-size:10pt; }
-.info-table td { padding:4px 8px; border:1px solid #000; }
+.info-table { width:100%; border-collapse:collapse; margin-bottom:14px; font-size:9.5pt; }
+.info-table td { padding:6px 9px; border:1px solid #334155; }
 .info-table .lbl { font-weight:700; background:#f1f5f9; width:130px; font-size:9pt; }
 .info-table .val { font-weight:400; }
 
 /* -- KRA section -- */
-.kra-section { margin-bottom:10px; page-break-inside:avoid; }
-.kra-title-row { background:#1e4d8c; color:#fff; padding:5px 8px; font-size:10pt; font-weight:700; display:flex; justify-content:space-between; }
+.kra-section { margin-bottom:14px; page-break-inside:avoid; }
+.kra-title-row { background:#17365f; color:#fff; padding:7px 9px; font-size:9.5pt; font-weight:700; display:flex; justify-content:space-between; gap:12px; }
 .kra-title-row .kra-max { font-size:9pt; font-weight:400; opacity:0.85; }
 .kra-table { width:100%; border-collapse:collapse; font-size:9.5pt; }
-.kra-table th { background:#eff6ff; padding:4px 7px; font-size:8.5pt; font-weight:700; border:1px solid #000; text-align:center; }
+.kra-table th { background:#eff6ff; padding:5px 7px; font-size:8.5pt; font-weight:700; border:1px solid #334155; text-align:center; }
 .kra-table th.left { text-align:left; }
-.kra-table td { padding:4px 7px; border:1px solid #cbd5e1; vertical-align:top; }
+.kra-table td { padding:5px 7px; border:1px solid #cbd5e1; vertical-align:top; }
 .kra-table td.center { text-align:center; }
 .kra-table td.score { text-align:center; font-weight:700; }
 .kra-table .subtotal-row td { background:#f0f4fb; font-weight:700; border-top:2px solid #1a3a6b; }
@@ -130,21 +49,21 @@ body { font-family:'Times New Roman', Times, serif; font-size:11pt; color:#000; 
 .verified-no  { color:#94a3b8; }
 
 /* -- Weighted score table -- */
-.weighted-table { width:100%; border-collapse:collapse; margin-bottom:10px; font-size:9.5pt; }
-.weighted-table th { background:#1e4d8c; color:#fff; padding:5px 8px; font-size:9pt; font-weight:700; border:1px solid #000; text-align:center; }
-.weighted-table td { padding:5px 8px; border:1px solid #000; text-align:center; }
+.weighted-table { width:100%; border-collapse:collapse; margin-bottom:14px; font-size:9pt; }
+.weighted-table th { background:#17365f; color:#fff; padding:6px 8px; font-size:8.5pt; font-weight:700; border:1px solid #334155; text-align:center; }
+.weighted-table td { padding:6px 8px; border:1px solid #334155; text-align:center; }
 .weighted-table td.left { text-align:left; }
 .weighted-table .total-row td { background:#f0f4fb; font-weight:700; font-size:11pt; }
 .weighted-table .result-row td { background:#1e4d8c; color:#fff; font-weight:700; font-size:12pt; }
 
 /* -- Grand total box -- */
-.grand-box { border:2px solid #1e4d8c; border-radius:4px; padding:8px 14px; margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; }
+.grand-box { border:2px solid #17365f; border-radius:6px; padding:10px 14px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; gap:16px; }
 .grand-box .gl { font-size:11pt; font-weight:700; }
 .grand-box .gr { font-size:20pt; font-weight:700; color:#1a3a6b; }
 .grand-box .gs { font-size:8.5pt; color:#64748b; margin-top:2px; }
 
 /* -- Sub-rank result -- */
-.result-box { border:2px solid #000; border-radius:4px; padding:8px 14px; margin-bottom:14px; display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; text-align:center; }
+.result-box { border:2px solid #334155; border-radius:6px; padding:10px 14px; margin-bottom:14px; display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; text-align:center; }
 .result-box .rb-label { font-size:8pt; color:#64748b; text-transform:uppercase; letter-spacing:0.4px; font-weight:700; }
 .result-box .rb-val { font-size:14pt; font-weight:700; color:#1a3a6b; margin-top:2px; }
 .result-box .rb-val.green { color:#1e4d8c; }
@@ -161,6 +80,11 @@ body { font-family:'Times New Roman', Times, serif; font-size:11pt; color:#000; 
 
 /* -- Footer -- */
 .doc-footer { margin-top:16px; border-top:1px solid #000; padding-top:5px; display:flex; justify-content:space-between; font-size:8pt; color:#64748b; }
+@media screen and (max-width:640px) {
+    .page { margin:0; padding:18px 14px; box-shadow:none; }
+    .result-box { grid-template-columns:1fr; }
+    .sig-grid { grid-template-columns:1fr; gap:8px; }
+}
 </style>
 </head>
 <body>

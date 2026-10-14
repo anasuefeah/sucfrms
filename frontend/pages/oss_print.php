@@ -1,128 +1,35 @@
-<?php
-/**
- * OSS - Overall Score Summary
- * Admin/checker only. Shows all faculty scores for a given cycle.
- */
-if (session_status() === PHP_SESSION_NONE) session_start();
-header('Content-Type: text/html; charset=UTF-8');
-require_once __DIR__ . '/../../backend/core/functions.php';
-requireLogin();
-if (!isAdmin() && !isChecker()) { http_response_code(403); die('Access denied.'); }
-require_once __DIR__ . '/../../backend/database/config/db.php';
-
-// Filters
-$cycle_id  = intval($_GET['cycle_id'] ?? 0);
-$campus_id = intval($_GET['campus_id'] ?? 0);
-$status    = trim($_GET['status'] ?? '');
-
-// Load cycles
-$all_cycles   = $pdo->query("SELECT cycle_id, cycle_name, status, start_date, end_date FROM cycles ORDER BY created_at DESC")->fetchAll();
-$all_campuses = $pdo->query("SELECT campus_id, campus_name FROM campuses WHERE is_active=1 ORDER BY campus_name")->fetchAll();
-
-// Default to open cycle
-if (!$cycle_id) {
-    foreach ($all_cycles as $cy) {
-        if ($cy['status'] === 'open') { $cycle_id = $cy['cycle_id']; break; }
-    }
-}
-$selected_cycle = null;
-foreach ($all_cycles as $cy) {
-    if ($cy['cycle_id'] === $cycle_id) { $selected_cycle = $cy; break; }
-}
-
-// Build query
-$where  = "WHERE u.role = 'faculty' AND a.cycle_id=?";
-$params = [$cycle_id];
-if ($campus_id) { $where .= ' AND u.campus_id=?'; $params[] = $campus_id; }
-if ($status && in_array($status, ['submitted','under_review','approved','rejected','reclassified'])) {
-    $where .= ' AND a.status=?'; $params[] = $status;
-}
-
-$rows = $pdo->prepare("
-    SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, u.employee_id, u.rank,
-           COALESCE(camp.campus_name,'-') as campus_name,
-           chk.user_id as checker_uid,
-           chk.checker_label as checker_label
-    FROM applications a
-    JOIN users u ON a.user_id=u.user_id
-    LEFT JOIN campuses camp ON u.campus_id=camp.campus_id
-    LEFT JOIN users chk ON a.checker_id=chk.user_id
-    $where
-    ORDER BY camp.campus_name, u.full_name
-");
-$rows->execute($params);
-$applications = $rows->fetchAll();
-
-// Load KRA scores per application
-$kra_cats = ['Instruction','Research','Extension','Professional Development'];
-$kra_scores = [];
-if ($applications) {
-    $app_ids = array_column($applications, 'application_id');
-    $placeholders = implode(',', array_fill(0, count($app_ids), '?'));
-    $ks = $pdo->prepare("SELECT application_id, kra_category, computed_points FROM kra_submissions WHERE application_id IN ($placeholders)");
-    $ks->execute($app_ids);
-    foreach ($ks->fetchAll() as $k) {
-        $kra_scores[$k['application_id']][$k['kra_category']] = (float)$k['computed_points'];
-    }
-}
-
-// Summary stats
-$total = count($applications);
-$status_counts = [];
-foreach ($applications as $a) $status_counts[$a['status']] = ($status_counts[$a['status']] ?? 0) + 1;
-
-$status_labels = [
-    'submitted'    => 'Submitted',
-    'under_review' => 'Under Evaluation',
-    'approved'     => 'Evaluation Complete',
-    'rejected'     => 'Returned for Revision',
-    'reclassified' => 'Evaluation Complete',
-];
-
-// KRA averages
-$kra_avgs = ['Instruction'=>[],'Research'=>[],'Extension'=>[],'Professional Development'=>[]];
-foreach ($applications as $a) {
-    foreach ($kra_cats as $cat) {
-        $kra_avgs[$cat][] = $kra_scores[$a['application_id']][$cat] ?? 0;
-    }
-}
-$kra_avg_vals = [];
-foreach ($kra_avgs as $cat => $vals) {
-    $kra_avg_vals[$cat] = count($vals) > 0 ? round(array_sum($vals) / count($vals), 2) : 0;
-}
-
-$printed_at = date('F d, Y h:i A');
-$admin_name = $_SESSION['full_name'] ?? 'Administrator';
-?>
+<?php require __DIR__ . '/../../backend/controllers/pages/oss_print.php'; ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>OSS  -  Overall Score Summary</title>
 <style>
+@font-face { font-family:'Inter'; src:url('../assets/fonts/InterVariable.woff2') format('woff2'); font-weight:100 900; font-style:normal; font-display:swap; }
 * { margin:0; padding:0; box-sizing:border-box; }
-body { font-family:'Times New Roman', Times, serif; font-size:10.5pt; color:#000; background:#f0f3f8; }
+body { font-family:'Inter', Arial, sans-serif; font-size:10pt; line-height:1.4; color:#172033; background:#eef2f7; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
 
 /* -- Screen toolbar -- */
-.toolbar { background:#1e4d8c; color:#fff; padding:7px 16px; display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; position:sticky; top:0; z-index:100; }
-.toolbar h2 { font-size:12px; font-weight:700; }
-.toolbar-actions { display:flex; gap:6px; }
-.btn { padding:4px 13px; border-radius:4px; border:none; font-size:11px; font-weight:700; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; gap:4px; }
+.toolbar { background:#17365f; color:#fff; padding:11px 20px; display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; position:sticky; top:0; z-index:100; box-shadow:0 1px 8px rgba(15,23,42,.16); }
+.toolbar h2 { font-size:13px; font-weight:700; letter-spacing:-.01em; }
+.toolbar-actions { display:flex; gap:7px; flex-wrap:wrap; }
+.btn { padding:7px 13px; border-radius:7px; border:none; font:700 11px/1.2 'Inter',Arial,sans-serif; cursor:pointer; text-decoration:none; display:inline-flex; align-items:center; gap:5px; }
 .btn-white { background:#fff; color:#1a3a6b; }
 .btn-outline { background:transparent; color:#fff; border:1px solid rgba(255,255,255,0.55); }
 
 /* -- Filter bar -- */
-.filter-bar { background:#fff; border-bottom:1px solid #e2e8f0; padding:5px 16px; display:flex; gap:10px; flex-wrap:wrap; align-items:center; font-size:10.5px; }
+.filter-bar { background:#fff; border-bottom:1px solid #e2e8f0; padding:9px 20px; display:flex; gap:10px; flex-wrap:wrap; align-items:center; font-size:11px; }
 .filter-bar label { font-weight:700; color:#475569; }
-.filter-bar select { font-size:10.5px; padding:3px 6px; border:1px solid #cbd5e1; border-radius:4px; }
-.filter-bar .btn-apply { background:#1e4d8c; color:#fff; padding:3px 12px; border-radius:4px; border:none; font-size:10.5px; font-weight:700; cursor:pointer; }
+.filter-bar select { font:500 11px/1.2 'Inter',Arial,sans-serif; padding:6px 8px; border:1px solid #cbd5e1; border-radius:6px; color:#334155; background:#fff; }
+.filter-bar .btn-apply { background:#17365f; color:#fff; padding:7px 13px; border-radius:6px; border:none; font:700 11px/1.2 'Inter',Arial,sans-serif; cursor:pointer; }
 @media print { .toolbar, .filter-bar { display:none !important; } }
 
 /* -- Document page -- */
 @page { size: A4 portrait; margin: 15mm 18mm 18mm 18mm; }
-.page-wrap { background:#fff; max-width:720px; margin:0 auto; padding:20px 24px; }
+.page-wrap { background:#fff; max-width:760px; margin:0 auto; padding:28px 32px; }
 @media print { .page-wrap { max-width:100%; padding:0; margin:0; background:#fff; box-shadow:none; } }
-@media screen { .page-wrap { margin:14px auto; box-shadow:0 2px 16px rgba(0,0,0,0.1); } }
+@media screen { .page-wrap { margin:20px auto; box-shadow:0 8px 28px rgba(15,23,42,.10); } }
 
 /* -- Document header -- */
 /* -- Filter summary line -- */
@@ -130,7 +37,7 @@ body { font-family:'Times New Roman', Times, serif; font-size:10.5pt; color:#000
 .filter-line strong { color:#1a3a6b; }
 
 /* -- Summary stats (inline, no boxes) -- */
-.summary-line { font-size:9pt; margin-bottom:8px; border-bottom:1px solid #000; padding-bottom:4px; }
+.summary-line { font-size:9pt; margin-bottom:10px; border-bottom:1px solid #334155; padding-bottom:7px; }
 .summary-line .cycle-lbl { font-weight:700; color:#1e293b; margin-right:8px; }
 .summary-line .total-lbl { color:#475569; margin-right:16px; }
 .summary-stat { display:inline-block; margin-right:16px; font-size:9pt; }
@@ -138,25 +45,25 @@ body { font-family:'Times New Roman', Times, serif; font-size:10.5pt; color:#000
 .summary-stat .sl { font-size:7pt; text-transform:uppercase; letter-spacing:0.3px; color:#64748b; }
 
 /* -- KRA averages -- */
-.kra-avg-row { display:grid; grid-template-columns:repeat(2,1fr); gap:0; margin-bottom:10px; border:1px solid #000; }
+.kra-avg-row { display:grid; grid-template-columns:repeat(2,1fr); gap:0; margin-bottom:14px; border:1px solid #334155; }
 .kra-avg-box { border-right:1px solid #cbd5e1; border-bottom:1px solid #cbd5e1; }
 .kra-avg-box:nth-child(2n) { border-right:none; }
 .kra-avg-box:nth-child(3), .kra-avg-box:nth-child(4) { border-bottom:none; }
-.kra-avg-box { padding:5px 8px; }
+.kra-avg-box { padding:7px 9px; }
 .kra-avg-box .kn { font-size:7.5pt; font-weight:700; color:#1a3a6b; }
 .kra-avg-box .kv { font-size:12pt; font-weight:700; line-height:1.2; margin-top:1px; }
 .kra-avg-box .km { font-size:7pt; color:#64748b; }
 
 /* -- Section title -- */
-.section-title { font-size:9pt; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; border-bottom:2px solid #000; padding-bottom:2px; margin-bottom:5px; }
+.section-title { font-size:9pt; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:#17365f; border-bottom:2px solid #334155; padding-bottom:4px; margin-bottom:7px; }
 
 /* -- Main table -- */
 table.main { width:100%; border-collapse:collapse; font-size:7pt; }
-table.main thead tr { background:#1e4d8c; color:#fff; }
-table.main thead th { padding:3px 4px; font-size:6.5pt; font-weight:700; border:1px solid #000; text-align:center; white-space:nowrap; }
+table.main thead tr { background:#17365f; color:#fff; }
+table.main thead th { padding:4px; font-size:6.5pt; font-weight:700; border:1px solid #334155; text-align:center; white-space:nowrap; }
 table.main thead th.left { text-align:left; }
 table.main tbody tr:nth-child(even) { background:#f8fafc; }
-table.main tbody td { padding:3px 4px; border:1px solid #cbd5e1; vertical-align:middle; font-size:7pt; }
+table.main tbody td { padding:4px; border:1px solid #cbd5e1; vertical-align:middle; font-size:7pt; }
 table.main tbody td.center { text-align:center; }
 table.main tbody td.score-high { color:#1e4d8c; font-weight:700; text-align:center; }
 table.main tbody td.score-mid  { color:#475569; font-weight:700; text-align:center; }
@@ -171,7 +78,7 @@ table.main tbody td.score-low  { color:#1e293b; font-weight:700; text-align:cent
 .badge-draft          { background:#f1f5f9; color:#94a3b8; }
 
 /* -- Campus header -- */
-.campus-header { background:#1e4d8c; color:#fff; font-weight:700; font-size:8.5pt; padding:4px 8px; border:1px solid #000; margin-top:6px; }
+.campus-header { background:#17365f; color:#fff; font-weight:700; font-size:8.5pt; padding:6px 8px; border:1px solid #334155; margin-top:8px; }
 .campus-group { page-break-inside:avoid; }
 
 /* -- Subtotal row -- */
@@ -192,6 +99,10 @@ table.main tbody td.score-low  { color:#1e293b; font-weight:700; text-align:cent
 
 /* -- Empty state -- */
 .empty-msg { text-align:center; padding:14px; font-style:italic; font-size:9pt; color:#64748b; }
+@media screen and (max-width:640px) {
+    .page-wrap { margin:0; padding:18px 14px; box-shadow:none; overflow-x:auto; }
+    .sig-grid { grid-template-columns:1fr; gap:8px; }
+}
 </style>
 </head>
 <body>

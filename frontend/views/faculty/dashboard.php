@@ -1,698 +1,443 @@
-<?php
-$uid   = $_SESSION['user_id'];
-$cycle = getActiveCycle($pdo);
+<?php if ((require __DIR__ . '/../../../backend/controllers/faculty/dashboard.php') === false) return; ?>
 
-if (!$cycle) {
-    $last_cycle = $pdo->query("SELECT * FROM cycles ORDER BY created_at DESC LIMIT 1")->fetch();
-    echo '
-    <div class="neon-card text-center py-5">
-        <i class="bi bi-calendar-x" style="font-size:2.5rem;color:#cbd5e1;display:block;margin-bottom:0.75rem;"></i>
-        <h5 class="fw-bold mb-2" style="color:#1a3a6b;">No Active Reclassification Cycle</h5>
-        <p class="text-muted mb-1">There is currently no open cycle. Your account is ready.</p>
-        <p class="text-muted small">When the next cycle opens, your application will be available here automatically.</p>'
-        . ($last_cycle ? '<p class="text-muted small mt-2">Last cycle: <strong>' . htmlspecialchars($last_cycle['cycle_name']) . '</strong> (' . ucfirst($last_cycle['status']) . ')</p>' : '')
-        . '</div>';
-    return;
-}
-
-$app    = getOrCreateApplication($pdo, $uid, $cycle['cycle_id']);
-$app_id = $app['application_id'];
-
-// -- KRA scores ------------------------------------------------
-$score_result = getApplicationScoreSummary($pdo, (int)$app_id);
-$kra_map      = $score_result['kra_map'];
-$total        = $score_result['grand_total'];
-
-// -- Score computation -----------------------------------------
-$faculty_row  = $pdo->prepare("SELECT rank, full_name FROM users WHERE user_id=?");
-$faculty_row->execute([$uid]);
-$faculty_row  = $faculty_row->fetch();
-$faculty_rank = $faculty_row['rank'] ?? '';
-$raw_kra      = array_map(fn($d) => $d['pts'], $kra_map);
-
-// -- Checker approval progress (for under_review status display) --
-$chk_approved = 0;
-$chk_slots    = 0;
-$chk_total    = max(1, (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role = 'evaluator' AND status='active'")->fetchColumn());
-try {
-    $chk_q = $pdo->prepare("
-        SELECT r.decision FROM application_checker_reviews r
-        JOIN users u ON r.checker_id = u.user_id
-        WHERE r.application_id = ? AND u.role = 'evaluator'
-    ");
-    $chk_q->execute([$app_id]);
-    foreach ($chk_q->fetchAll() as $cr) {
-        $chk_slots++;
-        if ($cr['decision'] === 'approved') $chk_approved++;
-    }
-} catch (\Exception $e) { /* table not yet created */ }
-
-$weights      = $score_result['weights'];
-$weighted     = $score_result['weighted_score'];
-$inc          = $score_result['sub_rank_increment'];
-$meets_min    = $weighted >= 41;
-
-// -- Colleagues from same campus -------------------------------
-$my_campus_id = null;
-$my_campus_name = '';
-$campus_row = $pdo->prepare("SELECT u.campus_id, c.campus_name FROM users u LEFT JOIN campuses c ON u.campus_id = c.campus_id WHERE u.user_id = ?");
-$campus_row->execute([$uid]);
-$campus_row = $campus_row->fetch();
-if ($campus_row) {
-    $my_campus_id   = $campus_row['campus_id'];
-    $my_campus_name = $campus_row['campus_name'] ?? '';
-}
-
-$colleagues = [];
-if ($my_campus_id) {
-    $col_stmt = $pdo->prepare("
-        SELECT u.user_id, u.full_name, u.first_name, u.middle_name, u.last_name, u.rank,
-               a.status AS app_status,
-               a.updated_at
-        FROM users u
-        LEFT JOIN applications a
-            ON a.user_id = u.user_id AND a.cycle_id = ?
-        WHERE u.campus_id = ?
-          AND u.status    = 'active'
-          AND u.role      = 'faculty'
-          AND u.user_id  != ?
-        ORDER BY u.full_name ASC
-        LIMIT 20
-    ");
-    $col_stmt->execute([$cycle['cycle_id'], $my_campus_id, $uid]);
-    $colleagues = $col_stmt->fetchAll();
-}
-
-// Status label + color for colleague display (no scores shown)
-function colleagueStatusLabel(string $s): array {
-    return match($s) {
-        'draft'          => ['Draft',          '#94a3b8'],
-        'submitted'      => ['Submitted',       '#1e4d8c'],
-        'under_review'   => ['Under Evaluation','#1a3a6b'],
-        'needs_revision' => ['Needs Revision',  '#475569'],
-        'approved'       => ['Evaluation Complete', '#1e4d8c'],
-        'rejected'       => ['Returned for Revision', '#64748b'],
-        'admin_rejected' => ['Evaluation Complete', '#64748b'],
-        default          => ['No Application',  '#cbd5e1'],
-    };
-}
-
-// -- Deadline info ---------------------------------------------
-$effective_deadline = getEffectiveSubmissionDeadline($pdo, (int)$cycle['cycle_id'], (int)$uid, $cycle['submission_deadline'] ?? null);
-$submission_start_ts = !empty($cycle['submission_start_date']) ? strtotime($cycle['submission_start_date'] . ' 00:00:00') : null;
-$deadline_ts = $effective_deadline ? strtotime($effective_deadline . ' 23:59:59') : null;
-$submission_not_open = $submission_start_ts !== null && time() < $submission_start_ts;
-$deadline_passed = ($cycle['status'] ?? 'closed') !== 'open'
-    || $submission_not_open
-    || ($deadline_ts !== null && time() > $deadline_ts);
-$deadline_str    = $effective_deadline ? date('M d, Y', strtotime($effective_deadline)) : '';
-$days_left       = $deadline_ts ? max(0, (int)ceil(($deadline_ts - time()) / 86400)) : null;
-$deadline_urgent = $days_left !== null && $days_left <= 3;
-
-// -- Score gap to next bracket ---------------------------------------------
-
-// -- Score gap to next bracket ---------------------------------
-$brackets   = [[41,50,1],[51,60,2],[61,70,3],[71,80,4],[81,90,5],[91,100,6]];
-$next_bracket_gap  = null;
-$next_bracket_inc  = null;
-foreach ($brackets as [$lo, $hi, $r]) {
-    if ($weighted < $lo) {
-        $next_bracket_gap = round($lo - $weighted, 2);
-        $next_bracket_inc = $r;
-        break;
-    }
-}
-$can_submit = !in_array($app['status'], ['submitted','under_review','approved','admin_rejected','needs_revision'])
-              && $total > 0 && $meets_min && !$deadline_passed;
-$can_edit   = !in_array($app['status'], ['approved','admin_rejected']);
-
-// -- KRA display config ----------------------------------------
-$kra_info = [
-    'Instruction'              => ['icon'=>'bi-book',        'color'=>'#1e4d8c','max'=>100, 'short'=>'KRA I',  'tab'=>'instruction'],
-    'Research'                 => ['icon'=>'bi-journal-text','color'=>'#1a3a6b','max'=>100, 'short'=>'KRA II', 'tab'=>'research'],
-    'Extension'                => ['icon'=>'bi-people',      'color'=>'#1a5276','max'=>120, 'short'=>'KRA III','tab'=>'extension'],
-    'Professional Development' => ['icon'=>'bi-award',       'color'=>'#1e4d8c','max'=>120, 'short'=>'KRA IV', 'tab'=>'profdev'],
-];
-
-// -- POST handlers (unchanged logic) --------------------------
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $action = $_POST['action'] ?? '';
-    if ($action === 'submit_application' && $can_submit) {
-        if ($weighted < 41) {
-            flashMessage('danger', 'Your weighted score (' . number_format($weighted, 2) . ') is below the minimum of 41.');
-            echo "<script>window.location.href='index.php?page=dashboard';</script>"; exit;
-        }
-        if ($deadline_passed) {
-            flashMessage('danger', $submission_not_open ? 'The faculty submission period is not open yet.' : 'The cycle is no longer open for submissions.');
-            echo "<script>window.location.href='index.php?page=dashboard';</script>"; exit;
-        }
-        try { recalcApplicationScore($pdo, $app_id); } catch (\Exception $e) {}
-        $new_status = !empty($app['checker_id']) ? 'under_review' : 'submitted';
-        $pdo->prepare("UPDATE applications SET status=?, submitted_at=NOW() WHERE application_id=?")->execute([$new_status, $app_id]);
-        logAudit($pdo, $uid, 'Application Submitted', "Application #{$app_id} submitted for {$cycle['cycle_name']}.");
-        // Notify all active Subcommittee reviewers of new submission
-        $campus_checkers = $pdo->query("SELECT user_id FROM users WHERE role = 'evaluator' AND status='active'")->fetchAll(PDO::FETCH_COLUMN);
-        foreach ($campus_checkers as $cid) {
-            createNotif($pdo, (int)$cid, 'new_submission',
-                "New application submitted by " . ($_SESSION['full_name'] ?? 'A faculty member') . "  -  awaiting your review.",
-                $app_id);
-        }
-        flashMessage('success', $new_status === 'under_review' ? 'Application resubmitted to your evaluator.' : 'Application submitted for review.');
-        echo "<script>window.location.href='index.php?page=dashboard';</script>"; exit;
-    }
-    if ($action === 'resubmit_revision' && $app['status'] === 'needs_revision') {
-        try { recalcApplicationScore($pdo, $app_id); } catch (\Exception $e) {}
-        $pdo->prepare("UPDATE kra_submissions SET revision_status='ok', revision_note=NULL, revision_by=NULL, revision_at=NULL WHERE application_id=?")->execute([$app_id]);
-        $pdo->prepare("UPDATE applications SET status='under_review', checker_remarks=NULL WHERE application_id=?")->execute([$app_id]);
-        logAudit($pdo, $uid, 'Revision Resubmitted', "Faculty resubmitted revised entries for Application #{$app_id}");
-        // Notify Subcommittee reviewers of revision compliance
-        $campus_checkers = $pdo->query("SELECT user_id FROM users WHERE role = 'evaluator' AND status='active'")->fetchAll(PDO::FETCH_COLUMN);
-        foreach ($campus_checkers as $cid) {
-            createNotif($pdo, (int)$cid, 'revision_resubmitted',
-                ($_SESSION['full_name'] ?? 'A faculty member') . " has resubmitted the revised KRA entries for your review.",
-                $app_id);
-        }
-        flashMessage('success', 'Revised entries submitted. The evaluator will continue reviewing your application.');
-        echo "<script>window.location.href='index.php?page=dashboard';</script>"; exit;
-    }
-}
-?>
-
-<!-- -- Page header --------------------------------------------- -->
-<?php include __DIR__ . '/../shared/_notif_banner_snippet.php'; ?>
+<?php include __DIR__ . '/../../components/notif_banner.php'; ?>
 
 <?php
-// -- Application progress steps --
 $steps = [
-    ['label'=>'Profile Complete',       'sublabel'=>'Name, rank, campus set',     'icon'=>'bi-person-check', 'done'=>!empty($_SESSION['full_name']) && !empty($faculty_rank),                                                            'link'=>null],
-    ['label'=>'KRA Entries Added',      'sublabel'=>($total > 0 ? number_format($total,1).' pts total' : 'No entries yet'), 'icon'=>'bi-list-check', 'done'=>(isset($total) && $total > 0), 'link'=>'?page=apply'],
-    ['label'=>'Submitted',              'sublabel'=>'Not yet submitted',          'icon'=>'bi-send',         'done'=>in_array($app['status'],['submitted','under_review','talisay_review','approved','reclassified','admin_rejected']),  'link'=>null],
-    ['label'=>'Under Evaluation',       'sublabel'=>'Evaluator review',           'icon'=>'bi-search',       'done'=>in_array($app['status'],['talisay_review','approved','reclassified']),                                            'link'=>null],
-    ['label'=>'Evaluation Complete',    'sublabel'=>'For committee review',       'icon'=>'bi-clipboard-check','done'=>in_array($app['status'],['approved','reclassified']),                                                              'link'=>null],
+    ['label' => 'Profile Complete', 'sublabel' => 'Name, rank, campus set', 'icon' => 'bi-person-check', 'done' => !empty($_SESSION['full_name']) && !empty($faculty_rank), 'link' => null],
+    ['label' => 'KRA Entries Added', 'sublabel' => ($total > 0 ? number_format($total, 1) . ' pts total' : 'No entries yet'), 'icon' => 'bi-list-check', 'done' => (isset($total) && $total > 0), 'link' => '?page=apply'],
+    ['label' => 'Submitted', 'sublabel' => 'Application received', 'icon' => 'bi-send', 'done' => in_array($app['status'], ['submitted', 'under_review', 'talisay_review', 'approved', 'reclassified', 'admin_rejected']), 'link' => null],
+    ['label' => 'Under Evaluation', 'sublabel' => 'Evaluator review', 'icon' => 'bi-search', 'done' => in_array($app['status'], ['talisay_review', 'approved', 'reclassified']), 'link' => null],
+    ['label' => 'Evaluation Complete', 'sublabel' => 'For committee review', 'icon' => 'bi-clipboard-check', 'done' => in_array($app['status'], ['approved', 'reclassified']), 'link' => null],
 ];
 $current_step = 0;
-foreach ($steps as $i => $s) { if ($s['done']) $current_step = $i + 1; }
+foreach ($steps as $i => $step) {
+    if ($step['done']) $current_step = $i + 1;
+}
+
+[$application_status_label, $application_status_class] = match ($app['status']) {
+    'submitted' => ['Submitted', 'pill-info'],
+    'under_review', 'talisay_review' => ['Under Evaluation', 'pill-progress'],
+    'needs_revision', 'rejected' => ['Needs Revision', 'pill-warning'],
+    'approved', 'reclassified' => ['Evaluation Complete', 'pill-success'],
+    'admin_rejected' => ['Evaluation Complete', 'pill-neutral'],
+    default => ['Draft', 'pill-neutral'],
+};
+
+$kra_classes = [
+    'Instruction' => ['text-brand-600', 'accent-brand-600', 'bg-brand-600'],
+    'Research' => ['text-brand-700', 'accent-brand-700', 'bg-brand-700'],
+    'Extension' => ['text-sky-700', 'accent-sky-700', 'bg-sky-700'],
+    'Professional Development' => ['text-brand-500', 'accent-brand-500', 'bg-brand-500'],
+];
+
+$avatar_classes = [
+    'bg-brand-600', 'bg-brand-700', 'bg-slate-700', 'bg-slate-600',
+    'bg-brand-800', 'bg-slate-500', 'bg-sky-700', 'bg-brand-500',
+];
 ?>
-<div class="neon-card mb-3" style="padding:0;overflow:hidden;">
 
-    <!-- Top: gradient header with greeting + deadline -->
-    <div style="background:linear-gradient(135deg,#1a3a6b 0%,#1e4d8c 100%);
-                padding:1.1rem 1.5rem;
-                display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;">
-
-        <!-- Left: avatar + name -->
-        <div class="d-flex align-items-center gap-3">
-            <div style="width:46px;height:46px;flex-shrink:0;">
-                <?php
-                $pic = $_SESSION['profile_pic'] ?? '';
-                if ($pic): ?>
-                <img src="<?= sanitize($pic) ?>" alt="Profile"
-                     style="width:46px;height:46px;border-radius:50%;object-fit:cover;border:2px solid rgba(255,255,255,0.3);">
-                <?php else:
-                    $init_h = strtoupper(
-                        substr($_SESSION['first_name'] ?? '', 0, 1) .
-                        substr($_SESSION['last_name']  ?? '', 0, 1)
-                    ) ?: 'U';
-                ?>
-                <div style="width:46px;height:46px;border-radius:50%;background:rgba(255,255,255,0.15);
-                            border:2px solid rgba(255,255,255,0.3);
-                            display:flex;align-items:center;justify-content:center;
-                            font-size:0.95rem;font-weight:700;color:#fff;">
-                    <?= $init_h ?>
+<section class="mb-6 overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-card">
+    <div class="flex flex-col gap-4 bg-gradient-to-br from-brand-700 to-brand-600 px-5 py-5 text-white sm:flex-row sm:items-center sm:justify-between sm:px-6">
+        <div class="flex min-w-0 items-center gap-4">
+            <?php
+            $pic = $_SESSION['profile_pic'] ?? '';
+            $init_h = strtoupper(
+                substr($_SESSION['first_name'] ?? '', 0, 1) .
+                substr($_SESSION['last_name'] ?? '', 0, 1)
+            ) ?: 'U';
+            ?>
+            <div class="size-12 shrink-0 overflow-hidden rounded-full border-2 border-white/30 bg-white/15">
+                <?php if ($pic): ?>
+                <img src="<?= sanitize($pic) ?>" alt="Profile" class="size-full object-cover">
+                <?php else: ?>
+                <div class="flex size-full items-center justify-center text-sm font-bold text-white">
+                    <?= sanitize($init_h) ?>
                 </div>
                 <?php endif; ?>
             </div>
-            <div>
-                <div style="color:#fff;font-weight:700;font-size:0.95rem;line-height:1.2;">
+            <div class="min-w-0">
+                <h1 class="m-0 truncate text-base font-bold tracking-tight text-white">
                     Welcome back, <?= sanitize($_SESSION['full_name'] ?? '') ?>
-                </div>
-                <div style="color:rgba(255,255,255,0.6);font-size:0.73rem;margin-top:3px;">
-                    <i class="bi bi-calendar3 me-1"></i><?= date('l, F j, Y') ?>
+                </h1>
+                <div class="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-white/65">
+                    <span><i class="bi bi-calendar3 mr-1"></i><?= date('l, F j, Y') ?></span>
                     <?php if ($faculty_rank): ?>
-                    &nbsp;&middot;&nbsp;<i class="bi bi-mortarboard me-1"></i><?= sanitize($faculty_rank) ?>
+                    <span aria-hidden="true">&middot;</span>
+                    <span><i class="bi bi-mortarboard mr-1"></i><?= sanitize($faculty_rank) ?></span>
                     <?php endif; ?>
                 </div>
             </div>
         </div>
 
-
+        <div class="flex flex-wrap items-center gap-3 sm:justify-end">
+            <span class="pill <?= $application_status_class ?>">
+                <?= sanitize($application_status_label) ?>
+            </span>
+            <?php if ($deadline_str): ?>
+            <div class="text-left sm:text-right">
+                <div class="text-[0.65rem] font-semibold tracking-wider text-white/55 uppercase">Submission deadline</div>
+                <div class="text-sm font-semibold text-white">
+                    <?= sanitize($deadline_str) ?>
+                    <?php if (!$deadline_passed && $days_left !== null): ?>
+                    <span class="<?= $deadline_urgent ? 'text-amber-200' : 'text-white/70' ?>">(<?= $days_left ?> day<?= $days_left === 1 ? '' : 's' ?> left)</span>
+                    <?php endif; ?>
+                </div>
+            </div>
+            <?php endif; ?>
+        </div>
     </div>
 
-    <!-- Bottom: progress stepper -->
-    <div style="padding:0.9rem 1.5rem 1.1rem;background:#fff;">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem;">
-            <span style="font-size:0.7rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.07em;">
-                <i class="bi bi-signpost-split me-1"></i>Application Progress
+    <div class="px-4 py-5 sm:px-6">
+        <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+            <div class="flex items-center gap-2 text-xs font-bold tracking-wider text-slate-500 uppercase">
+                <i class="bi bi-signpost-split text-brand-600"></i>
+                <span>Application Progress</span>
                 <?= helpBtn('Application Progress', 'This shows where your application is in the reclassification process. It is reviewed by the Subcommittee, then by the ITC. You must have a weighted score of at least 41.00 to submit.') ?>
-            </span>
-            <span style="font-size:0.7rem;color:#94a3b8;"><?= $current_step ?> of <?= count($steps) ?> steps completed</span>
+            </div>
+            <span class="text-xs text-slate-400"><?= $current_step ?> of <?= count($steps) ?> steps completed</span>
         </div>
-        <div class="d-flex align-items-start gap-0" id="progressStepper" style="position:relative;">
-            <?php foreach ($steps as $i => $step):
-                $is_done    = $step['done'];
-                $is_current = ($i === $current_step) && !$is_done;
-                $is_failed  = ($app['status'] === 'admin_rejected') && ($i === 4);
-                $delay      = $i * 120; // ms stagger per step
-            ?>
-            <div class="progress-step" data-index="<?= $i ?>"
-                 style="flex:1;min-width:70px;text-align:center;position:relative;padding:0 4px;
-                        animation:stepFadeIn 0.4s ease both;
-                        animation-delay:<?= $delay ?>ms;">
 
+        <div class="overflow-x-auto pb-1">
+        <div id="progressStepper" class="grid min-w-[640px] grid-cols-5 overflow-hidden" aria-label="Application progress">
+            <?php foreach ($steps as $i => $step):
+                $is_done = $step['done'];
+                $is_current = ($i === $current_step) && !$is_done;
+                $is_failed = ($app['status'] === 'admin_rejected') && ($i === 4);
+                $circle_class = $is_failed
+                    ? 'border-slate-800 bg-slate-800 text-white'
+                    : ($is_done
+                        ? 'border-brand-700 bg-brand-700 text-white'
+                        : ($is_current
+                            ? 'border-brand-700 bg-brand-50 text-brand-700 ring-4 ring-brand-100'
+                            : 'border-slate-200 bg-slate-50 text-slate-300'));
+                $label_class = $is_failed
+                    ? 'text-slate-800'
+                    : ($is_done ? 'text-brand-700' : ($is_current ? 'text-slate-900' : 'text-slate-400'));
+            ?>
+            <div class="relative px-1 text-center" data-index="<?= $i ?>">
                 <?php if ($i < count($steps) - 1): ?>
-                <!-- connector line -->
-                <div style="position:absolute;top:15px;left:calc(50% + 15px);right:calc(-50% + 15px);
-                            height:2px;background:#e2e8f0;z-index:0;">
-                    <?php if ($is_done): ?>
-                    <div class="connector-fill" style="height:100%;background:#1a3a6b;width:100%;
-                                animation:lineFill 0.5s ease forwards;
-                                animation-delay:<?= $delay + 200 ?>ms;"></div>
-                    <?php endif; ?>
-                </div>
+                <div class="absolute top-[15px] left-[calc(50%+15px)] right-[calc(-50%+15px)] z-0 h-0.5 <?= $is_done ? 'bg-brand-700' : 'bg-slate-200' ?>" aria-hidden="true"></div>
                 <?php endif; ?>
 
-                <!-- circle -->
-                <div class="<?= $is_current ? 'step-pulse' : '' ?>"
-                     style="width:30px;height:30px;border-radius:50%;margin:0 auto 5px;
-                            display:flex;align-items:center;justify-content:center;position:relative;z-index:1;
-                            background:<?= $is_failed ? '#1e293b' : ($is_done ? '#1a3a6b' : ($is_current ? '#eff6ff' : '#f8fafc')) ?>;
-                            border:2px solid <?= $is_failed ? '#1e293b' : ($is_done ? '#1a3a6b' : ($is_current ? '#1a3a6b' : '#e2e8f0')) ?>;">
+                <div class="relative z-[1] mx-auto mb-2 flex size-[30px] items-center justify-center rounded-full border-2 <?= $circle_class ?>">
                     <?php if ($is_failed): ?>
-                        <i class="bi bi-x-lg" style="color:#fff;font-size:0.8rem;"></i>
+                    <i class="bi bi-x-lg text-xs"></i>
                     <?php elseif ($is_done): ?>
-                        <i class="bi bi-check-lg" style="color:#fff;font-size:0.8rem;
-                                animation:checkPop 0.3s cubic-bezier(0.34,1.56,0.64,1) forwards;
-                                animation-delay:<?= $delay + 150 ?>ms;
-                                display:inline-block;"></i>
+                    <i class="bi bi-check-lg text-xs"></i>
                     <?php else: ?>
-                        <i class="bi <?= $step['icon'] ?>" style="color:<?= $is_current ? '#1a3a6b' : '#cbd5e1' ?>;font-size:0.72rem;"></i>
+                    <i class="bi <?= $step['icon'] ?> text-xs"></i>
                     <?php endif; ?>
                 </div>
 
-                <div style="font-size:0.68rem;font-weight:<?= $is_done||$is_current||$is_failed ? '700' : '400' ?>;
-                            color:<?= $is_failed ? '#fff' : ($is_done ? '#1a3a6b' : ($is_current ? '#1e293b' : '#94a3b8')) ?>;">
+                <div class="text-[0.6875rem] leading-tight <?= ($is_done || $is_current || $is_failed) ? 'font-bold' : 'font-medium' ?> <?= $label_class ?>">
                     <?php if ($step['link'] && !$is_done): ?>
-                    <a href="<?= $step['link'] ?>" style="color:inherit;text-decoration:none;"><?= $step['label'] ?></a>
-                    <?php else: ?><?= $step['label'] ?><?php endif; ?>
+                    <a href="<?= $step['link'] ?>" class="text-inherit no-underline hover:underline"><?= $step['label'] ?></a>
+                    <?php else: ?>
+                    <?= $step['label'] ?>
+                    <?php endif; ?>
                 </div>
-                <div style="font-size:0.6rem;color:#cbd5e1;margin-top:1px;"><?= $step['sublabel'] ?></div>
+                <div class="mt-1 text-[0.625rem] leading-tight text-slate-400"><?= $step['sublabel'] ?></div>
             </div>
             <?php endforeach; ?>
         </div>
-    </div>
-</div>
-
-
-<!-- -- My Campus + Weighted Score + KRA Overview row ----------- -->
-<div class="row g-3 mb-4">
-
-    <!-- My Campus -->
-    <div class="col-lg-4">
-        <div class="neon-card h-100 d-flex flex-column" style="padding:1.25rem;">
-
-            <!-- Title -->
-            <div class="mb-3 pb-2" style="border-bottom:1px solid #f1f5f9;">
-                <div class="d-flex align-items-center justify-content-between">
-                    <div>
-                        <div class="fw-semibold" style="color:#1a3a6b;font-size:0.85rem;letter-spacing:0.02em;">
-                            MY CAMPUS
-                        </div>
-                        <div class="text-muted" style="font-size:0.7rem;margin-top:2px;">
-                            <?= sanitize($my_campus_name ?: '-') ?>
-                        </div>
-                    </div>
-                    <?php
-                    $col_submitted = count(array_filter($colleagues, fn($c) => in_array($c['app_status'] ?? '', ['submitted','under_review','needs_revision'])));
-                    if ($col_submitted > 0): ?>
-                    <span style="font-size:0.65rem;font-weight:600;color:#1e4d8c;
-                                 background:#f0f4fb;border:1px solid #bfdbfe;
-                                 padding:2px 8px;border-radius:20px;">
-                        <?= $col_submitted ?> submitted
-                    </span>
-                    <?php endif; ?>
-                </div>
-            </div>
-
-            <?php if ($colleagues): ?>
-            <div class="flex-grow-1" style="overflow-y:auto;max-height:240px;">
-                <?php
-                $avatar_colors = ['#1e4d8c','#1a3a6b','#2d4a6b','#334155','#1e4d8c','#475569','#1a3a6b','#334155'];
-                $shown = 0;
-                foreach ($colleagues as $col):
-                    $s = $col['app_status'] ?? '';
-                    if (in_array($s, ['approved','rejected','admin_rejected'])) continue;
-                    $shown++;
-                    [$slabel, $scolor] = match($s) {
-                        'submitted','under_review','needs_revision' => ['Submitted', '#1e4d8c'],
-                        default => ['Draft', '#94a3b8'],
-                    };
-                    // Status dot: green = submitted/active, grey = draft/inactive
-                    $dot_color = in_array($s, ['submitted','under_review','needs_revision']) ? '#1e4d8c' : '#cbd5e1';
-                    $initials = strtoupper(
-                        substr(trim($col['first_name'] ?? ''), 0, 1) .
-                        substr(trim($col['last_name']  ?? ''), 0, 1)
-                    ) ?: '?';
-                    $bg       = $avatar_colors[$col['user_id'] % count($avatar_colors)];
-                ?>
-                <div class="d-flex align-items-center gap-3 py-2" style="border-bottom:1px solid #f8fafc;">
-                    <div style="position:relative;flex-shrink:0;">
-                        <div class="colleague-avatar"
-                             style="width:40px;height:40px;background:<?= $bg ?>;
-                                    display:flex;align-items:center;justify-content:center;
-                                    font-size:0.82rem;font-weight:600;color:#fff;">
-                            <?= $initials ?>
-                        </div>
-                        <span class="colleague-status-dot" style="background:<?= $dot_color ?>;"></span>
-                    </div>
-                    <div class="flex-grow-1 min-w-0">
-                        <div class="fw-semibold text-truncate" style="color:#1e293b;font-size:0.83rem;">
-                            <?= htmlspecialchars(formatDisplayName($col)) ?>
-                        </div>
-                        <div class="text-muted text-truncate" style="font-size:0.68rem;">
-                            <?= sanitize($col['rank'] ?? '-') ?>
-                        </div>
-                    </div>
-                    <span style="font-size:0.62rem;font-weight:500;color:<?= $scolor ?>;
-                                 white-space:nowrap;flex-shrink:0;">
-                        <?= $slabel ?>
-                    </span>
-                </div>
-                <?php endforeach; ?>
-                <?php if ($shown === 0): ?>
-                <p class="text-muted small text-center py-3 mb-0">All colleagues have completed their applications.</p>
-                <?php endif; ?>
-            </div>
-
-            <?php elseif (!$my_campus_id): ?>
-            <div class="text-center py-4 flex-grow-1 d-flex flex-column align-items-center justify-content-center">
-                <p class="text-muted small mb-2">No campus assigned to your profile.</p>
-                <a href="?page=profile" class="btn btn-xs btn-outline-primary">Update Profile</a>
-            </div>
-            <?php else: ?>
-            <p class="text-muted small text-center py-4 mb-0">No other active faculty at your campus yet.</p>
-            <?php endif; ?>
-
         </div>
     </div>
+</section>
 
-    <!-- Weighted Score -->
-    <div class="col-lg-4">
-        <div class="neon-card h-100 d-flex flex-column" style="padding:1.25rem;">
-
+<div class="mb-6 grid gap-4 lg:grid-cols-3">
+    <section class="neon-card flex h-full flex-col p-5">
+        <header class="mb-4 flex items-start justify-between gap-3 border-b border-slate-100 pb-3">
+            <div>
+                <h2 class="m-0 text-sm font-bold tracking-wide text-brand-700 uppercase">My Campus</h2>
+                <p class="mt-1 mb-0 text-xs text-slate-500"><?= sanitize($my_campus_name ?: '-') ?></p>
+            </div>
             <?php
-            $bar_color = '#1a3a6b';
-            $bar_pct   = min(100, max(0, $weighted));
+            $col_submitted = count(array_filter($colleagues, fn($colleague) => in_array($colleague['app_status'] ?? '', ['submitted', 'under_review', 'needs_revision'])));
+            if ($col_submitted > 0):
             ?>
-
-            <!-- Title -->
-            <div class="mb-3 pb-2" style="border-bottom:1px solid #f1f5f9;">
-                <div class="fw-semibold" style="color:#1a3a6b;font-size:0.85rem;letter-spacing:0.02em;">
-                    WEIGHTED SCORE
-                </div>
-                <?php if ($faculty_rank): ?>
-                <div class="text-muted" style="font-size:0.7rem;margin-top:2px;">
-                    <?= sanitize($faculty_rank) ?>
-                </div>
-                <?php endif; ?>
-            </div>
-
-            <!-- Score number -->
-            <div class="mb-3">
-                <div style="font-size:2.8rem;font-weight:700;line-height:1;color:#1e293b;letter-spacing:-1px;">
-                    <?= number_format($weighted, 2) ?>
-                    <span style="font-size:1rem;font-weight:400;color:#94a3b8;letter-spacing:0;">/ 100</span>
-                </div>
-            </div>
-
-            <!-- Progress bar -->
-            <div style="position:relative;height:6px;background:#f1f5f9;border-radius:99px;margin-bottom:0.35rem;">
-                <div style="height:100%;width:<?= $bar_pct ?>%;background:<?= $bar_color ?>;border-radius:99px;"></div>
-                <div style="position:absolute;top:-4px;left:41%;width:1.5px;height:14px;
-                            background:#94a3b8;border-radius:1px;" title="Minimum: 41"></div>
-            </div>
-            <div class="d-flex justify-content-between mb-3" style="font-size:0.6rem;color:#94a3b8;">
-                <span>0</span><span>min 41</span><span>100</span>
-            </div>
-
-            <!-- Sub-rank row -->
-            <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
-                <?php if ($inc > 0): ?>
-                <span style="font-size:0.75rem;font-weight:600;color:#1e4d8c;">
-                    +<?= $inc ?> sub-rank<?= $inc > 1 ? 's' : '' ?>
-                </span>
-                <?php else: ?>
-                <span style="font-size:0.75rem;font-weight:600;color:#64748b;">
-                    Below minimum
-                </span>
-                <?php endif; ?>
-                <span style="color:#e2e8f0;">&middot;</span>
-                <?php if ($next_bracket_gap !== null && $weighted > 0): ?>
-                <span style="font-size:0.72rem;color:#64748b;">
-                    <?php if ($inc > 0): ?>
-                    <?= $next_bracket_gap ?> pts more -> +<?= $next_bracket_inc ?>
-                    <?php else: ?>
-                    <?= $next_bracket_gap ?> pts needed
-                    <?php endif; ?>
-                </span>
-                <?php endif; ?>
-            </div>
-
-            <!-- Award bonus -->
-            <?php if (($score_result['award_bonus'] ?? 0) > 0): ?>
-            <div class="mb-2" style="font-size:0.7rem;color:#64748b;">
-                <i class="bi bi-patch-check me-1"></i>National/Intl Award bonus: +1 sub-rank included
-            </div>
+            <span class="pill pill-brand"><?= $col_submitted ?> submitted</span>
             <?php endif; ?>
+        </header>
 
-            <!-- Submit button -->
-            <?php if ($app['status'] === 'draft' && !$deadline_passed): ?>
-            <div class="mt-auto pt-2" style="border-top:1px solid #f1f5f9;">
-                <?php if ($can_submit): ?>
-                <form method="POST" id="submitApplicationForm">
-                    <input type="hidden" name="action" value="submit_application">
-                    <button type="button" class="btn btn-primary btn-sm w-100"
-                            onclick="confirmDelete('Submit your application for evaluator review?','submitApplicationForm','Submit','bi-send')">
-                        <i class="bi bi-send me-1"></i>Submit for Review
-                    </button>
-                </form>
-                <?php elseif ($total === 0): ?>
-                <a href="?page=apply" class="btn btn-sm btn-outline-primary w-100">
-                    <i class="bi bi-pencil me-1"></i>Enter KRA Scores First
-                </a>
-                <?php else: ?>
-                <p class="text-danger small mb-0 text-center">Score too low to submit</p>
-                <?php endif; ?>
+        <?php if ($colleagues): ?>
+        <div class="max-h-60 flex-1 overflow-y-auto">
+            <?php
+            $shown = 0;
+            foreach ($colleagues as $col):
+                $status = $col['app_status'] ?? '';
+                if (in_array($status, ['approved', 'rejected', 'admin_rejected'])) continue;
+                $shown++;
+                [$status_label, $status_class, $dot_class] = match ($status) {
+                    'submitted' => ['Submitted', 'text-brand-600', 'bg-brand-600'],
+                    'under_review' => ['Under Evaluation', 'text-violet-700', 'bg-violet-600'],
+                    'needs_revision' => ['Needs Revision', 'text-amber-700', 'bg-amber-500'],
+                    default => ['Draft', 'text-slate-500', 'bg-slate-300'],
+                };
+                $initials = strtoupper(
+                    substr(trim($col['first_name'] ?? ''), 0, 1) .
+                    substr(trim($col['last_name'] ?? ''), 0, 1)
+                ) ?: '?';
+                $avatar_class = $avatar_classes[((int)$col['user_id']) % count($avatar_classes)];
+            ?>
+            <div class="flex items-center gap-3 border-b border-slate-100 py-3 last:border-0">
+                <div class="relative shrink-0">
+                    <div class="flex size-10 items-center justify-center rounded-full text-xs font-semibold text-white <?= $avatar_class ?>">
+                        <?= sanitize($initials) ?>
+                    </div>
+                    <span class="absolute right-0 bottom-0 size-3 rounded-full border-2 border-white <?= $dot_class ?>" aria-hidden="true"></span>
+                </div>
+                <div class="min-w-0 flex-1">
+                    <div class="truncate text-sm font-semibold text-slate-800"><?= htmlspecialchars(formatDisplayName($col)) ?></div>
+                    <div class="truncate text-xs text-slate-500"><?= sanitize($col['rank'] ?? '-') ?></div>
+                </div>
+                <span class="shrink-0 text-[0.6875rem] font-semibold <?= $status_class ?>"><?= $status_label ?></span>
             </div>
+            <?php endforeach; ?>
+            <?php if ($shown === 0): ?>
+            <p class="m-0 py-8 text-center text-sm text-slate-500">All colleagues have completed their applications.</p>
             <?php endif; ?>
-
         </div>
-    </div>
-
-    <!-- KRA overview chart -->
-    <div class="col-lg-4">
-        <div class="neon-card h-100 d-flex flex-column" style="padding:1.25rem;">
-
-            <!-- Title -->
-            <div class="mb-3 pb-2" style="border-bottom:1px solid #f1f5f9;">
-                <div class="fw-semibold" style="color:#1a3a6b;font-size:0.85rem;letter-spacing:0.02em;">
-                    KRA OVERVIEW
-                </div>
-                <div class="text-muted" style="font-size:0.7rem;margin-top:2px;">
-                    Your scores vs maximum per area
-                </div>
-            </div>
-
-            <div class="flex-grow-1" style="min-height:140px;max-height:160px;">
-                <canvas id="kraOverviewChart"></canvas>
-            </div>
-
-            <!-- Legend -->
-            <div class="d-flex flex-wrap gap-3 mt-3 pt-2" style="border-top:1px solid #f1f5f9;">
-                <?php foreach ($kra_info as $kra => $info): ?>
-                <div style="font-size:0.65rem;color:#64748b;">
-                    <span style="display:inline-block;width:8px;height:8px;border-radius:2px;
-                                 background:<?= $info['color'] ?>;margin-right:4px;vertical-align:middle;"></span>
-                    <?= $info['short'] ?>
-                    <strong style="color:#1e293b;"><?= number_format($kra_map[$kra]['pts'],1) ?></strong>
-                </div>
-                <?php endforeach; ?>
-            </div>
-
+        <?php elseif (!$my_campus_id): ?>
+        <div class="flex flex-1 flex-col items-center justify-center py-8 text-center">
+            <p class="mb-3 text-sm text-slate-500">No campus assigned to your profile.</p>
+            <a href="?page=profile" class="btn btn-xs btn-outline-primary">Update Profile</a>
         </div>
-    </div>
+        <?php else: ?>
+        <p class="m-0 flex flex-1 items-center justify-center py-8 text-center text-sm text-slate-500">No other active faculty at your campus yet.</p>
+        <?php endif; ?>
+    </section>
+
+    <section class="neon-card flex h-full flex-col p-5">
+        <header class="mb-4 border-b border-slate-100 pb-3">
+            <h2 class="m-0 text-sm font-bold tracking-wide text-brand-700 uppercase">Weighted Score</h2>
+            <?php if ($faculty_rank): ?>
+            <p class="mt-1 mb-0 text-xs text-slate-500"><?= sanitize($faculty_rank) ?></p>
+            <?php endif; ?>
+        </header>
+
+        <div class="mb-4 text-5xl leading-none font-bold tracking-tight text-slate-900 tabular-nums">
+            <?= number_format($weighted, 2) ?>
+            <span class="text-base font-normal tracking-normal text-slate-400">/ 100</span>
+        </div>
+
+        <div class="relative mb-1">
+            <progress value="<?= min(100, max(0, $weighted)) ?>" max="100" class="h-2 w-full overflow-hidden rounded-full accent-brand-700" aria-label="Weighted score"></progress>
+            <span class="absolute top-0 left-[41%] h-3 w-0.5 -translate-y-0.5 rounded-full bg-slate-400" title="Minimum: 41" aria-hidden="true"></span>
+        </div>
+        <div class="mb-4 flex justify-between text-[0.625rem] text-slate-400">
+            <span>0</span><span>minimum 41</span><span>100</span>
+        </div>
+
+        <div class="mb-2 flex flex-wrap items-center gap-2 text-xs">
+            <span class="font-semibold <?= $inc > 0 ? 'text-brand-600' : 'text-slate-500' ?>">
+                <?= $inc > 0 ? '+' . $inc . ' sub-rank' . ($inc > 1 ? 's' : '') : 'Below minimum' ?>
+            </span>
+            <?php if ($next_bracket_gap !== null && $weighted > 0): ?>
+            <span class="text-slate-300">&middot;</span>
+            <span class="text-slate-500">
+                <?= $next_bracket_gap ?> pts <?= $inc > 0 ? 'more → +' . $next_bracket_inc : 'needed' ?>
+            </span>
+            <?php endif; ?>
+        </div>
+
+        <?php if (($score_result['award_bonus'] ?? 0) > 0): ?>
+        <p class="mb-3 text-xs text-slate-500"><i class="bi bi-patch-check mr-1"></i>National/International Award bonus: +1 sub-rank included</p>
+        <?php endif; ?>
+
+        <?php if ($app['status'] === 'draft' && !$deadline_passed): ?>
+        <div class="mt-auto border-t border-slate-100 pt-4">
+            <?php if ($can_submit): ?>
+            <form method="POST" id="submitApplicationForm">
+                <input type="hidden" name="action" value="submit_application">
+                <button type="button" class="btn btn-primary btn-sm w-full" onclick="confirmDelete('Submit your application for evaluator review?','submitApplicationForm','Submit','bi-send')">
+                    <i class="bi bi-send"></i>Submit for Review
+                </button>
+            </form>
+            <?php elseif ($total === 0): ?>
+            <a href="?page=apply" class="btn btn-sm btn-outline-primary w-full"><i class="bi bi-pencil"></i>Enter KRA Scores First</a>
+            <?php else: ?>
+            <p class="m-0 text-center text-sm font-medium text-rose-600">Score too low to submit</p>
+            <?php endif; ?>
+        </div>
+        <?php endif; ?>
+    </section>
+
+    <section class="neon-card flex h-full flex-col p-5">
+        <header class="mb-4 border-b border-slate-100 pb-3">
+            <h2 class="m-0 text-sm font-bold tracking-wide text-brand-700 uppercase">KRA Overview</h2>
+            <p class="mt-1 mb-0 text-xs text-slate-500">Your weighted contribution per area</p>
+        </header>
+        <div class="min-h-36 flex-1 max-h-44">
+            <canvas id="kraOverviewChart"></canvas>
+        </div>
+        <div class="mt-4 grid grid-cols-2 gap-2 border-t border-slate-100 pt-3">
+            <?php foreach ($kra_info as $kra => $info):
+                $legend_class = $kra_classes[$kra][2] ?? 'bg-brand-700';
+            ?>
+            <div class="flex items-center gap-2 text-[0.6875rem] text-slate-500">
+                <span class="size-2 shrink-0 rounded-sm <?= $legend_class ?>" aria-hidden="true"></span>
+                <span><?= $info['short'] ?> <strong class="text-slate-800"><?= number_format($kra_map[$kra]['pts'], 1) ?></strong></span>
+            </div>
+            <?php endforeach; ?>
+        </div>
+    </section>
 </div>
 
-<!-- -- KRA scores - compact horizontal bar chart ---------------- -->
-<div class="neon-card mb-4">
-    <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+<section class="neon-card mb-6 p-5 sm:p-6">
+    <header class="mb-5 flex flex-wrap items-center justify-between gap-3">
         <div>
-            <h6 class="mb-0" style="color:var(--blue-dark);">
-                <i class="bi bi-bar-chart-steps me-2"></i>KRA Scores
-            </h6>
-            <small class="text-muted">Your points per area vs maximum</small>
+            <h2 class="m-0 text-base font-bold text-brand-700"><i class="bi bi-bar-chart-steps mr-2"></i>KRA Scores</h2>
+            <p class="mt-1 mb-0 text-xs text-slate-500">Your points per area versus maximum</p>
         </div>
         <?php if ($can_edit): ?>
-        <a href="?page=apply" class="btn btn-xs btn-outline-primary">
-            <i class="bi bi-pencil me-1"></i>Edit KRA Entries
-        </a>
+        <a href="?page=apply" class="btn btn-xs btn-outline-primary"><i class="bi bi-pencil"></i>Edit KRA Entries</a>
         <?php endif; ?>
-    </div>
+    </header>
 
-    <div class="d-flex flex-column gap-3">
+    <div class="space-y-5">
         <?php foreach ($kra_map as $kra => $data):
-            $info     = $kra_info[$kra];
-            $pts      = $data['pts'];
+            $info = $kra_info[$kra];
+            $pts = $data['pts'];
             $verified = $data['verified'];
-            $pct      = $info['max'] > 0 ? min(100, ($pts / $info['max']) * 100) : 0;
-            $empty    = $pts == 0;
+            $pct = $info['max'] > 0 ? min(100, ($pts / $info['max']) * 100) : 0;
+            $empty = $pts == 0;
+            [$kra_text_class, $kra_accent_class] = $kra_classes[$kra] ?? ['text-brand-700', 'accent-brand-700'];
         ?>
         <div>
-            <!-- Label row -->
-            <div class="d-flex justify-content-between align-items-center mb-1">
-                <div class="d-flex align-items-center gap-2">
-                    <i class="bi <?= $info['icon'] ?>" style="font-size:0.85rem;color:<?= $empty ? '#cbd5e1' : $info['color'] ?>;"></i>
-                    <span style="font-size:0.8rem;font-weight:600;color:<?= $empty ? '#94a3b8' : '#1e293b' ?>;">
-                        <?= $info['short'] ?> - <?= $kra ?>
-                    </span>
+            <div class="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div class="flex min-w-0 flex-wrap items-center gap-2">
+                    <i class="bi <?= $info['icon'] ?> text-sm <?= $empty ? 'text-slate-300' : $kra_text_class ?>"></i>
+                    <span class="text-sm font-semibold <?= $empty ? 'text-slate-400' : 'text-slate-800' ?>"><?= $info['short'] ?> — <?= $kra ?></span>
                     <?php if ($verified): ?>
-                    <span class="badge bg-success" style="font-size:0.58rem;padding:2px 6px;">
-                        <i class="bi bi-patch-check"></i> Acceptable
-                    </span>
+                    <span class="badge bg-success"><i class="bi bi-patch-check"></i>Acceptable</span>
                     <?php elseif (!$empty): ?>
-                    <span class="badge bg-secondary" style="font-size:0.58rem;padding:2px 6px;">Not Acceptable</span>
+                    <span class="badge bg-secondary">Not Acceptable</span>
                     <?php endif; ?>
                 </div>
-                <div class="d-flex align-items-center gap-2">
-                    <span style="font-size:0.8rem;font-weight:700;color:<?= $empty ? '#94a3b8' : $info['color'] ?>;">
-                        <?= number_format($pts, 1) ?>
-                        <span style="font-weight:400;color:#94a3b8;font-size:0.72rem;">/ <?= $info['max'] ?></span>
+                <div class="flex shrink-0 items-center gap-3">
+                    <span class="text-sm font-bold tabular-nums <?= $empty ? 'text-slate-400' : $kra_text_class ?>">
+                        <?= number_format($pts, 1) ?> <span class="text-xs font-normal text-slate-400">/ <?= $info['max'] ?></span>
                     </span>
                     <?php if ($can_edit): ?>
-                    <a href="?page=apply&tab=<?= $info['tab'] ?>"
-                       style="font-size:0.68rem;color:<?= $info['color'] ?>;text-decoration:none;white-space:nowrap;">
-                        <?= $empty ? '+ Add' : 'Edit' ?>
-                    </a>
+                    <a href="?page=apply&tab=<?= $info['tab'] ?>" class="text-xs font-semibold no-underline hover:underline <?= $kra_text_class ?>"><?= $empty ? '+ Add' : 'Edit' ?></a>
                     <?php endif; ?>
                 </div>
             </div>
-            <!-- Bar -->
-            <div style="height:10px;background:#f1f5f9;border-radius:99px;overflow:hidden;position:relative;">
-                <div style="height:100%;width:<?= $pct ?>%;
-                            background:<?= $empty ? '#e2e8f0' : $info['color'] ?>;
-                            border-radius:99px;
-                            transition:width 0.6s ease;
-                            <?= !$empty ? 'box-shadow:0 0 6px '.$info['color'].'55;' : '' ?>">
-                </div>
-                <!-- Minimum threshold marker at 41% -->
-                <?php if ($kra === 'Instruction'): // weighted threshold only meaningful on final score ?>
-                <?php endif; ?>
-            </div>
-            <div class="d-flex justify-content-between mt-1">
-                <span style="font-size:0.62rem;color:#94a3b8;"><?= $empty ? 'No entries yet' : number_format($pct, 0).'% of max' ?></span>
+            <progress value="<?= min($pts, $info['max']) ?>" max="<?= $info['max'] ?>" class="h-2.5 w-full overflow-hidden rounded-full <?= $empty ? 'accent-slate-200' : $kra_accent_class ?>" aria-label="<?= sanitize($kra) ?> score progress"></progress>
+            <div class="mt-1 flex justify-between gap-3 text-[0.6875rem] text-slate-400">
+                <span><?= $empty ? 'No entries yet' : number_format($pct, 0) . '% of maximum' ?></span>
                 <?php if (!$empty && $pct < 100): ?>
-                <span style="font-size:0.62rem;color:#94a3b8;"><?= number_format($info['max'] - $pts, 1) ?> pts to max</span>
+                <span><?= number_format($info['max'] - $pts, 1) ?> pts to maximum</span>
                 <?php elseif ($pct >= 100): ?>
-                <span style="font-size:0.62rem;color:#1e4d8c;font-weight:600;">Maxed out &#10004;</span>
+                <span class="font-semibold text-brand-600">Maximum reached <i class="bi bi-check-lg"></i></span>
                 <?php endif; ?>
             </div>
         </div>
         <?php endforeach; ?>
     </div>
-</div>
+</section>
 
-<!-- -- Score computation table --------------------------------- -->
 <?php if ($total > 0): ?>
-<div class="neon-card mb-4">
-    <h6 class="mb-3" style="color:var(--blue-dark);">
-        <i class="bi bi-calculator me-2"></i>Score Breakdown
-        <span class="text-muted fw-normal" style="font-size:0.78rem;">
-            - weights based on <em><?= sanitize($faculty_rank ?: 'rank not set') ?></em>
-        </span>
-    </h6>
+<section class="neon-card mb-6 overflow-hidden p-0">
+    <header class="border-b border-slate-100 px-5 py-4 sm:px-6">
+        <h2 class="m-0 text-base font-bold text-brand-700">
+            <i class="bi bi-calculator mr-2"></i>Score Breakdown
+            <span class="ml-1 text-xs font-normal text-slate-500">— weights based on <em><?= sanitize($faculty_rank ?: 'rank not set') ?></em></span>
+        </h2>
+    </header>
     <div class="table-responsive">
-        <table style="width:100%;border-collapse:collapse;font-size:0.85rem;margin-bottom:0.5rem;">
+        <table class="table-modern mb-0 min-w-[680px]">
             <thead>
-                <tr style="background:#f1f5f9;">
-                    <th style="color:#1a3a6b;">KRA</th>
-                    <th class="text-center" style="color:#1a3a6b;">Raw</th>
-                    <th class="text-center" style="color:#1a3a6b;">Capped</th>
-                    <th class="text-center" style="color:#1a3a6b;">Weight</th>
-                    <th class="text-center" style="color:#1a3a6b;">Weighted</th>
-                    <th class="text-center" style="color:#1a3a6b;">Acceptable</th>
+                <tr>
+                    <th>KRA</th>
+                    <th class="text-center">Raw</th>
+                    <th class="text-center">Capped</th>
+                    <th class="text-center">Weight</th>
+                    <th class="text-center">Weighted</th>
+                    <th class="text-center">Acceptable</th>
                 </tr>
             </thead>
             <tbody>
             <?php
-            $kra_labels = ['Instruction'=>'KRA I - Instruction','Research'=>'KRA II - Research','Extension'=>'KRA III - Extension','Professional Development'=>'KRA IV - Prof. Development'];
-            $kra_capped = ['Instruction'=>$score_result['kra1'],'Research'=>$score_result['kra2'],'Extension'=>$score_result['kra3'],'Professional Development'=>$score_result['kra4']];
+            $kra_labels = [
+                'Instruction' => 'KRA I - Instruction',
+                'Research' => 'KRA II - Research',
+                'Extension' => 'KRA III - Extension',
+                'Professional Development' => 'KRA IV - Prof. Development',
+            ];
+            $kra_capped = [
+                'Instruction' => $score_result['kra1'],
+                'Research' => $score_result['kra2'],
+                'Extension' => $score_result['kra3'],
+                'Professional Development' => $score_result['kra4'],
+            ];
             foreach ($kra_labels as $key => $label):
-                $raw  = $kra_map[$key]['pts'];
-                $cap  = $kra_capped[$key];
-                $w    = $weights[$key];
-                $wval = round($cap * $w, 2);
-                $ver  = $kra_map[$key]['verified'];
+                $raw = $kra_map[$key]['pts'];
+                $cap = $kra_capped[$key];
+                $weight = $weights[$key];
+                $weighted_value = round($cap * $weight, 2);
+                $verified = $kra_map[$key]['verified'];
             ?>
-            <tr>
-                <td><?= $label ?></td>
-                <td class="text-center"><?= number_format($raw, 2) ?></td>
-                <td class="text-center"><?= number_format($cap, 2) ?></td>
-                <td class="text-center"><?= ($w * 100) ?>%</td>
-                <td class="text-center fw-bold"><?= number_format($wval, 2) ?></td>
-                <td class="text-center">
-                    <?php if ($ver): ?>
-                    <span class="badge bg-success" style="font-size:0.65rem;"><i class="bi bi-check"></i></span>
-                    <?php else: ?>
-                    <span class="badge bg-secondary" style="font-size:0.65rem;">-</span>
-                    <?php endif; ?>
-                </td>
-            </tr>
+                <tr>
+                    <td class="font-medium text-slate-800"><?= $label ?></td>
+                    <td class="text-center tabular-nums"><?= number_format($raw, 2) ?></td>
+                    <td class="text-center tabular-nums"><?= number_format($cap, 2) ?></td>
+                    <td class="text-center tabular-nums"><?= ($weight * 100) ?>%</td>
+                    <td class="text-center font-bold text-slate-900 tabular-nums"><?= number_format($weighted_value, 2) ?></td>
+                    <td class="text-center">
+                        <?php if ($verified): ?>
+                        <span class="badge bg-success"><i class="bi bi-check-lg"></i></span>
+                        <?php else: ?>
+                        <span class="badge bg-secondary">—</span>
+                        <?php endif; ?>
+                    </td>
+                </tr>
             <?php endforeach; ?>
             </tbody>
             <tfoot>
-                <tr style="background:#f0f4fb;font-weight:700;">
-                    <td colspan="4" style="color:#1a3a6b;">Final Weighted Score</td>
-                    <td class="text-center" style="color:#1a3a6b;font-size:1rem;"><?= number_format($weighted, 2) ?></td>
+                <tr class="border-t border-brand-100 bg-brand-50 font-bold">
+                    <td colspan="4" class="px-4 py-3 text-brand-700">Final Weighted Score</td>
+                    <td class="px-4 py-3 text-center text-base text-brand-700 tabular-nums"><?= number_format($weighted, 2) ?></td>
                     <td></td>
                 </tr>
             </tfoot>
         </table>
     </div>
-    <!-- Sub-rank summary -->
-    <div class="d-flex align-items-center gap-3 flex-wrap mt-1">
-        <div>
-            <span class="text-muted small">Sub-rank increment: </span>
-            <span class="badge <?= $inc > 0 ? 'bg-success' : 'bg-secondary' ?> ms-1">
-                <?= $inc > 0 ? "+{$inc} sub-rank" . ($inc > 1 ? 's' : '') : 'No sub-rank increment (below 41)' ?>
-            </span>
-            <?php if (($score_result['award_bonus'] ?? 0) > 0): ?>
-            <span class="badge ms-1" style="background:#1a3a6b;font-size:0.7rem;">
-                <i class="bi bi-award-fill me-1"></i>+1 National/Intl Award bonus included
-            </span>
-            <?php endif; ?>
-        </div>
-        <?php if ($inc > 0): ?>
-        <div class="text-muted small">
-            <?php foreach ($brackets as [$lo,$hi,$r]) { if ($r === ($inc - ($score_result['award_bonus'] ?? 0))) { echo "Score {$lo}-{$hi} -> +{$r} sub-rank" . ($r>1?'s':''); break; } } ?>
-        </div>
+    <footer class="flex flex-wrap items-center gap-3 border-t border-slate-100 bg-slate-50/60 px-5 py-4 text-sm sm:px-6">
+        <span class="text-slate-500">Sub-rank increment:</span>
+        <span class="badge <?= $inc > 0 ? 'bg-success' : 'bg-secondary' ?>">
+            <?= $inc > 0 ? "+{$inc} sub-rank" . ($inc > 1 ? 's' : '') : 'No sub-rank increment (below 41)' ?>
+        </span>
+        <?php if (($score_result['award_bonus'] ?? 0) > 0): ?>
+        <span class="badge bg-primary"><i class="bi bi-award-fill"></i>+1 National/International Award bonus included</span>
         <?php endif; ?>
-    </div>
-</div>
+        <?php if ($inc > 0): ?>
+        <span class="text-xs text-slate-500">
+            <?php foreach ($brackets as [$lo, $hi, $rank_increment]) {
+                if ($rank_increment === ($inc - ($score_result['award_bonus'] ?? 0))) {
+                    echo "Score {$lo}-{$hi} → +{$rank_increment} sub-rank" . ($rank_increment > 1 ? 's' : '');
+                    break;
+                }
+            } ?>
+        </span>
+        <?php endif; ?>
+    </footer>
+</section>
 <?php endif; ?>
 
-<!-- -- Chart JS ------------------------------------------------- -->
 <script>
 document.addEventListener('DOMContentLoaded', function () {
     <?php
-    // Weighted contribution per KRA = capped_score * weight
     $kra_capped = [
-        'Instruction'              => $score_result['kra1'],
-        'Research'                 => $score_result['kra2'],
-        'Extension'                => $score_result['kra3'],
+        'Instruction' => $score_result['kra1'],
+        'Research' => $score_result['kra2'],
+        'Extension' => $score_result['kra3'],
         'Professional Development' => $score_result['kra4'],
     ];
     $contributions = [];
-    foreach ($kra_capped as $cat => $cap) {
-        $contributions[] = round($cap * $weights[$cat], 2);
+    foreach ($kra_capped as $category => $cap) {
+        $contributions[] = round($cap * $weights[$category], 2);
     }
     $has_any = array_sum($contributions) > 0;
     ?>
@@ -704,7 +449,7 @@ document.addEventListener('DOMContentLoaded', function () {
             labels: ['KRA I - Instruction', 'KRA II - Research', 'KRA III - Extension', 'KRA IV - Prof Dev'],
             datasets: [{
                 data: <?= json_encode($contributions) ?>,
-                backgroundColor: ['#1a3a6b','#334155','#475569','#1e4d8c'],
+                backgroundColor: ['#2b519b', '#1a3a6b', '#0369a1', '#4169b8'],
                 borderWidth: 2,
                 borderColor: '#fff',
                 hoverOffset: 6
@@ -728,30 +473,29 @@ document.addEventListener('DOMContentLoaded', function () {
             beforeDraw(chart) {
                 const { ctx, chartArea: { width, height, left, top } } = chart;
                 ctx.save();
-                const cx = left + width / 2;
-                const cy = top + height / 2;
+                const centerX = left + width / 2;
+                const centerY = top + height / 2;
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
                 ctx.font = 'bold 1.4rem sans-serif';
                 ctx.fillStyle = '#1e293b';
-                ctx.fillText('<?= number_format($weighted, 1) ?>', cx, cy - 8);
+                ctx.fillText('<?= number_format($weighted, 1) ?>', centerX, centerY - 8);
                 ctx.font = '0.65rem sans-serif';
                 ctx.fillStyle = '#94a3b8';
-                ctx.fillText('weighted', cx, cy + 10);
+                ctx.fillText('weighted', centerX, centerY + 10);
                 ctx.restore();
             }
         }]
     });
     <?php else: ?>
-    // No data yet - show empty state text on canvas
     const canvas = document.getElementById('kraOverviewChart');
-    const ctx2 = canvas.getContext('2d');
+    const context = canvas.getContext('2d');
     canvas.height = 180;
-    ctx2.textAlign = 'center';
-    ctx2.textBaseline = 'middle';
-    ctx2.font = '0.8rem sans-serif';
-    ctx2.fillStyle = '#94a3b8';
-    ctx2.fillText('No KRA entries yet', canvas.width / 2, canvas.height / 2);
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.font = '0.8rem sans-serif';
+    context.fillStyle = '#94a3b8';
+    context.fillText('No KRA entries yet', canvas.width / 2, canvas.height / 2);
     <?php endif; ?>
 });
 </script>

@@ -1,126 +1,22 @@
-<?php
-$search          = trim($_GET['search'] ?? '');
-$filter          = $_GET['filter'] ?? '';
-$filter_campus   = intval($_GET['campus_id'] ?? 0);
-$allowed = ['draft','submitted','under_review','talisay_review','approved','rejected','reclassified','admin_rejected','needs_revision'];
-if ($filter && !in_array($filter, $allowed)) $filter = '';
-
-// Fetch all campuses for dropdown
-$campuses = $pdo->query("SELECT campus_id, campus_name FROM campuses ORDER BY campus_name ASC")->fetchAll();
-
-// Handle admin actions
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $action = $_POST['action'] ?? '';
-    $app_id = intval($_POST['app_id'] ?? 0);
-
-    if ($action === 'admin_approve_edit' && $app_id) {
-        $pdo->prepare("UPDATE applications SET status='draft', checker_remarks='Edit request allowed by admin. Please update and resubmit.' WHERE application_id=?")
-            ->execute([$app_id]);
-        logAudit($pdo, $_SESSION['user_id'], 'Edit Request Allowed', "Admin allowed edit for Application #{$app_id}.");
-        flashMessage('success', 'Edit request allowed. Faculty can now edit and resubmit.');
-        echo "<script>window.location.href='index.php?page=all_applications&filter=edit_requested';</script>"; exit;
-    } elseif ($action === 'admin_deny_edit' && $app_id) {
-        $deny_reason = trim($_POST['deny_reason'] ?? 'Edit request denied by admin.');
-        $check = $pdo->prepare("SELECT reviewed_at FROM applications WHERE application_id=?");
-        $check->execute([$app_id]);
-        $prev  = $check->fetch();
-        $revert_status = (!empty($prev['reviewed_at'])) ? 'approved' : 'submitted';
-        $pdo->prepare("UPDATE applications SET status=?, checker_remarks=? WHERE application_id=?")
-            ->execute([$revert_status, $deny_reason, $app_id]);
-        logAudit($pdo, $_SESSION['user_id'], 'Edit Request Denied', "Admin denied edit for Application #{$app_id}. Reverted to {$revert_status}.");
-        flashMessage('warning', 'Edit request denied.');
-        echo "<script>window.location.href='index.php?page=all_applications&filter=edit_requested';</script>"; exit;
-    } elseif ($action === 'admin_reject' && $app_id) {
-        $admin_remarks = trim($_POST['admin_remarks'] ?? '');
-        $pdo->prepare("UPDATE applications SET status='admin_rejected', checker_remarks=?, reviewed_at=NOW() WHERE application_id=? AND status='approved'")
-            ->execute([$admin_remarks ?: 'Returned by admin.', $app_id]);
-        logAudit($pdo, $_SESSION['user_id'], 'Application Returned by Admin', "Admin returned Application #{$app_id}. Remarks: {$admin_remarks}");
-        flashMessage('warning', 'Application has been returned for revision.');
-        echo "<script>window.location.href='index.php?page=all_applications&filter=approved';</script>"; exit;
-    }
-    echo "<script>window.location.href='index.php?page=all_applications&filter=edit_requested';</script>"; exit;
-}
-
-$where  = 'WHERE 1=1';
-$params = [];
-
-if ($filter) { $where .= ' AND a.status = ?'; $params[] = $filter; }
-if ($filter_campus) { $where .= ' AND u.campus_id = ?'; $params[] = $filter_campus; }
-if ($search) {
-    $where .= ' AND (u.full_name LIKE ? OR u.employee_id LIKE ? OR camp.campus_name LIKE ?)';
-    $s = "%$search%";
-    $params = array_merge($params, [$s, $s, $s]);
-}
-
-$apps = [];
-try {
-    $pdo->query("SELECT review_id FROM application_checker_reviews LIMIT 1");
-    $stmt = $pdo->prepare("
-        SELECT a.*, u.full_name, u.employee_id, u.rank, camp.campus_name, c.cycle_name,
-               (SELECT COUNT(*) FROM application_checker_reviews r
-                WHERE r.application_id = a.application_id AND r.decision = 'approved') AS approvals_count
-        FROM applications a
-        JOIN users u ON a.user_id = u.user_id AND u.role = 'faculty'
-        LEFT JOIN campuses camp ON u.campus_id = camp.campus_id
-        LEFT JOIN cycles c ON a.cycle_id = c.cycle_id
-        $where ORDER BY a.updated_at DESC
-    ");
-} catch (\Exception $e) {
-    $stmt = $pdo->prepare("
-        SELECT a.*, u.full_name, u.employee_id, u.rank, camp.campus_name, c.cycle_name, 0 AS approvals_count
-        FROM applications a
-        JOIN users u ON a.user_id = u.user_id AND u.role = 'faculty'
-        LEFT JOIN campuses camp ON u.campus_id = camp.campus_id
-        LEFT JOIN cycles c ON a.cycle_id = c.cycle_id
-        $where ORDER BY a.updated_at DESC
-    ");
-}
-$stmt->execute($params);
-$apps = $stmt->fetchAll();
-
-$counts = $pdo->query("SELECT a.status, COUNT(*) as cnt FROM applications a JOIN users u ON a.user_id = u.user_id AND u.role = 'faculty' GROUP BY a.status")->fetchAll(PDO::FETCH_KEY_PAIR);
-$total  = array_sum($counts);
-
-// Status tab config
-$tabs = [
-    ''               => ['label'=>'All',           'icon'=>'bi-grid-3x3-gap', 'color'=>'#1a3a6b'],
-    'draft'          => ['label'=>'Draft',          'icon'=>'bi-file-earmark', 'color'=>'#94a3b8'],
-    'submitted'      => ['label'=>'Submitted',      'icon'=>'bi-send',                  'color'=>'#1a3a6b'],
-    'under_review'   => ['label'=>'Under Review',   'icon'=>'bi-hourglass-split',         'color'=>'#1a3a6b'],
-    // Display name for stored status value 'talisay_review' is "ITC Review".
-    'talisay_review' => ['label'=>'ITC Review', 'icon'=>'bi-building-up',              'color'=>'#1a3a6b'],
-    'approved'       => ['label'=>'Evaluation Complete', 'icon'=>'bi-clipboard-check',    'color'=>'#1a3a6b'],
-    'rejected'       => ['label'=>'Returned for Revision','icon'=>'bi-arrow-counterclockwise','color'=>'#1a3a6b'],
-    'needs_revision' => ['label'=>'Needs Revision', 'icon'=>'bi-pencil-square',            'color'=>'#1a3a6b'],
-    'admin_rejected' => ['label'=>'Evaluation Complete','icon'=>'bi-clipboard-check',     'color'=>'#1a3a6b'],
-];
-
-// Score color helper
-function scoreColor(float $s): string {
-    if ($s >= 71) return '#1a3a6b';
-    if ($s >= 41) return '#1a3a6b';
-    return '#475569';
-}
-?>
+<?php require __DIR__ . '/../../../backend/controllers/admin/all_applications.php'; ?>
 
 <?php showFlash(); ?>
 
 <!-- -- Page header -- -->
-<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;margin-bottom:1.5rem;">
+<div class="flex items-center justify-between flex-wrap [gap:1rem] [margin-bottom:1.5rem]">
     <div>
-        <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.2rem;">
-            <div style="width:36px;height:36px;border-radius:8px;background:#1e4d8c;
-                        display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-                <i class="bi bi-ui-checks-grid" style="color:#fff;font-size:1rem;"></i>
+        <div class="flex items-center [gap:0.6rem] [margin-bottom:0.2rem]">
+            <div class="[width:36px] [height:36px] [border-radius:8px] [background:#1e4d8c] flex items-center justify-center shrink-0">
+                <i class="bi bi-ui-checks-grid [color:#fff] [font-size:1rem]"></i>
             </div>
-            <h5 style="margin:0;font-weight:700;color:#1a3a6b;font-size:1.1rem;">All Applications</h5>
+            <h5 class="m-0 font-bold [color:#1a3a6b] [font-size:1.1rem]">All Applications</h5>
         </div>
-        <div style="font-size:0.78rem;color:#64748b;padding-left:44px;">
-            <strong style="color:#1a3a6b;"><?= $total ?></strong> total across all faculty
+        <div class="[font-size:0.78rem] [color:#64748b] [padding-left:44px]">
+            <strong class="[color:#1a3a6b]"><?= $total ?></strong> total across all faculty
         </div>
     </div>
     <!-- Quick stat pills -->
-    <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+    <div class="flex [gap:0.5rem] flex-wrap">
         <?php
         $highlights = [
             'submitted'    => ['#1e4d8c','#eff6ff','Submitted'],
@@ -130,8 +26,7 @@ function scoreColor(float $s): string {
         foreach ($highlights as $st => [$tc,$bg,$lbl]):
             $c = $counts[$st] ?? 0; if (!$c) continue;
         ?>
-        <div style="background:<?= $bg ?>;border:1px solid <?= $tc ?>33;border-radius:20px;
-                    padding:0.3rem 0.9rem;font-size:0.75rem;font-weight:700;color:<?= $tc ?>;">
+        <div class="pill <?= $st === 'submitted' ? 'pill-brand' : ($st === 'under_review' ? 'pill-progress' : 'pill-success') ?>">
             <?= $c ?> <?= $lbl ?>
         </div>
         <?php endforeach; ?>
@@ -139,40 +34,34 @@ function scoreColor(float $s): string {
 </div>
 
 <!-- -- Search & Filter bar -- -->
-<div class="neon-card mb-3" style="padding:1rem 1.25rem;">
+<div class="neon-card mb-4 [padding:1rem_1.25rem]">
     <form method="GET">
         <input type="hidden" name="page" value="all_applications">
         <input type="hidden" name="filter" value="<?= sanitize($filter) ?>">
-        <div style="display:flex;flex-wrap:wrap;gap:0.75rem;align-items:flex-end;">
+        <div class="flex flex-wrap [gap:0.75rem] items-end">
             <!-- Search -->
-            <div style="flex:1;min-width:200px;">
-                <label style="font-size:0.72rem;font-weight:600;color:#64748b;text-transform:uppercase;
-                               letter-spacing:0.05em;display:block;margin-bottom:5px;">Search</label>
-                <div style="display:flex;align-items:center;border:1.5px solid #e2e8f0;border-radius:8px;
-                            overflow:hidden;background:#f8fafc;transition:border-color 0.2s;"
-                     onfocusin="this.style.borderColor='#1e4d8c'" onfocusout="this.style.borderColor='#e2e8f0'">
-                    <span style="padding:0 0.65rem;color:#94a3b8;font-size:0.85rem;">
+            <div class="flex-1 [min-width:200px]">
+                <label class="[font-size:0.72rem] font-semibold [color:#64748b] uppercase [letter-spacing:0.05em] block [margin-bottom:5px]">Search</label>
+                <div class="flex items-center overflow-hidden rounded-xl border border-slate-200 bg-slate-50 transition focus-within:border-brand-500 focus-within:ring-4 focus-within:ring-brand-100">
+                    <span class="[padding:0_0.65rem] [color:#94a3b8] [font-size:0.85rem]">
                         <i class="bi bi-search"></i>
                     </span>
                     <input type="text" name="search" value="<?= sanitize($search) ?>"
                            placeholder="Faculty name, ID, campus..."
-                           style="flex:1;border:none;outline:none;background:transparent;
-                                  padding:0.5rem 0.5rem 0.5rem 0;font-size:0.85rem;color:#1e293b;">
+                           class="flex-1 border-0 outline-none bg-transparent [padding:0.5rem_0.5rem_0.5rem_0] [font-size:0.85rem] [color:#1e293b]">
                     <?php if ($search): ?>
                     <a href="?page=all_applications&filter=<?= urlencode($filter) ?><?= $filter_campus ? '&campus_id='.$filter_campus : '' ?>"
-                       style="padding:0 0.65rem;color:#94a3b8;text-decoration:none;font-size:0.85rem;">
+                       class="[padding:0_0.65rem] [color:#94a3b8] no-underline [font-size:0.85rem]">
                         <i class="bi bi-x"></i>
                     </a>
                     <?php endif; ?>
                 </div>
             </div>
             <!-- Campus filter -->
-            <div style="min-width:180px;">
-                <label style="font-size:0.72rem;font-weight:600;color:#64748b;text-transform:uppercase;
-                               letter-spacing:0.05em;display:block;margin-bottom:5px;">Campus</label>
+            <div class="[min-width:180px]">
+                <label class="[font-size:0.72rem] font-semibold [color:#64748b] uppercase [letter-spacing:0.05em] block [margin-bottom:5px]">Campus</label>
                 <select name="campus_id"
-                        style="width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:0.5rem 0.75rem;
-                               font-size:0.85rem;color:#1e293b;background:#f8fafc;outline:none;cursor:pointer;"
+                        class="form-select"
                         onchange="this.form.submit()">
                     <option value="">All Campuses</option>
                     <?php foreach ($campuses as $c): ?>
@@ -183,17 +72,12 @@ function scoreColor(float $s): string {
                 </select>
             </div>
             <!-- Submit -->
-            <button type="submit"
-                    style="background:#1a3a6b;color:#fff;border:none;border-radius:8px;
-                           padding:0.5rem 1.25rem;font-size:0.85rem;font-weight:600;cursor:pointer;
-                           display:flex;align-items:center;gap:0.4rem;white-space:nowrap;">
+            <button type="submit" class="btn btn-primary">
                 <i class="bi bi-search"></i> Search
             </button>
             <?php if ($search || $filter_campus): ?>
             <a href="?page=all_applications&filter=<?= urlencode($filter) ?>"
-               style="background:#f1f5f9;color:#64748b;border:1.5px solid #e2e8f0;border-radius:8px;
-                      padding:0.5rem 1rem;font-size:0.82rem;font-weight:600;text-decoration:none;
-                      display:flex;align-items:center;gap:0.4rem;white-space:nowrap;">
+               class="btn btn-secondary">
                 <i class="bi bi-x-circle"></i> Clear
             </a>
             <?php endif; ?>
@@ -202,7 +86,7 @@ function scoreColor(float $s): string {
 </div>
 
 <!-- -- Status filter tabs -- -->
-<div style="display:flex;flex-wrap:wrap;gap:0.4rem;margin-bottom:1.25rem;">
+<div class="flex flex-wrap [gap:0.4rem] [margin-bottom:1.25rem]">
     <?php foreach ($tabs as $key => $t):
         $cnt    = $key === '' ? $total : ($counts[$key] ?? 0);
         $active = $filter === $key;
@@ -210,17 +94,10 @@ function scoreColor(float $s): string {
                 . ($search      ? '&search='.urlencode($search) : '')
                 . ($filter_campus ? '&campus_id='.$filter_campus  : '');
     ?>
-    <a href="<?= $url ?>"
-       style="display:inline-flex;align-items:center;gap:0.4rem;padding:0.35rem 0.85rem;
-              font-size:0.75rem;font-weight:600;text-decoration:none;transition:all 0.15s;
-              <?= $active
-                ? 'background:#1a3a6b;color:#fff;'
-                : 'background:#fff;color:#475569;border:1px solid #e2e8f0;' ?>">
+    <a href="<?= $url ?>" class="btn btn-xs <?= $active ? 'btn-primary' : 'btn-secondary' ?>">
         <?= $t['label'] ?>
         <?php if ($cnt): ?>
-        <span style="display:inline-flex;align-items:center;justify-content:center;
-                     min-width:16px;height:16px;padding:0 3px;font-size:0.62rem;font-weight:700;
-                     <?= $active ? 'background:rgba(255,255,255,0.25);color:#fff;' : 'background:#f1f5f9;color:#64748b;' ?>">
+        <span class="inline-flex size-4 min-w-4 items-center justify-center rounded-full px-1 text-[0.62rem] font-bold <?= $active ? 'bg-white/25 text-white' : 'bg-slate-100 text-slate-500' ?>">
             <?= $cnt ?>
         </span>
         <?php endif; ?>
@@ -230,37 +107,30 @@ function scoreColor(float $s): string {
 
 <!-- -- Applications table / empty state -- -->
 <?php if ($apps): ?>
-<div class="neon-card" style="padding:0;overflow:hidden;">
+<div class="neon-card p-0 overflow-hidden">
     <div class="table-responsive">
-        <table style="width:100%;border-collapse:collapse;font-size:0.84rem;">
+        <table class="table-modern mb-0 min-w-[900px]">
             <thead>
-                <tr style="background:#f8fafc;border-bottom:2px solid #e2e8f0;">
-                    <th style="padding:0.75rem 1rem;text-align:left;font-size:0.7rem;font-weight:700;
-                               text-transform:uppercase;letter-spacing:0.05em;color:#64748b;white-space:nowrap;">
+                <tr class="[background:#f8fafc] [border-bottom:2px_solid_#e2e8f0]">
+                    <th class="[padding:0.75rem_1rem] text-left [font-size:0.7rem] font-bold uppercase [letter-spacing:0.05em] [color:#64748b] whitespace-nowrap">
                         Faculty
                     </th>
-                    <th style="padding:0.75rem 0.75rem;text-align:left;font-size:0.7rem;font-weight:700;
-                               text-transform:uppercase;letter-spacing:0.05em;color:#64748b;white-space:nowrap;">
+                    <th class="[padding:0.75rem_0.75rem] text-left [font-size:0.7rem] font-bold uppercase [letter-spacing:0.05em] [color:#64748b] whitespace-nowrap">
                         Campus
                     </th>
-                    <th style="padding:0.75rem 0.75rem;text-align:left;font-size:0.7rem;font-weight:700;
-                               text-transform:uppercase;letter-spacing:0.05em;color:#64748b;white-space:nowrap;">
+                    <th class="[padding:0.75rem_0.75rem] text-left [font-size:0.7rem] font-bold uppercase [letter-spacing:0.05em] [color:#64748b] whitespace-nowrap">
                         Cycle
                     </th>
-                    <th style="padding:0.75rem 0.75rem;text-align:center;font-size:0.7rem;font-weight:700;
-                               text-transform:uppercase;letter-spacing:0.05em;color:#64748b;white-space:nowrap;">
+                    <th class="[padding:0.75rem_0.75rem] text-center [font-size:0.7rem] font-bold uppercase [letter-spacing:0.05em] [color:#64748b] whitespace-nowrap">
                         Score
                     </th>
-                    <th style="padding:0.75rem 0.75rem;text-align:left;font-size:0.7rem;font-weight:700;
-                               text-transform:uppercase;letter-spacing:0.05em;color:#64748b;white-space:nowrap;">
+                    <th class="[padding:0.75rem_0.75rem] text-left [font-size:0.7rem] font-bold uppercase [letter-spacing:0.05em] [color:#64748b] whitespace-nowrap">
                         Status
                     </th>
-                    <th style="padding:0.75rem 0.75rem;text-align:left;font-size:0.7rem;font-weight:700;
-                               text-transform:uppercase;letter-spacing:0.05em;color:#64748b;white-space:nowrap;">
+                    <th class="[padding:0.75rem_0.75rem] text-left [font-size:0.7rem] font-bold uppercase [letter-spacing:0.05em] [color:#64748b] whitespace-nowrap">
                         Updated
                     </th>
-                    <th style="padding:0.75rem 0.75rem;text-align:center;font-size:0.7rem;font-weight:700;
-                               text-transform:uppercase;letter-spacing:0.05em;color:#64748b;white-space:nowrap;">
+                    <th class="[padding:0.75rem_0.75rem] text-center [font-size:0.7rem] font-bold uppercase [letter-spacing:0.05em] [color:#64748b] whitespace-nowrap">
                         Action
                     </th>
                 </tr>
@@ -269,33 +139,30 @@ function scoreColor(float $s): string {
             <?php foreach ($apps as $a):
                 $score = (float)$a['weighted_score'];
                 $sc    = scoreColor($score);
+                $score_class = $score >= 71 ? 'bg-emerald-600' : ($score >= 41 ? 'bg-brand-600' : 'bg-rose-600');
             ?>
-            <tr style="border-bottom:1px solid #f0f4fb;transition:background 0.15s;"
-                onmouseover="this.style.background='#f8fafc'"
-                onmouseout="this.style.background='transparent'">
+            <tr>
 
                 <!-- Faculty -->
-                <td style="padding:0.85rem 1rem;vertical-align:middle;">
-                    <div style="display:flex;align-items:center;gap:0.65rem;">
+                <td class="[padding:0.85rem_1rem] [vertical-align:middle]">
+                    <div class="flex items-center [gap:0.65rem]">
                         <?php
                         $a_parts  = explode(',', trim($a['full_name'] ?? 'U'));
                         $a_last   = trim($a_parts[0]);
                         $a_rest   = isset($a_parts[1]) ? trim($a_parts[1]) : '';
                         $a_first  = explode(' ', $a_rest)[0] ?? '';
                         $initials = strtoupper(substr($a_first, 0, 1) . substr($a_last, 0, 1));
-                        $colors = ['#1a3a6b','#334155','#1e4d8c','#475569','#1a3a6b','#334155'];
-                        $bg = $colors[crc32($a['user_id']) % count($colors)];
+                        $avatar_classes = ['bg-brand-700','bg-slate-700','bg-brand-600','bg-slate-600'];
+                        $avatar_class = $avatar_classes[crc32($a['user_id']) % count($avatar_classes)];
                         ?>
-                        <div style="width:36px;height:36px;border-radius:50%;background:<?= $bg ?>;
-                                    display:flex;align-items:center;justify-content:center;
-                                    font-size:0.78rem;font-weight:700;color:#fff;flex-shrink:0;">
+                        <div class="flex size-9 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white <?= $avatar_class ?>">
                             <?= $initials ?>
                         </div>
                         <div>
-                            <div style="font-weight:600;color:#1e293b;font-size:0.84rem;line-height:1.2;">
+                            <div class="font-semibold [color:#1e293b] [font-size:0.84rem] leading-tight">
                                 <?= sanitize($a['full_name'] ?? ' - ') ?>
                             </div>
-                            <div style="font-size:0.7rem;color:#94a3b8;margin-top:1px;">
+                            <div class="[font-size:0.7rem] [color:#94a3b8] [margin-top:1px]">
                                 <?= sanitize($a['employee_id'] ?? '') ?>
                                 <?php if (!empty($a['rank'])): ?>
                                 &nbsp;&middot;&nbsp;<?= sanitize($a['rank']) ?>
@@ -306,64 +173,54 @@ function scoreColor(float $s): string {
                 </td>
 
                 <!-- Campus -->
-                <td style="padding:0.85rem 0.75rem;vertical-align:middle;">
-                    <span style="font-size:0.82rem;color:#475569;">
+                <td class="[padding:0.85rem_0.75rem] [vertical-align:middle]">
+                    <span class="[font-size:0.82rem] [color:#475569]">
                         <?= sanitize($a['campus_name'] ?? ' - ') ?>
                     </span>
                 </td>
 
                 <!-- Cycle -->
-                <td style="padding:0.85rem 0.75rem;vertical-align:middle;max-width:160px;">
-                    <span style="font-size:0.78rem;color:#64748b;white-space:nowrap;overflow:hidden;
-                                 text-overflow:ellipsis;display:block;" title="<?= sanitize($a['cycle_name'] ?? '') ?>">
+                <td class="[padding:0.85rem_0.75rem] [vertical-align:middle] [max-width:160px]">
+                    <span class="[font-size:0.78rem] [color:#64748b] whitespace-nowrap overflow-hidden [text-overflow:ellipsis] block" title="<?= sanitize($a['cycle_name'] ?? '') ?>">
                         <?= sanitize($a['cycle_name'] ?? ' - ') ?>
                     </span>
                 </td>
 
                 <!-- Score -->
-                <td style="padding:0.85rem 0.75rem;text-align:center;vertical-align:middle;">
-                    <div style="display:inline-flex;flex-direction:column;align-items:center;gap:2px;">
-                        <span style="background:<?= $sc ?>;color:#fff;padding:0.22rem 0.65rem;
-                                     border-radius:6px;font-weight:700;font-size:0.82rem;">
+                <td class="[padding:0.85rem_0.75rem] text-center [vertical-align:middle]">
+                    <div class="inline-flex flex-col items-center [gap:2px]">
+                        <span class="rounded-md px-2.5 py-1 text-[0.82rem] font-bold text-white <?= $score_class ?>">
                             <?= number_format($score, 2) ?>
                         </span>
-                        <div style="width:52px;height:4px;background:#f1f5f9;border-radius:99px;overflow:hidden;">
-                            <div style="height:100%;width:<?= min(100,round($score))?>%;
-                                        background:<?= $sc ?>;border-radius:99px;"></div>
-                        </div>
+                        <progress value="<?= min(100, round($score)) ?>" max="100" class="h-1 w-13 overflow-hidden rounded-full accent-brand-600"></progress>
                     </div>
                 </td>
 
                 <!-- Status -->
-                <td style="padding:0.85rem 0.75rem;vertical-align:middle;">
+                <td class="[padding:0.85rem_0.75rem] [vertical-align:middle]">
                     <?= statusBadge($a['status']) ?>
                     <?php if (($a['approvals_count'] ?? 0) > 0 && in_array($a['status'],['under_review','talisay_review'])): ?>
-                    <div style="font-size:0.65rem;color:#94a3b8;margin-top:3px;">
+                    <div class="[font-size:0.65rem] [color:#94a3b8] [margin-top:3px]">
                         <i class="bi bi-check-circle me-1"></i><?= $a['approvals_count'] ?> evaluator completion<?= $a['approvals_count']>1?'s':'' ?>
                     </div>
                     <?php endif; ?>
                 </td>
 
                 <!-- Updated -->
-                <td style="padding:0.85rem 0.75rem;vertical-align:middle;white-space:nowrap;">
-                    <div style="font-size:0.78rem;color:#475569;">
+                <td class="[padding:0.85rem_0.75rem] [vertical-align:middle] whitespace-nowrap">
+                    <div class="[font-size:0.78rem] [color:#475569]">
                         <?= $a['updated_at'] ? date('M d, Y', strtotime($a['updated_at'])) : ' - ' ?>
                     </div>
-                    <div style="font-size:0.67rem;color:#94a3b8;">
+                    <div class="[font-size:0.67rem] [color:#94a3b8]">
                         <?= $a['updated_at'] ? date('H:i', strtotime($a['updated_at'])) : '' ?>
                     </div>
                 </td>
 
                 <!-- Action -->
-                <td style="padding:0.85rem 0.75rem;text-align:center;vertical-align:middle;">
+                <td class="[padding:0.85rem_0.75rem] text-center [vertical-align:middle]">
                     <a href="?page=view_application&id=<?= $a['application_id'] ?>"
-                       style="display:inline-flex;align-items:center;gap:0.3rem;
-                              padding:0.35rem 0.85rem;border-radius:6px;font-size:0.76rem;font-weight:600;
-                              background:#f0f4fb;color:#1a3a6b;text-decoration:none;border:1px solid #dbeafe;
-                              transition:all 0.15s;white-space:nowrap;"
-                       onmouseover="this.style.background='#1a3a6b';this.style.color='#fff'"
-                       onmouseout="this.style.background='#f0f4fb';this.style.color='#1a3a6b'">
-                        <i class="bi bi-eye" style="font-size:0.75rem;"></i> View
+                       class="btn btn-outline-primary btn-xs">
+                        <i class="bi bi-eye [font-size:0.75rem]"></i> View
                     </a>
                 </td>
             </tr>
@@ -373,16 +230,15 @@ function scoreColor(float $s): string {
     </div>
 
     <!-- Table footer -->
-    <div style="padding:0.65rem 1rem;background:#f8fafc;border-top:1px solid #f0f4fb;
-                display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;">
-        <span style="font-size:0.75rem;color:#94a3b8;">
-            Showing <strong style="color:#1a3a6b;"><?= count($apps) ?></strong>
+    <div class="[padding:0.65rem_1rem] [background:#f8fafc] [border-top:1px_solid_#f0f4fb] flex items-center justify-between flex-wrap [gap:0.5rem]">
+        <span class="[font-size:0.75rem] [color:#94a3b8]">
+            Showing <strong class="[color:#1a3a6b]"><?= count($apps) ?></strong>
             <?= $filter ? 'filtered' : '' ?> application<?= count($apps) !== 1 ? 's' : '' ?>
-            <?= $search ? ' matching <strong style="color:#1a3a6b;">'.sanitize($search).'</strong>' : '' ?>
+            <?= $search ? ' matching <strong class="[color:#1a3a6b]">'.sanitize($search).'</strong>' : '' ?>
         </span>
         <?php if ($filter || $search || $filter_campus): ?>
         <a href="?page=all_applications"
-           style="font-size:0.72rem;color:#64748b;text-decoration:none;font-weight:600;">
+           class="[font-size:0.72rem] [color:#64748b] no-underline font-semibold">
             <i class="bi bi-x-circle me-1"></i>Clear all filters
         </a>
         <?php endif; ?>
@@ -391,22 +247,19 @@ function scoreColor(float $s): string {
 
 <?php else: ?>
 <!-- Empty state -->
-<div class="neon-card" style="padding:3.5rem 1.5rem;text-align:center;">
-    <div style="width:64px;height:64px;border-radius:16px;background:#f0f4fb;
-                display:flex;align-items:center;justify-content:center;margin:0 auto 1rem;">
-        <i class="bi bi-inbox" style="font-size:1.75rem;color:#94a3b8;"></i>
+<div class="neon-card [padding:3.5rem_1.5rem] text-center">
+    <div class="[width:64px] [height:64px] [border-radius:16px] [background:#f0f4fb] flex items-center justify-center [margin:0_auto_1rem]">
+        <i class="bi bi-inbox [font-size:1.75rem] [color:#94a3b8]"></i>
     </div>
-    <div style="font-size:1rem;font-weight:600;color:#475569;margin-bottom:0.35rem;">
+    <div class="[font-size:1rem] font-semibold [color:#475569] [margin-bottom:0.35rem]">
         No applications found
     </div>
-    <div style="font-size:0.82rem;color:#94a3b8;margin-bottom:1.25rem;">
+    <div class="[font-size:0.82rem] [color:#94a3b8] [margin-bottom:1.25rem]">
         <?= ($search || $filter || $filter_campus) ? 'Try adjusting your filters or search term.' : 'No faculty applications have been submitted yet.' ?>
     </div>
     <?php if ($search || $filter || $filter_campus): ?>
     <a href="?page=all_applications"
-       style="display:inline-flex;align-items:center;gap:0.4rem;padding:0.5rem 1.25rem;
-              border-radius:8px;background:#1a3a6b;color:#fff;text-decoration:none;
-              font-size:0.82rem;font-weight:600;">
+       class="inline-flex items-center [gap:0.4rem] [padding:0.5rem_1.25rem] [border-radius:8px] [background:#1a3a6b] [color:#fff] no-underline [font-size:0.82rem] font-semibold">
         <i class="bi bi-arrow-left"></i> View all applications
     </a>
     <?php endif; ?>

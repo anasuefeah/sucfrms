@@ -40,7 +40,7 @@ if (!empty($fac_unread_notifs)):
     $fac_notif_count  = count($fac_unread_notifs);
     $fac_extra_count  = max(0, $fac_total_unread - $fac_notif_count);
 ?>
-<div id="facultyNotifBanner" class="mb-3" style="border-radius:12px;overflow:hidden;box-shadow:0 2px 16px rgba(0,0,0,0.12);">
+<div id="facultyNotifBanner" class="mb-4" style="border-radius:12px;overflow:hidden;box-shadow:0 2px 16px rgba(0,0,0,0.12);">
     <div style="background:linear-gradient(135deg,#1e4d8c,#1a3a6b);padding:0.75rem 1.1rem;
                 display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;">
         <div style="display:flex;align-items:center;gap:0.65rem;">

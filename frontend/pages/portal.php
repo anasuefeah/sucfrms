@@ -1,441 +1,218 @@
-<?php
-/**
- * Faculty Portal  -  standalone page, no sidebar.
- */
-if (session_status() === PHP_SESSION_NONE) session_start();
-require_once __DIR__ . '/../../backend/database/config/db.php';
-require_once __DIR__ . '/../../backend/core/functions.php';
-
-if (!isLoggedIn()) { header('Location: login.php'); exit; }
-if (($_SESSION['role'] ?? '') !== 'faculty') {
-    header('Location: ../../index.php'); exit;
-}
-
-// If profile not yet completed, send to profile entry first
-$_pcheck = $pdo->prepare("SELECT profile_completed FROM users WHERE user_id=?");
-$_pcheck->execute([$_SESSION['user_id']]);
-if (!(int)$_pcheck->fetchColumn()) {
-    header('Location: ../../index.php?page=profile_entry'); exit;
-}
-
-unset($_SESSION['force_pw_change']);
-
-$uid = $_SESSION['user_id'];
-
-$fac = $pdo->prepare("
-    SELECT u.first_name, u.last_name, u.full_name, u.middle_name, u.email,
-           u.employee_id, u.rank, u.profile_pic, u.created_at, c.campus_name
-    FROM users u LEFT JOIN campuses c ON u.campus_id = c.campus_id
-    WHERE u.user_id = ?
-");
-$fac->execute([$uid]);
-$fac         = $fac->fetch();
-$full_name = formatDisplayName($fac);
-$first_name  = $fac['first_name']  ?? '';
-$last_name   = $fac['last_name']   ?? '';
-$rank        = $fac['rank']        ?? ' - ';
-$campus      = $fac['campus_name'] ?? ' - ';
-$email       = $fac['email']       ?? ' - ';
-$employee_id = $fac['employee_id'] ?? ' - ';
-$profile_pic = $fac['profile_pic'] ?? '';
-$date_registered = !empty($fac['created_at']) ? date('F j, Y', strtotime($fac['created_at'])) : ' - ';
-$init        = strtoupper(substr($first_name,0,1).substr($last_name,0,1)) ?: 'FA';
-
-$cycle = getActiveCycle($pdo);
-$current_app = null;
-if ($cycle) {
-    $app_row = getOrCreateApplication($pdo, $uid, $cycle['cycle_id']);
-    $re = $pdo->prepare("
-        SELECT a.*, c.cycle_name, c.submission_start_date, c.submission_deadline
-        FROM applications a LEFT JOIN cycles c ON a.cycle_id=c.cycle_id
-        WHERE a.application_id=?
-    ");
-    $re->execute([$app_row['application_id']]);
-    $current_app = $re->fetch();
-}
-
-$deadline_str    = ' - ';
-$deadline_passed = false;
-if ($current_app && !empty($current_app['submission_deadline'])) {
-    $effective_deadline = getEffectiveSubmissionDeadline($pdo, (int)$current_app['cycle_id'], (int)$uid, $current_app['submission_deadline']);
-    $dl_ts           = strtotime($effective_deadline.' 23:59:59');
-    $deadline_passed = time() > $dl_ts;
-    $deadline_str    = date('M d, Y', strtotime($effective_deadline));
-}
-
-function pStatus(string $s): array {
-    return match($s) {
-        'submitted'      => ['Submitted',      '#1e4d8c','#eff6ff','#bfdbfe'],
-        'under_review'   => ['Under Review',   '#1a3a6b','#f0f4fb','#bfdbfe'],
-        // Display name for stored status value 'talisay_review' is "ITC Review".
-        'talisay_review' => ['ITC Review', '#1a3a6b','#f0f4fb','#bfdbfe'],
-        'needs_revision' => ['Needs Revision', '#475569','#f8fafc','#e2e8f0'],
-        'approved'       => ['Evaluation Complete', '#1e4d8c','#f0f4fb','#bfdbfe'],
-        'reclassified'   => ['Evaluation Complete', '#1e4d8c','#f0f4fb','#bfdbfe'],
-        'rejected','admin_rejected' => ['Returned for Revision','#1e293b','#f8fafc','#e2e8f0'],
-        default          => ['Pending',        '#475569','#f8fafc','#e2e8f0'],
-    };
-}
-
-// Status & step link
-if ($current_app) {
-    [$slabel,$scolor,$sbg,$sbd] = pStatus($current_app['status'] ?? 'draft');
-    $step_link = ($current_app['status']==='draft' && (float)($current_app['weighted_score']??0)==0)
-        ? '../../index.php?page=apply'
-        : '../../index.php?page=apply';
-} else {
-    [$slabel,$scolor,$sbg,$sbd] = ['Pending','#475569','#f8fafc','#e2e8f0'];
-    $step_link = '../../index.php?page=apply';
-}
-
-// Rank progress bar
-$all_ranks = ['Instructor I','Instructor II','Instructor III',
-    'Assistant Professor I','Assistant Professor II','Assistant Professor III','Assistant Professor IV',
-    'Associate Professor I','Associate Professor II','Associate Professor III','Associate Professor IV','Associate Professor V',
-    'Professor I','Professor II','Professor III','Professor IV','Professor V','Professor VI','University Professor'];
-$ri  = array_search($rank, $all_ranks);
-$pct = $ri !== false ? round(($ri/(count($all_ranks)-1))*100) : 0;
-?>
+<?php require __DIR__ . '/../../backend/controllers/pages/portal.php'; ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>SUCFRMS  -  Faculty Portal</title>
-<link href="../assets/vendor/bootstrap-icons/bootstrap-icons.min.css" rel="stylesheet">
-<style>
-*, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
-body { font-family:'Segoe UI',Arial,sans-serif; background:#f8fafc; min-height:100vh; color:#1e293b; }
-
-/* Navbar */
-.pnav { background:#1a3a6b; height:52px; display:flex; align-items:center; padding:0 24px; gap:10px; position:sticky; top:0; z-index:200; box-shadow:0 2px 8px rgba(15,23,42,.18); }
-.pnav-logo  { width:30px; height:30px; border-radius:50%; object-fit:cover; border:1.5px solid rgba(255,255,255,.35); flex-shrink:0; }
-.pnav-title { color:#fff; font-size:.85rem; font-weight:600; flex:1; letter-spacing:.01em; }
-.pnav-user  { display:flex; align-items:center; gap:8px; cursor:pointer; position:relative; }
-.pnav-name  { color:rgba(255,255,255,.9); font-size:.8rem; font-weight:500; }
-.pnav-avatar    { width:32px; height:32px; border-radius:50%; object-fit:cover; border:2px solid rgba(255,255,255,.35); }
-.pnav-avatar-ph { width:32px; height:32px; border-radius:50%; background:rgba(255,255,255,.18); border:2px solid rgba(255,255,255,.3); display:flex; align-items:center; justify-content:center; color:#fff; font-size:.65rem; font-weight:700; letter-spacing:1px; }
-
-/* Dropdown */
-.pnav-dd { display:none; position:absolute; top:calc(100% + 10px); right:0; background:#fff;
-           border:1px solid #e2e8f0; min-width:220px;
-           box-shadow:0 12px 32px rgba(15,23,42,.14); z-index:500;
-           border-radius:8px; overflow:hidden; }
-.pnav-dd.open { display:block; }
-.pnav-dd-header { background:linear-gradient(135deg,#1a3a6b,#1e4d8c); padding:12px 16px; }
-.pnav-dd-avatar { width:38px; height:38px; border-radius:50%; object-fit:cover; border:2px solid rgba(255,255,255,.4); flex-shrink:0; }
-.pnav-dd-avatar-ph { width:38px; height:38px; border-radius:50%; background:rgba(255,255,255,.2); border:2px solid rgba(255,255,255,.3); display:flex; align-items:center; justify-content:center; color:#fff; font-size:.75rem; font-weight:700; flex-shrink:0; }
-.pnav-dd-name { color:#fff; font-size:.82rem; font-weight:700; line-height:1.2; }
-.pnav-dd-email { color:rgba(255,255,255,.6); font-size:.68rem; margin-top:1px; }
-.pnav-dd-body a { display:flex; align-items:center; gap:10px; padding:10px 16px; font-size:.82rem; color:#1e293b; text-decoration:none; border-bottom:1px solid #f1f5f9; transition:background .12s; }
-.pnav-dd-body a:last-child { border-bottom:none; }
-.pnav-dd-body a:hover { background:#f8fafc; }
-.pnav-dd-body a i { color:#1a3a6b; font-size:.85rem; width:16px; text-align:center; }
-.pnav-dd-body a.out { color:#dc2626; }
-.pnav-dd-body a.out i { color:#dc2626; }
-.pnav-dd-body a.warn { color:#b45309; background:#fffbeb; }
-.pnav-dd-body a.warn i { color:#d97706; }
-.pnav-dd-body a.warn:hover { background:#fef3c7; }
-
-/* Page */
-.pg { max-width:1000px; margin:0 auto; padding:2rem 1.25rem 3rem; display:grid; grid-template-columns:1fr 300px; gap:1.25rem; align-items:start; }
-
-/* Main card */
-.portal-card { background:#fff; border:1px solid #cbd5e1; overflow:hidden; box-shadow:0 2px 8px rgba(15,23,42,.07); }
-
-/* Card header */
-.card-head { background:#1a3a6b; padding:1rem 1.5rem; display:flex; align-items:center; gap:1rem; }
-.card-head-logo { width:40px; height:40px; border-radius:50%; object-fit:cover; border:2px solid rgba(255,255,255,.3); flex-shrink:0; }
-.card-head-title { font-size:0.95rem; font-weight:700; color:#fff; line-height:1.3; }
-.card-head-sub   { font-size:0.7rem; color:rgba(255,255,255,.6); margin-top:2px; }
-
-/* Tab row */
-.card-tabs { display:flex; border-bottom:1px solid #e2e8f0; padding:0 1.5rem; background:#f8fafc; }
-.card-tab  { padding:0.6rem 0.85rem; font-size:0.75rem; font-weight:700; color:#64748b; border-bottom:2px solid transparent; cursor:default; }
-.card-tab.active { color:#1a3a6b; border-bottom-color:#1a3a6b; }
-
-/* Info table */
-.info-table { width:100%; border-collapse:collapse; }
-.info-table tr { border-bottom:1px solid #f1f5f9; }
-.info-table tr:last-child { border-bottom:none; }
-.info-table td { padding:0.75rem 1.5rem; font-size:0.82rem; vertical-align:middle; }
-.info-table td:first-child { width:38%; font-size:0.68rem; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:#94a3b8; }
-.info-table td:last-child  { font-weight:600; color:#1e293b; }
-
-/* Status pill */
-.status-pill { display:inline-flex; align-items:center; gap:5px; padding:3px 10px; border-radius:3px; font-size:0.72rem; font-weight:700; border:1px solid; }
-
-/* Action row */
-.card-actions { padding:1.1rem 1.5rem; display:flex; gap:0.75rem; background:#f8fafc; border-top:1px solid #e2e8f0; }
-.act-btn { display:inline-flex; align-items:center; justify-content:center; gap:0.4rem; padding:0.65rem 1.25rem; font-size:0.82rem; font-weight:700; border-radius:3px; text-decoration:none; cursor:pointer; border:1px solid; flex:1; transition:opacity .15s; }
-.act-btn:hover { opacity:0.88; }
-
-/* Right panel */
-.side-panel { display:flex; flex-direction:column; gap:1.25rem; }
-.side-box { background:#fff; border:1px solid #cbd5e1; overflow:hidden; box-shadow:0 2px 8px rgba(15,23,42,.07); }
-.side-box-head { background:#f8fafc; border-bottom:1px solid #e2e8f0; padding:0.65rem 1rem; font-size:0.65rem; font-weight:700; text-transform:uppercase; letter-spacing:0.08em; color:#64748b; }
-.side-box-body { padding:1.1rem 1rem; }
-
-@media(max-width:760px){
-    .pg{grid-template-columns:1fr;padding:1rem .75rem 2.5rem;}
-    .pnav{padding:0 12px;}
-    .pnav-name{display:none;}
-    .card-actions{flex-direction:column;}
-    .info-table td:first-child{width:45%;}
-}
-</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1.0">
+    <meta name="theme-color" content="#1a3a6b">
+    <title>SUCFRMS — Faculty Portal</title>
+    <link rel="preload" href="../assets/fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin>
+    <link href="../assets/vendor/bootstrap-icons/bootstrap-icons.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="../assets/css/app.css?v=<?= @filemtime(__DIR__ . '/../assets/css/app.css') ?: 1 ?>">
 </head>
-<body>
+<body class="m-0 min-h-screen bg-canvas font-sans text-ink antialiased">
 
 <!-- Navbar -->
-<nav class="pnav">
-    <img src="../assets/images/logo.jpg" class="pnav-logo" alt="Logo">
-    <span class="pnav-title">SUC Faculty Reclassification Management System (SUCFRMS)</span>
-    <div class="pnav-user" id="nu" onclick="toggleDD()">
-        <span class="pnav-name"><?= sanitize($full_name) ?></span>
+<nav class="sticky top-0 z-[200] flex h-16 items-center gap-3 border-b border-white/10 bg-brand-800 px-4 shadow-lg sm:px-6">
+    <img src="../assets/images/logo.jpg" class="size-9 shrink-0 rounded-full object-cover ring-2 ring-white/30" alt="Logo">
+    <span class="flex-1 text-sm font-semibold text-white">SUC Faculty Reclassification <span class="hidden text-brand-100 sm:inline">Management System</span></span>
+    <div class="relative flex cursor-pointer items-center gap-2" id="nu" onclick="toggleDD()">
+        <span class="hidden text-sm font-medium text-white/90 sm:inline"><?= sanitize($full_name) ?></span>
         <?php if ($profile_pic): ?>
-        <img src="../../<?= sanitize($profile_pic) ?>" class="pnav-avatar" alt="">
+        <img src="../../<?= sanitize($profile_pic) ?>" class="size-9 rounded-full object-cover ring-2 ring-white/30" alt="">
         <?php else: ?>
-        <div class="pnav-avatar-ph"><?= $init ?></div>
+        <div class="flex size-9 items-center justify-center rounded-full bg-white/15 text-xs font-bold tracking-wider text-white ring-2 ring-white/30"><?= $init ?></div>
         <?php endif; ?>
-        <div class="pnav-dd" id="ndd">
+        <div class="absolute top-[calc(100%+12px)] right-0 z-[500] hidden min-w-64 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-pop [&.open]:block" id="ndd">
             <!-- Header with user info -->
-            <div class="pnav-dd-header">
-                <div style="display:flex;align-items:center;gap:10px;">
+            <div class="bg-gradient-to-br from-brand-800 to-brand-600 p-4">
+                <div class="flex items-center gap-3">
                     <?php if ($profile_pic): ?>
-                    <img src="../../<?= sanitize($profile_pic) ?>" class="pnav-dd-avatar" alt="">
+                    <img src="../../<?= sanitize($profile_pic) ?>" class="size-10 shrink-0 rounded-full object-cover ring-2 ring-white/40" alt="">
                     <?php else: ?>
-                    <div class="pnav-dd-avatar-ph"><?= $init ?></div>
+                    <div class="flex size-10 shrink-0 items-center justify-center rounded-full bg-white/20 text-xs font-bold text-white ring-2 ring-white/30"><?= $init ?></div>
                     <?php endif; ?>
-                    <div>
-                        <div class="pnav-dd-name"><?= sanitize($full_name) ?></div>
-                        <div class="pnav-dd-email"><?= sanitize($email) ?></div>
+                    <div class="min-w-0">
+                        <div class="truncate text-sm font-semibold text-white"><?= sanitize($full_name) ?></div>
+                        <div class="truncate text-xs text-white/65"><?= sanitize($email) ?></div>
                     </div>
                 </div>
             </div>
-            <!-- Links -->
-            <div class="pnav-dd-body">
-                <a href="../../index.php?page=profile"><i class="bi bi-person-circle"></i>My Profile</a>
-                <a href="../../index.php?page=my_application"><i class="bi bi-file-earmark-text"></i>My Application</a>
-                <a href="../../backend/auth/logout.php" class="out"><i class="bi bi-box-arrow-right"></i>Sign Out</a>
+            <div class="p-2 text-sm">
+                <a href="../../index.php?page=profile" class="flex items-center gap-3 rounded-lg px-3 py-2.5 text-slate-700 no-underline hover:bg-slate-50"><i class="bi bi-person-circle text-brand-600"></i>My Profile</a>
+                <a href="../../index.php?page=my_application" class="flex items-center gap-3 rounded-lg px-3 py-2.5 text-slate-700 no-underline hover:bg-slate-50"><i class="bi bi-file-earmark-text text-brand-600"></i>My Application</a>
+                <a href="../../backend/auth/logout.php" class="flex items-center gap-3 rounded-lg px-3 py-2.5 text-rose-600 no-underline hover:bg-rose-50"><i class="bi bi-box-arrow-right"></i>Sign Out</a>
             </div>
         </div>
     </div>
 </nav>
 
 <!-- Body -->
-<div class="pg">
-
-
-    <div class="portal-card">
+<div class="mx-auto grid max-w-6xl items-start gap-6 px-4 py-6 md:grid-cols-[minmax(0,1fr)_320px] sm:px-6 lg:py-10">
+    <section class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card">
 
         <!-- Card header -->
-        <div class="card-head">
-            <img src="../assets/images/logo.jpg" class="card-head-logo" alt="">
+        <div class="flex items-center gap-4 bg-gradient-to-r from-brand-800 to-brand-600 px-5 py-5 sm:px-6">
+            <img src="../assets/images/logo.jpg" class="size-12 shrink-0 rounded-full object-cover ring-2 ring-white/30" alt="">
             <div>
-                <div class="card-head-title">
+                <div class="text-base font-semibold text-white">
                     <?= $cycle ? sanitize($current_app['cycle_name'] ?? 'Active Cycle') : 'No Active Reclassification Cycle' ?>
                 </div>
-                <div class="card-head-sub">Reclassification Application &nbsp;|&nbsp; SUCFRMS</div>
+                <div class="mt-1 text-xs text-brand-100/75">Reclassification Application · SUCFRMS</div>
             </div>
         </div>
 
-        <!-- Tab row -->
-        <div class="card-tabs">
-            <div class="card-tab active"><?= sanitize($rank) ?></div>
+        <div class="border-b border-slate-200 bg-slate-50 px-6">
+            <div class="inline-flex border-b-2 border-brand-600 px-1 py-3 text-xs font-semibold text-brand-700"><?= sanitize($rank) ?></div>
         </div>
 
-        <!-- Info table -->
-        <table class="info-table">
+        <table class="w-full border-collapse">
             <tr>
-                <td>Applicant Name</td>
-                <td><?= sanitize($full_name) ?></td>
+                <td class="w-[42%] border-b border-slate-100 px-5 py-3.5 text-[0.68rem] font-semibold tracking-wider text-slate-400 uppercase sm:px-6">Applicant Name</td>
+                <td class="border-b border-slate-100 px-5 py-3.5 text-sm font-medium text-slate-800 sm:px-6"><?= sanitize($full_name) ?></td>
             </tr>
             <tr>
-                <td>Present Rank</td>
-                <td><?= sanitize($rank) ?></td>
+                <td class="border-b border-slate-100 px-5 py-3.5 text-[0.68rem] font-semibold tracking-wider text-slate-400 uppercase sm:px-6">Present Rank</td>
+                <td class="border-b border-slate-100 px-5 py-3.5 text-sm font-medium text-slate-800 sm:px-6"><?= sanitize($rank) ?></td>
             </tr>
             <tr>
-                <td>Application Status</td>
-                <td>
-                    <?php [$sl,$sc,$sbg,$sbd] = pStatus($current_app['status'] ?? 'draft'); ?>
-                    <span class="status-pill" style="background:<?= $sbg ?>;color:<?= $sc ?>;border-color:<?= $sbd ?>;">
-                        <?= $sl ?>
-                    </span>
+                <td class="border-b border-slate-100 px-5 py-3.5 text-[0.68rem] font-semibold tracking-wider text-slate-400 uppercase sm:px-6">Application Status</td>
+                <td class="border-b border-slate-100 px-5 py-3.5 sm:px-6">
+                    <?= statusBadge($current_app['status'] ?? 'draft') ?>
                 </td>
             </tr>
             <tr>
-                <td>Employee ID</td>
-                <td><?= sanitize($employee_id) ?></td>
+                <td class="border-b border-slate-100 px-5 py-3.5 text-[0.68rem] font-semibold tracking-wider text-slate-400 uppercase sm:px-6">Employee ID</td>
+                <td class="border-b border-slate-100 px-5 py-3.5 text-sm font-medium text-slate-800 sm:px-6"><?= sanitize($employee_id) ?></td>
             </tr>
             <tr>
-                <td>Campus</td>
-                <td><?= sanitize($campus) ?></td>
+                <td class="border-b border-slate-100 px-5 py-3.5 text-[0.68rem] font-semibold tracking-wider text-slate-400 uppercase sm:px-6">Campus</td>
+                <td class="border-b border-slate-100 px-5 py-3.5 text-sm font-medium text-slate-800 sm:px-6"><?= sanitize($campus) ?></td>
             </tr>
             <tr>
-                <td>Date Registered</td>
-                <td><?= $date_registered ?></td>
+                <td class="border-b border-slate-100 px-5 py-3.5 text-[0.68rem] font-semibold tracking-wider text-slate-400 uppercase sm:px-6">Date Registered</td>
+                <td class="border-b border-slate-100 px-5 py-3.5 text-sm font-medium text-slate-800 sm:px-6"><?= $date_registered ?></td>
             </tr>
             <?php if ($cycle && $current_app): ?>
             <tr>
-                <td>Cycle</td>
-                <td><?= sanitize($current_app['cycle_name'] ?? '—') ?></td>
+                <td class="border-b border-slate-100 px-5 py-3.5 text-[0.68rem] font-semibold tracking-wider text-slate-400 uppercase sm:px-6">Cycle</td>
+                <td class="border-b border-slate-100 px-5 py-3.5 text-sm font-medium text-slate-800 sm:px-6"><?= sanitize($current_app['cycle_name'] ?? '—') ?></td>
             </tr>
             <tr>
-                <td>Submission Deadline</td>
-                <td>
-                    <span style="color:<?= $deadline_passed ? '#dc2626' : '#1e293b' ?>;"><?= $deadline_str ?></span>
+                <td class="border-b border-slate-100 px-5 py-3.5 text-[0.68rem] font-semibold tracking-wider text-slate-400 uppercase sm:px-6">Submission Deadline</td>
+                <td class="border-b border-slate-100 px-5 py-3.5 text-sm font-medium <?= $deadline_passed ? 'text-rose-600' : 'text-slate-800' ?> sm:px-6">
+                    <?= $deadline_str ?>
                     <?php if (!$deadline_passed && !empty($current_app['submission_deadline'])): ?>
                     <?php $days_left = (int)ceil((strtotime($current_app['submission_deadline'].' 23:59:59') - time()) / 86400); ?>
-                    <span style="font-size:0.72rem;color:<?= $days_left<=7?'#dc2626':'#64748b' ?>;font-weight:400;margin-left:8px;">
+                    <span class="ml-2 text-xs font-normal <?= $days_left <= 7 ? 'text-rose-600' : 'text-slate-500' ?>">
                         (<?= $days_left ?> day<?= $days_left===1?'':'s' ?> remaining)
                     </span>
                     <?php elseif ($deadline_passed): ?>
-                    <span style="font-size:0.72rem;color:#dc2626;margin-left:8px;">(Deadline passed)</span>
+                    <span class="ml-2 text-xs text-rose-600">(Deadline passed)</span>
                     <?php endif; ?>
                 </td>
             </tr>
             <?php endif; ?>
             <tr>
-                <td>Email Address</td>
-                <td><a href="mailto:<?= sanitize($email) ?>" style="color:#1e4d8c;text-decoration:none;"><?= sanitize($email) ?></a></td>
+                <td class="px-5 py-3.5 text-[0.68rem] font-semibold tracking-wider text-slate-400 uppercase sm:px-6">Email Address</td>
+                <td class="px-5 py-3.5 text-sm font-medium sm:px-6"><a href="mailto:<?= sanitize($email) ?>" class="text-brand-600 no-underline hover:text-brand-800"><?= sanitize($email) ?></a></td>
             </tr>
         </table>
 
-        <!-- Action buttons -->
-        <div class="card-actions">
-            <a href="pre_evaluation.php"
-               class="act-btn"
-               style="background:#fff;color:#1a3a6b;border-color:#1a3a6b;">
+        <div class="flex flex-col gap-3 border-t border-slate-200 bg-slate-50 px-5 py-5 sm:flex-row sm:px-6">
+            <a href="pre_evaluation.php" class="btn btn-outline-primary flex-1">
                 <i class="bi bi-calculator"></i> Self-Assessment
             </a>
             <?php if ($cycle): ?>
-            <a href="<?= $step_link ?>"
-               class="act-btn"
-               style="background:#1a3a6b;color:#fff;border-color:#1a3a6b;">
+            <a href="<?= $step_link ?>" class="btn btn-primary flex-1">
                 <i class="bi bi-file-earmark-text"></i> Reclassification
             </a>
             <?php else: ?>
             <button onclick="document.getElementById('noCycleModal').style.display='flex'"
-                    class="act-btn"
-                    style="background:#f1f5f9;color:#94a3b8;border-color:#e2e8f0;cursor:not-allowed;">
+                    class="btn flex-1 cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400">
                 <i class="bi bi-file-earmark-text"></i> Reclassification
             </button>
             <?php endif; ?>
         </div>
 
-    </div><!-- /portal-card -->
+    </section>
 
     <!-- Right side panel -->
-    <div class="side-panel">
+    <aside class="grid gap-5">
 
-        <!-- Rank progress -->
-        <div class="side-box">
-            <div class="side-box-head">Rank Standing</div>
-            <div class="side-box-body">
-                <div style="font-size:0.78rem;font-weight:700;color:#1a3a6b;margin-bottom:0.35rem;"><?= sanitize($rank) ?></div>
-                <div style="height:6px;background:#e2e8f0;border-radius:2px;overflow:hidden;margin-bottom:0.4rem;">
-                    <div style="height:100%;width:<?= $pct ?>%;background:#1a3a6b;border-radius:2px;"></div>
-                </div>
-                <div style="font-size:0.68rem;color:#94a3b8;">Step <?= ($ri !== false ? $ri+1 : '—') ?> of <?= count($all_ranks) ?> in the rank scale</div>
+        <section class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card">
+            <h2 class="m-0 border-b border-slate-200 bg-slate-50 px-4 py-3 text-[0.68rem] font-semibold tracking-wider text-slate-500 uppercase">Rank Standing</h2>
+            <div class="p-4">
+                <div class="mb-2 text-sm font-semibold text-brand-700"><?= sanitize($rank) ?></div>
+                <progress class="portal-progress mb-2 block h-2 w-full text-brand-600" value="<?= $pct ?>" max="100"><?= $pct ?>%</progress>
+                <div class="text-xs text-slate-400">Step <?= ($ri !== false ? $ri+1 : '—') ?> of <?= count($all_ranks) ?> in the rank scale</div>
             </div>
-        </div>
+        </section>
 
-        <!-- Cycle status -->
-        <div class="side-box">
-            <div class="side-box-head">Cycle Status</div>
-            <div class="side-box-body">
+        <section class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card">
+            <h2 class="m-0 border-b border-slate-200 bg-slate-50 px-4 py-3 text-[0.68rem] font-semibold tracking-wider text-slate-500 uppercase">Cycle Status</h2>
+            <div class="p-4">
                 <?php if ($cycle): ?>
-                <div style="font-size:0.78rem;font-weight:700;color:#1a3a6b;margin-bottom:0.5rem;">
+                <div class="mb-3 text-sm font-semibold text-brand-700">
                     <?= sanitize($current_app['cycle_name'] ?? '—') ?>
                 </div>
                 <?php if (!$deadline_passed && !empty($current_app['submission_deadline'])): ?>
                 <?php $days_left = (int)ceil((strtotime($current_app['submission_deadline'].' 23:59:59') - time()) / 86400); ?>
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.35rem;">
-                    <span style="font-size:0.68rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.05em;">Days Remaining</span>
-                    <span style="font-size:1.1rem;font-weight:800;color:<?= $days_left<=7?'#dc2626':($days_left<=14?'#d97706':'#1a3a6b') ?>;"><?= $days_left ?></span>
+                <div class="mb-2 flex items-center justify-between">
+                    <span class="text-[0.68rem] font-medium tracking-wider text-slate-400 uppercase">Days Remaining</span>
+                    <span class="text-xl font-bold <?= $days_left <= 7 ? 'text-rose-600' : ($days_left <= 14 ? 'text-amber-600' : 'text-brand-700') ?>"><?= $days_left ?></span>
                 </div>
-                <div style="height:4px;background:#e2e8f0;border-radius:2px;overflow:hidden;">
-                    <?php
-                        $total_days = max(1, (int)ceil((strtotime($current_app['submission_deadline'].' 23:59:59') - strtotime($current_app['submission_start_date'] ?? $current_app['submission_deadline'])) / 86400));
-                        $elapsed_pct = min(100, max(0, 100 - round(($days_left / $total_days) * 100)));
-                    ?>
-                    <div style="height:100%;width:<?= $elapsed_pct ?>%;background:<?= $days_left<=7?'#dc2626':($days_left<=14?'#d97706':'#1a3a6b') ?>;border-radius:2px;"></div>
-                </div>
-                <div style="font-size:0.68rem;color:#94a3b8;margin-top:0.35rem;">Deadline: <?= $deadline_str ?></div>
+                <?php
+                    $total_days = max(1, (int)ceil((strtotime($current_app['submission_deadline'].' 23:59:59') - strtotime($current_app['submission_start_date'] ?? $current_app['submission_deadline'])) / 86400));
+                    $elapsed_pct = min(100, max(0, 100 - round(($days_left / $total_days) * 100)));
+                ?>
+                <progress class="portal-progress block h-1.5 w-full <?= $days_left <= 7 ? 'text-rose-600' : ($days_left <= 14 ? 'text-amber-500' : 'text-brand-600') ?>" value="<?= $elapsed_pct ?>" max="100"><?= $elapsed_pct ?>%</progress>
+                <div class="mt-2 text-xs text-slate-400">Deadline: <?= $deadline_str ?></div>
                 <?php elseif ($deadline_passed): ?>
-                <div style="font-size:0.75rem;color:#dc2626;font-weight:600;">Submission deadline has passed.</div>
+                <div class="text-sm font-medium text-rose-600">Submission deadline has passed.</div>
                 <?php endif; ?>
                 <?php else: ?>
-                <div style="font-size:0.78rem;color:#94a3b8;">No active cycle at this time.</div>
-                <div style="font-size:0.72rem;color:#cbd5e1;margin-top:0.35rem;">Use Self-Assessment to prepare while waiting.</div>
+                <div class="text-sm text-slate-500">No active cycle at this time.</div>
+                <div class="mt-1 text-xs text-slate-400">Use Self-Assessment to prepare while waiting.</div>
                 <?php endif; ?>
             </div>
-        </div>
+        </section>
 
-        <!-- Quick links -->
-        <div class="side-box">
-            <div class="side-box-head">Quick Access</div>
-            <div style="display:flex;flex-direction:column;">
-                <a href="../../index.php?page=my_application"
-                   style="display:flex;align-items:center;gap:0.6rem;padding:0.75rem 1rem;border-bottom:1px solid #f1f5f9;text-decoration:none;color:#1e293b;font-size:0.81rem;font-weight:600;transition:background .12s;"
-                   onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background=''">
-                    <i class="bi bi-file-earmark-text" style="color:#1a3a6b;width:15px;text-align:center;font-size:0.85rem;"></i>
-                    Application Status
+        <section class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card">
+            <h2 class="m-0 border-b border-slate-200 bg-slate-50 px-4 py-3 text-[0.68rem] font-semibold tracking-wider text-slate-500 uppercase">Quick Access</h2>
+            <div class="grid p-2">
+                <?php
+                $quickLinks = [
+                    ['../../index.php?page=my_application', 'bi-file-earmark-text', 'Application Status', ''],
+                    ['../../index.php?page=apply', 'bi-ui-checks-grid', 'KRA Entry', ''],
+                    ['../../index.php?page=appeals', 'bi-chat-square-text', 'Appeals', ''],
+                    ['../../index.php?page=my_audit', 'bi-clock-history', 'Activity Log', ''],
+                    ['../../index.php?page=help', 'bi-question-circle', 'Tutorial / Help', ''],
+                    ['../../backend/auth/logout.php', 'bi-box-arrow-right', 'Sign Out', 'text-rose-600 hover:bg-rose-50'],
+                ];
+                foreach ($quickLinks as [$href, $icon, $label, $tone]):
+                ?>
+                <a href="<?= $href ?>" class="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-700 no-underline hover:bg-slate-50 <?= $tone ?>">
+                    <i class="bi <?= $icon ?> w-4 text-center <?= $tone ? '' : 'text-brand-600' ?>"></i><?= $label ?>
                 </a>
-                <a href="../../index.php?page=apply"
-                   style="display:flex;align-items:center;gap:0.6rem;padding:0.75rem 1rem;border-bottom:1px solid #f1f5f9;text-decoration:none;color:#1e293b;font-size:0.81rem;font-weight:600;transition:background .12s;"
-                   onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background=''">
-                    <i class="bi bi-ui-checks-grid" style="color:#1a3a6b;width:15px;text-align:center;font-size:0.85rem;"></i>
-                    KRA Entry
-                </a>
-                <a href="../../index.php?page=appeals"
-                   style="display:flex;align-items:center;gap:0.6rem;padding:0.75rem 1rem;border-bottom:1px solid #f1f5f9;text-decoration:none;color:#1e293b;font-size:0.81rem;font-weight:600;transition:background .12s;"
-                   onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background=''">
-                    <i class="bi bi-chat-square-text" style="color:#1a3a6b;width:15px;text-align:center;font-size:0.85rem;"></i>
-                    Appeals
-                </a>
-                <a href="../../index.php?page=my_audit"
-                   style="display:flex;align-items:center;gap:0.6rem;padding:0.75rem 1rem;border-bottom:1px solid #f1f5f9;text-decoration:none;color:#1e293b;font-size:0.81rem;font-weight:600;transition:background .12s;"
-                   onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background=''">
-                    <i class="bi bi-clock-history" style="color:#1a3a6b;width:15px;text-align:center;font-size:0.85rem;"></i>
-                    Activity Log
-                </a>
-                <a href="../../index.php?page=help"
-                   style="display:flex;align-items:center;gap:0.6rem;padding:0.75rem 1rem;border-bottom:1px solid #f1f5f9;text-decoration:none;color:#1e293b;font-size:0.81rem;font-weight:600;transition:background .12s;"
-                   onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background=''">
-                    <i class="bi bi-question-circle" style="color:#1a3a6b;width:15px;text-align:center;font-size:0.85rem;"></i>
-                    Tutorial / Help
-                </a>
-                <a href="../../backend/auth/logout.php"
-                   style="display:flex;align-items:center;gap:0.6rem;padding:0.75rem 1rem;text-decoration:none;color:#dc2626;font-size:0.81rem;font-weight:600;transition:background .12s;"
-                   onmouseover="this.style.background='#fef2f2'" onmouseout="this.style.background=''">
-                    <i class="bi bi-box-arrow-right" style="color:#dc2626;width:15px;text-align:center;font-size:0.85rem;"></i>
-                    Sign Out
-                </a>
+                <?php endforeach; ?>
             </div>
-        </div>
+        </section>
 
-    </div><!-- /side-panel -->
-
-</div><!-- /pg -->
+    </aside>
+</div>
 
 <!-- No cycle warning modal -->
-<div id="noCycleModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);
-     z-index:99999;align-items:center;justify-content:center;">
-    <div style="background:#fff;max-width:360px;width:90%;padding:2rem 1.5rem;text-align:center;border-radius:8px;box-shadow:0 20px 60px rgba(15,23,42,.22);">
-        <i class="bi bi-calendar-x" style="font-size:2rem;color:#94a3b8;display:block;margin-bottom:0.75rem;"></i>
-        <div style="font-weight:700;color:#1a3a6b;font-size:0.9rem;margin-bottom:0.5rem;">No Active Cycle</div>
-        <p style="font-size:0.8rem;color:#64748b;margin-bottom:1.25rem;line-height:1.6;">
+<div id="noCycleModal" class="fixed inset-0 z-[99999] hidden items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
+    <div class="w-full max-w-sm rounded-2xl bg-white p-6 text-center shadow-pop">
+        <span class="mx-auto mb-4 flex size-14 items-center justify-center rounded-2xl bg-slate-100 text-2xl text-slate-500"><i class="bi bi-calendar-x"></i></span>
+        <h2 class="m-0 text-base font-semibold text-slate-900">No Active Cycle</h2>
+        <p class="m-0 mt-2 mb-6 text-sm leading-relaxed text-slate-500">
             There is currently no open reclassification cycle.<br>
             Please wait for the administrator to open one.<br>
             You may use <strong>Self-Assessment</strong> in the meantime.
         </p>
-        <button onclick="document.getElementById('noCycleModal').style.display='none'"
-                style="background:#1e4d8c;color:#fff;border:none;border-radius:7px;padding:0.45rem 1.5rem;
-                       font-size:0.82rem;font-weight:600;cursor:pointer;">
-            OK
-        </button>
+        <button onclick="document.getElementById('noCycleModal').style.display='none'" class="btn btn-primary">OK</button>
     </div>
 </div>
 

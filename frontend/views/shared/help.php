@@ -243,89 +243,87 @@ if ($role === 'admin') {
 }
 ?>
 
-<div style="max-width:860px;margin:0 auto;padding:1.5rem 1rem 3rem;">
+<div class="mx-auto max-w-4xl px-4 py-6 pb-12 sm:px-6">
 
     <!-- Page header -->
-    <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1.75rem;">
-        <div style="width:52px;height:52px;border-radius:14px;background:linear-gradient(135deg,#1e4d8c,#1a3a6b);
-                    display:flex;align-items:center;justify-content:center;flex-shrink:0;box-shadow:0 4px 14px rgba(30,77,140,0.25);">
-            <i class="bi bi-question-circle-fill" style="color:#fff;font-size:1.4rem;"></i>
+    <div class="mb-7 flex items-center gap-4">
+        <div class="flex size-13 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-brand-600 to-brand-800 text-white shadow-brand">
+            <i class="bi bi-question-circle-fill text-2xl"></i>
         </div>
         <div>
-            <h4 style="margin:0;font-weight:800;color:#1a3a6b;font-size:1.2rem;">Help Center</h4>
-            <p style="margin:0;color:#64748b;font-size:0.82rem;">
+            <h1 class="m-0 text-xl font-extrabold tracking-tight text-brand-800">Help Center</h1>
+            <p class="m-0 text-sm text-slate-500">
                 Step-by-step guides for <strong><?= htmlspecialchars($role_label) ?></strong>
             </p>
         </div>
     </div>
 
     <!-- Quick nav pills -->
-    <div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:1.75rem;">
+    <nav class="mb-7 flex flex-wrap gap-2" aria-label="Help topics">
         <?php foreach ($built_in_guides as $gi => $g): ?>
         <a href="#guide-<?= $gi ?>"
-           style="display:inline-flex;align-items:center;gap:0.35rem;padding:0.3rem 0.75rem;border-radius:20px;font-size:0.75rem;font-weight:600;text-decoration:none;background:<?= $g['bg'] ?>;color:<?= $g['color'] ?>;border:1px solid <?= $g['color'] ?>22;transition:all 0.15s;">
-            <i class="bi <?= $g['icon'] ?>" style="font-size:0.8rem;"></i><?= $g['title'] ?>
+           class="inline-flex items-center gap-1.5 rounded-full border border-brand-100 bg-brand-50 px-3 py-1.5 text-xs font-semibold text-brand-700 no-underline transition hover:border-brand-300 hover:bg-brand-100">
+            <i class="bi <?= $g['icon'] ?> text-sm"></i><?= $g['title'] ?>
         </a>
         <?php endforeach; ?>
-    </div>
+    </nav>
 
     <!-- Guide cards -->
     <?php foreach ($built_in_guides as $gi => $g): ?>
-    <div id="guide-<?= $gi ?>" style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;margin-bottom:1.25rem;box-shadow:0 1px 6px rgba(0,0,0,0.05);">
+    <section id="guide-<?= $gi ?>" class="mb-5 scroll-mt-6 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card">
 
         <!-- Section header -->
-        <div style="background:<?= $g['bg'] ?>;padding:0.75rem 1.25rem;display:flex;align-items:center;gap:0.65rem;border-bottom:1px solid <?= $g['color'] ?>22;">
-            <div style="width:34px;height:34px;border-radius:9px;background:<?= $g['color'] ?>;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-                <i class="bi <?= $g['icon'] ?>" style="color:#fff;font-size:0.95rem;"></i>
+        <div class="flex items-center gap-3 border-b border-brand-100 bg-brand-50 px-4 py-3 sm:px-5">
+            <div class="flex size-9 shrink-0 items-center justify-center rounded-xl bg-brand-700 text-white">
+                <i class="bi <?= $g['icon'] ?> text-base"></i>
             </div>
-            <span style="font-weight:700;color:<?= $g['color'] ?>;font-size:0.95rem;"><?= $g['title'] ?></span>
+            <h2 class="m-0 text-base font-bold text-brand-800"><?= $g['title'] ?></h2>
         </div>
 
         <!-- Steps -->
-        <div style="padding:1rem 1.25rem;display:flex;flex-direction:column;gap:0.85rem;">
+        <div class="flex flex-col px-4 py-4 sm:px-5">
         <?php foreach ($g['steps'] as $si => $step): ?>
-            <div style="display:flex;gap:0.85rem;align-items:flex-start;">
-                <div style="width:26px;height:26px;border-radius:50%;background:<?= $g['color'] ?>;color:#fff;font-size:0.72rem;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px;">
+            <div class="flex items-start gap-3.5">
+                <div class="mt-px flex size-7 shrink-0 items-center justify-center rounded-full bg-brand-700 text-xs font-extrabold text-white">
                     <?= $step['num'] ?>
                 </div>
-                <div style="flex:1;">
-                    <div style="font-weight:700;color:#1e293b;font-size:0.87rem;margin-bottom:2px;"><?= htmlspecialchars($step['title']) ?></div>
-                    <div style="color:#475569;font-size:0.82rem;line-height:1.55;"><?= htmlspecialchars($step['desc']) ?></div>
+                <div class="min-w-0 flex-1">
+                    <h3 class="mb-1 text-sm font-bold text-slate-800"><?= htmlspecialchars($step['title']) ?></h3>
+                    <p class="m-0 text-sm leading-6 text-slate-600"><?= htmlspecialchars($step['desc']) ?></p>
                 </div>
             </div>
             <?php if ($si < count($g['steps']) - 1): ?>
-            <div style="margin-left:13px;width:1px;height:12px;background:<?= $g['color'] ?>33;"></div>
+            <div class="my-1.5 ml-3.5 h-3 w-px bg-brand-200"></div>
             <?php endif; ?>
         <?php endforeach; ?>
         </div>
-    </div>
+    </section>
     <?php endforeach; ?>
 
     <?php if (!empty($articles)): ?>
     <!-- DB articles -->
-    <div style="margin-top:2rem;">
-        <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:1rem;">
-            <div style="height:1px;flex:1;background:#e2e8f0;"></div>
-            <span style="font-size:0.72rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;padding:0 0.5rem;">Additional Articles</span>
-            <div style="height:1px;flex:1;background:#e2e8f0;"></div>
+    <div class="mt-8">
+        <div class="mb-4 flex items-center gap-2">
+            <div class="h-px flex-1 bg-slate-200"></div>
+            <span class="px-2 text-xs font-bold tracking-widest text-slate-400 uppercase">Additional Articles</span>
+            <div class="h-px flex-1 bg-slate-200"></div>
         </div>
         <div class="accordion" id="helpAccordion">
             <?php foreach ($articles as $i => $art): ?>
-            <div class="accordion-item border mb-2" style="border-radius:10px;overflow:hidden;border-color:#e2e8f0!important;">
+            <div class="accordion-item mb-2">
                 <h2 class="accordion-header">
                     <button class="accordion-button <?= $i > 0 ? 'collapsed' : '' ?> fw-semibold"
                             type="button"
                             data-bs-toggle="collapse"
-                            data-bs-target="#helpArticle<?= $art['article_id'] ?>"
-                            style="font-size:0.88rem;color:#1a3a6b;background:<?= $i === 0 ? '#f0f7ff' : '#fff' ?>;">
-                        <i class="bi bi-file-text me-2" style="color:#1e4d8c;"></i>
+                            data-bs-target="#helpArticle<?= $art['article_id'] ?>">
+                        <i class="bi bi-file-text me-2 text-brand-700"></i>
                         <?= htmlspecialchars($art['title']) ?>
                     </button>
                 </h2>
                 <div id="helpArticle<?= $art['article_id'] ?>"
                      class="accordion-collapse collapse <?= $i === 0 ? 'show' : '' ?>"
                      data-bs-parent="#helpAccordion">
-                    <div class="accordion-body" style="font-size:0.85rem;color:#374151;white-space:pre-line;line-height:1.7;">
+                    <div class="accordion-body whitespace-pre-line text-sm leading-7 text-slate-700">
                         <?= htmlspecialchars($art['content']) ?>
                     </div>
                 </div>
@@ -336,11 +334,11 @@ if ($role === 'admin') {
     <?php endif; ?>
 
     <!-- Contact support -->
-    <div style="margin-top:1.5rem;padding:0.85rem 1.1rem;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;display:flex;align-items:center;gap:0.75rem;">
-        <i class="bi bi-envelope-fill" style="color:#334155;font-size:1rem;flex-shrink:0;"></i>
-        <span style="font-size:0.82rem;color:#334155;">
+    <div class="mt-6 flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3.5 sm:items-center">
+        <i class="bi bi-envelope-fill shrink-0 text-slate-700"></i>
+        <span class="text-sm text-slate-700">
             Still need help? Use the
-            <a href="#" onclick="openFeedbackModal(); return false;" style="color:#334155;font-weight:700;">Send Feedback</a>
+            <a href="#" onclick="openFeedbackModal(); return false;" class="font-bold text-brand-700 hover:text-brand-900">Send Feedback</a>
             form or contact your campus administrator.
         </span>
     </div>

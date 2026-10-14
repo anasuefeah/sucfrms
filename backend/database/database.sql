@@ -140,8 +140,8 @@ CREATE TABLE IF NOT EXISTS applications (
     weighted_score     DECIMAL(7,2) DEFAULT 0,
     sub_rank_increment TINYINT DEFAULT 0,
     potential_rank     VARCHAR(100) DEFAULT NULL,
-    evaluator_id       INT DEFAULT NULL,
-    evaluator_remarks  TEXT,
+    checker_id         INT DEFAULT NULL,
+    checker_remarks    TEXT,
     reviewed_at        TIMESTAMP NULL,
     submitted_at       TIMESTAMP NULL,
     position_title     VARCHAR(100) DEFAULT NULL,
@@ -149,7 +149,7 @@ CREATE TABLE IF NOT EXISTS applications (
     updated_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id)      REFERENCES users(user_id) ON DELETE CASCADE,
     FOREIGN KEY (cycle_id)     REFERENCES cycles(cycle_id) ON DELETE SET NULL,
-    FOREIGN KEY (evaluator_id) REFERENCES users(user_id) ON DELETE SET NULL
+    FOREIGN KEY (checker_id) REFERENCES users(user_id) ON DELETE SET NULL
 );
 
 -- ============================================================
@@ -197,15 +197,15 @@ CREATE TABLE IF NOT EXISTS kra_evidence_files (
 CREATE TABLE IF NOT EXISTS checker_kra_assignments (
     assignment_id INT AUTO_INCREMENT PRIMARY KEY,
     cycle_id      INT NOT NULL,
-    evaluator_id  INT NOT NULL,
+    checker_id    INT NOT NULL,
     kra_category  ENUM('Instruction','Research','Extension','Professional Development') NOT NULL,
     assigned_by   INT DEFAULT NULL,
     assigned_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY uq_evaluator_cycle_kra (cycle_id, evaluator_id, kra_category),
+    UNIQUE KEY uq_checker_cycle_kra (cycle_id, checker_id, kra_category),
     INDEX idx_cka_cycle_kra     (cycle_id, kra_category),
-    INDEX idx_cka_evaluator_cycle (evaluator_id, cycle_id),
+    INDEX idx_cka_checker_cycle (checker_id, cycle_id),
     FOREIGN KEY (cycle_id)    REFERENCES cycles(cycle_id) ON DELETE CASCADE,
-    FOREIGN KEY (evaluator_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    FOREIGN KEY (checker_id) REFERENCES users(user_id) ON DELETE CASCADE,
     FOREIGN KEY (assigned_by) REFERENCES users(user_id) ON DELETE SET NULL
 );
 
@@ -217,28 +217,28 @@ CREATE TABLE IF NOT EXISTS appeals (
     application_id INT NOT NULL,
     submission_id INT NOT NULL,
     faculty_id    INT NOT NULL,
-    evaluator_id  INT NOT NULL,
+    checker_id    INT NOT NULL,
     cycle_id      INT NOT NULL,
     appeal_type   ENUM('flag','score_change') NOT NULL,
     original_score DECIMAL(6,2) DEFAULT NULL,
     changed_score  DECIMAL(6,2) DEFAULT NULL,
-    evaluator_remark TEXT DEFAULT NULL,
+    checker_remark TEXT DEFAULT NULL,
     reason        TEXT NOT NULL,
     status        ENUM('open','under_review','resolved') DEFAULT 'open',
     outcome       ENUM('upheld','revised','dismissed') DEFAULT NULL,
     is_read_by_faculty   TINYINT(1) DEFAULT 1,
-    is_read_by_evaluator TINYINT(1) DEFAULT 0,
+    is_read_by_checker TINYINT(1) DEFAULT 0,
     created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     resolved_at   TIMESTAMP NULL,
     resolved_by   INT DEFAULT NULL,
     INDEX idx_appeals_submission_status (submission_id, status),
     INDEX idx_appeals_faculty    (faculty_id, status),
-    INDEX idx_appeals_evaluator  (evaluator_id, status),
+    INDEX idx_appeals_checker    (checker_id, status),
     FOREIGN KEY (application_id) REFERENCES applications(application_id) ON DELETE CASCADE,
     FOREIGN KEY (submission_id)  REFERENCES kra_submissions(submission_id) ON DELETE CASCADE,
     FOREIGN KEY (faculty_id)     REFERENCES users(user_id) ON DELETE CASCADE,
-    FOREIGN KEY (evaluator_id)   REFERENCES users(user_id) ON DELETE CASCADE,
+    FOREIGN KEY (checker_id)     REFERENCES users(user_id) ON DELETE CASCADE,
     FOREIGN KEY (cycle_id)       REFERENCES cycles(cycle_id) ON DELETE CASCADE,
     FOREIGN KEY (resolved_by)    REFERENCES users(user_id) ON DELETE SET NULL
 );
@@ -314,14 +314,14 @@ CREATE TABLE IF NOT EXISTS password_resets (
 CREATE TABLE IF NOT EXISTS application_checker_reviews (
     review_id      INT AUTO_INCREMENT PRIMARY KEY,
     application_id INT NOT NULL,
-    evaluator_id   INT NOT NULL,
+    checker_id     INT NOT NULL,
     decision       ENUM('approved','rejected','pending') DEFAULT 'pending',
     remarks        TEXT,
     decided_at     TIMESTAMP NULL,
     created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY uq_app_evaluator (application_id, evaluator_id),
+    UNIQUE KEY uq_app_checker (application_id, checker_id),
     FOREIGN KEY (application_id) REFERENCES applications(application_id) ON DELETE CASCADE,
-    FOREIGN KEY (evaluator_id)   REFERENCES users(user_id) ON DELETE CASCADE
+    FOREIGN KEY (checker_id)     REFERENCES users(user_id) ON DELETE CASCADE
 );
 
 -- ============================================================
@@ -440,11 +440,11 @@ CREATE TABLE IF NOT EXISTS notifications (
 CREATE TABLE IF NOT EXISTS kra_checker_verifications (
     ckv_id        INT AUTO_INCREMENT PRIMARY KEY,
     submission_id INT NOT NULL,
-    evaluator_id  INT NOT NULL,
+    checker_id    INT NOT NULL,
     verified_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY uq_sub_evaluator (submission_id, evaluator_id),
+    UNIQUE KEY uq_sub_checker (submission_id, checker_id),
     FOREIGN KEY (submission_id) REFERENCES kra_submissions(submission_id) ON DELETE CASCADE,
-    FOREIGN KEY (evaluator_id)  REFERENCES users(user_id) ON DELETE CASCADE
+    FOREIGN KEY (checker_id)    REFERENCES users(user_id) ON DELETE CASCADE
 );
 
 -- ============================================================
