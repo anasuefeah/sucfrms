@@ -1,6 +1,6 @@
 <?php
 if (session_status() === PHP_SESSION_NONE) session_start();
-require_once 'includes/functions.php';
+require_once 'backend/core/functions.php';
 
 // -- AJAX: mark KRA submission acceptable  -  intercept BEFORE any header is sent --
 if (
@@ -8,7 +8,7 @@ if (
     $_SERVER['HTTP_X_REQUESTED_WITH'] === 'XMLHttpRequest' &&
     in_array(($_POST['action'] ?? ''), ['verify_kra', 'verify_submission'], true)
 ) {
-    require_once 'config/db.php';
+    require_once 'backend/database/config/db.php';
     if (!isLoggedIn()) { http_response_code(403); echo json_encode(['ok'=>false,'error'=>'Unauthorized']); exit; }
     header('Content-Type: application/json');
 
@@ -101,7 +101,7 @@ if (
         WHERE submission_id = ? AND application_id = ?")
         ->execute([$note ?: null, $sub_id, $app_id]);
 
-    $total_ck = (isAdmin() || isTalisayChecker())
+    $total_ck = isAdmin()
         ? 1
         : countAssignedCheckersForKra($pdo, (int)$app_row['cycle_id'], $sub_row['kra_category']);
     $total_ck = max(1, $total_ck);
@@ -137,19 +137,15 @@ if (isset($_GET['ping'])) {
 }
 
 requireLogin();
-require_once 'config/db.php';
+require_once 'backend/database/config/db.php';
 
-// One-time cleanup: remove new_submission notifs from talisay_checker accounts
-// (these were incorrectly sent before role filtering was added)
+// One-time cleanup: remove stale talisay_checker/checker notification mismatches
 if (empty($_SESSION['_notif_cleanup_done'])) {
     try {
+        // Remove any leftover notification type mismatches from old role setup
         $pdo->exec("DELETE n FROM notifications n
             JOIN users u ON n.user_id = u.user_id
-            WHERE u.role = 'talisay_checker'
-              AND n.type IN ('new_submission', 'revision_resubmitted')");
-        $pdo->exec("DELETE n FROM notifications n
-            JOIN users u ON n.user_id = u.user_id
-            WHERE u.role = 'checker'
+            WHERE u.role = 'evaluator'
               AND n.type = 'new_talisay_submission'");
     } catch (\Exception $e) {}
     $_SESSION['_notif_cleanup_done'] = true;
@@ -171,18 +167,8 @@ if (isset($_GET['notif_action'])) {
     } elseif ($na === 'get_notifs') {
         // Filter notification types by role so each role only sees relevant notifications
         $role_notif = $_SESSION['role'] ?? 'faculty';
-        // new_submission = first-stage reviewer notifications only
-        // new_talisay_submission = talisay checker notifications only
-        // Build an exclusion list based on role
+        // Evaluators have no split notification types — show all
         $excluded_types = [];
-        if ($role_notif === 'talisay_checker') {
-            // ITC reviewers should NOT see new_submission (that's for first-stage reviewers)
-            $excluded_types[] = 'new_submission';
-            $excluded_types[] = 'revision_resubmitted';
-        } elseif ($role_notif === 'checker') {
-            // Campus checkers should NOT see new_talisay_submission (that's for talisay only)
-            $excluded_types[] = 'new_talisay_submission';
-        }
         if (!empty($excluded_types)) {
             $ph = implode(',', array_fill(0, count($excluded_types), '?'));
             $rows = $pdo->prepare("SELECT n.notif_id, n.type, n.message, n.application_id, n.submission_id, ks.kra_category, n.is_read, UNIX_TIMESTAMP(n.created_at) AS created_at FROM notifications n LEFT JOIN kra_submissions ks ON ks.submission_id = n.submission_id WHERE n.user_id=? AND n.type NOT IN ($ph) ORDER BY n.created_at DESC LIMIT 30");
@@ -204,9 +190,12 @@ try {
     $pdo->exec("ALTER TABLE users MODIFY COLUMN status ENUM('active','inactive','rejected') DEFAULT 'active'");
 } catch (\Exception $e) { /* already updated or not needed */ }
 
-// -- Runtime migration: add 'talisay_checker' to users.role ENUM --
+// -- Runtime migration: consolidate role ENUM to faculty/admin/evaluator --
 try {
-    $pdo->exec("ALTER TABLE users MODIFY COLUMN role ENUM('faculty','checker','admin','talisay_checker') DEFAULT 'faculty'");
+    // First rename any existing checker/talisay_checker/checker_faculty rows
+    $pdo->exec("UPDATE users SET role='evaluator' WHERE role IN ('checker','talisay_checker','checker_faculty')");
+    // Then update the ENUM definition
+    $pdo->exec("ALTER TABLE users MODIFY COLUMN role ENUM('faculty','admin','evaluator') DEFAULT 'faculty'");
 } catch (\Exception $e) { /* already updated */ }
 
 // -- Runtime migration: split full_name into first_name / middle_name / last_name --
@@ -484,7 +473,7 @@ $fresh = $fresh->fetch();
 if ($fresh) {
     if ($fresh['status'] !== 'active') {
         session_destroy();
-        header('Location: pages/login.php');
+        header('Location: frontend/pages/login.php');
         exit;
     }
     if ($fresh['role'] !== $_SESSION['role']) {
@@ -530,16 +519,14 @@ if (empty($_SESSION['_notif_names_fixed'])) {
 }
 
 // Role-based allowed pages
-$faculty_pages         = ['dashboard','my_application','my_audit','profile','profile_entry','apply','score_comparison','appeals','help'];
-$checker_pages         = ['dashboard','review_queue','review_application','appeals','checker_audit','profile','help'];
-$talisay_pages         = ['dashboard','review_queue','review_application','checker_audit','profile','help'];
-$admin_pages           = ['dashboard','manage_users','audit','cycles','config','analytics','profile','all_applications','manage_campuses','view_application','appeals','help','feedback'];
+$faculty_pages   = ['dashboard','my_application','my_audit','profile','profile_entry','apply','score_comparison','appeals','help'];
+$evaluator_pages = ['dashboard','review_queue','review_application','appeals','checker_audit','profile','help'];
+$admin_pages     = ['dashboard','manage_users','audit','cycles','config','analytics','profile','all_applications','manage_campuses','view_application','appeals','help','feedback'];
 
 $allowed = match($role) {
-    'admin'            => $admin_pages,
-    'checker'          => $checker_pages,
-    'talisay_checker'  => $talisay_pages,
-    default            => $faculty_pages,
+    'admin'     => $admin_pages,
+    'evaluator' => $evaluator_pages,
+    default     => $faculty_pages,
 };
 
 if (!in_array($page, $allowed)) $page = 'dashboard';
@@ -550,7 +537,7 @@ if ($faculty_profile_incomplete && $page !== 'profile_entry') {
     exit;
 }
 
-include 'includes/header.php';
+include 'frontend/layouts/header.php';
 ?>
 
 <div class="container-fluid main-content" style="padding-left:264px;padding-right:0;padding-top:0;padding-bottom:1.5rem;margin-top:0;">
@@ -562,7 +549,7 @@ include 'includes/header.php';
                 <!-- Profile -->
                 <div class="sidebar-profile">
                     <?php if ($role === 'admin'): ?>
-                    <img src="assets/images/logo.jpg" alt="SUCFRMS Logo"
+                    <img src="frontend/assets/images/logo.jpg" alt="SUCFRMS Logo"
                          style="width:44px;height:44px;border-radius:50%;object-fit:cover;border:2px solid var(--gold-500);clip-path:circle(50%);flex-shrink:0;">
                     <?php else:
                         $pic = $_SESSION['profile_pic'] ?? '';
@@ -581,8 +568,8 @@ include 'includes/header.php';
                     <?php endif; endif; ?>
                     <div class="min-w-0">
                         <p class="sidebar-profile-name text-truncate"><?= htmlspecialchars($_SESSION['full_name'] ?? '') ?></p>
-                        <span class="badge <?= $role === 'admin' ? 'bg-warning text-dark' : ($role === 'checker' ? 'bg-success' : 'bg-info') ?>">
-                            <?= ucfirst(str_replace(['talisay_checker','checker'], ['ITC Evaluator','Evaluator'], $role)) ?>
+                        <span class="badge <?= $role === 'admin' ? 'bg-warning text-dark' : ($role === 'evaluator' ? 'bg-success' : 'bg-info') ?>">
+                            <?= $role === 'admin' ? 'Admin' : ($role === 'evaluator' ? 'Evaluator' : 'Faculty') ?>
                         </span>
                     </div>
                 </div>
@@ -597,14 +584,25 @@ include 'includes/header.php';
 
                     <?php if ($role === 'faculty'): ?>
                     <?php if ($faculty_profile_incomplete): ?>
-                    <div style="padding:0.7rem 0.75rem;margin-bottom:0.55rem;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:rgba(255,255,255,0.78);font-size:0.72rem;line-height:1.45;">
-                        <i class="bi bi-lock-fill me-1"></i>Please complete your profile to continue.
+                    <div style="padding:0.6rem 0.75rem;margin-bottom:0.35rem;">
+                        <div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;
+                                    color:rgba(255,255,255,0.35);margin-bottom:0.5rem;">Setup</div>
+                        <a href="?page=profile_entry"
+                           class="nav-link sidebar-link <?= $page==='profile_entry'?'active':'' ?>"
+                           style="display:flex;align-items:center;gap:0.5rem;">
+                            <i class="bi bi-person-lines-fill me-1"></i>Profile Entry
+                        </a>
+                        <div style="margin-top:0.6rem;padding:0.55rem 0.65rem;background:rgba(255,255,255,0.06);
+                                    border:1px solid rgba(255,255,255,0.1);border-radius:6px;
+                                    color:rgba(255,255,255,0.55);font-size:0.7rem;line-height:1.45;">
+                            <i class="bi bi-lock-fill me-1"></i>Complete your profile to unlock all features.
+                        </div>
                     </div>
-                    <a href="?page=profile_entry" class="nav-link sidebar-link <?= $page==='profile_entry'?'active':'' ?>">
-                        <i class="bi bi-person-lines-fill me-2"></i>Profile Entry
-                    </a>
                     <?php else: ?>
                     <div class="sidebar-section-label">My Application</div>
+                    <a href="frontend/pages/portal.php" class="nav-link sidebar-link">
+                        <i class="bi bi-grid-1x2 me-2"></i>Portal
+                    </a>
                     <a href="?page=my_application" class="nav-link sidebar-link <?= $page==='my_application'?'active':'' ?>">
                         <i class="bi bi-file-earmark-person me-2"></i>Application Status
                     </a>
@@ -623,26 +621,13 @@ include 'includes/header.php';
                     </a>
                     <?php endif; ?>
 
-                    <?php elseif ($role === 'checker'): ?>
+                    <?php elseif ($role === 'evaluator'): ?>
                     <div class="sidebar-section-label">Review</div>
                     <a href="?page=review_queue" class="nav-link sidebar-link <?= $page==='review_queue'?'active':'' ?>">
                         <i class="bi bi-inbox me-2"></i>Review Queue
                     </a>
                     <a href="?page=appeals" class="nav-link sidebar-link <?= $page==='appeals'?'active':'' ?>">
                         <i class="bi bi-chat-square-text me-2"></i>Appeals
-                    </a>
-                    <div class="sidebar-section-label">Account</div>
-                    <a href="?page=checker_audit" class="nav-link sidebar-link <?= $page==='checker_audit'?'active':'' ?>">
-                        <i class="bi bi-clock-history me-2"></i>My Activity Log
-                    </a>
-                    <a href="?page=profile" class="nav-link sidebar-link <?= $page==='profile'?'active':'' ?>">
-                        <i class="bi bi-person me-2"></i>Profile
-                    </a>
-
-                    <?php elseif ($role === 'talisay_checker'): ?>
-                    <div class="sidebar-section-label">ITC Review</div>
-                    <a href="?page=review_queue" class="nav-link sidebar-link <?= $page==='review_queue'?'active':'' ?>">
-                        <i class="bi bi-inbox-fill me-2"></i>Review Queue
                     </a>
                     <div class="sidebar-section-label">Account</div>
                     <a href="?page=checker_audit" class="nav-link sidebar-link <?= $page==='checker_audit'?'active':'' ?>">
@@ -709,18 +694,6 @@ include 'includes/header.php';
 
                 <div class="sidebar-bottom">
                     <div class="sidebar-divider" style="margin:0 0 .75rem;"></div>
-                    <?php if ($role === 'faculty'): ?>
-                    <a href="pages/portal.php"
-                       style="display:flex;align-items:center;gap:0.4rem;padding:0.3rem 0.75rem;
-                              margin-bottom:0.4rem;border-radius:6px;text-decoration:none;
-                              font-size:0.7rem;font-weight:600;color:#64748b;
-                              transition:background 0.15s,color 0.15s;"
-                       onmouseover="this.style.background='rgba(0,0,0,0.04)';this.style.color='#1a3a6b'"
-                       onmouseout="this.style.background='';this.style.color='#64748b'">
-                        <i class="bi bi-grid-1x2" style="font-size:0.7rem;"></i>
-                        My Portal
-                    </a>
-                    <?php endif; ?>
                     <div class="sidebar-clock">
                         <span class="sidebar-live"><span class="sidebar-live-dot"></span>Live</span>
                         <div class="sidebar-datetime">
@@ -742,48 +715,47 @@ include 'includes/header.php';
             <?php showFlash(); ?>
             <?php switch ($page) {
                 case 'dashboard':
-                    $dash_role = $role === 'talisay_checker' ? 'talisay_checker' : $role;
-                    include 'includes/dashboards/' . $dash_role . '_dashboard.php';
+                    include 'frontend/views/' . $role . '/dashboard.php';
                     break;
                 case 'my_application':
-                    include 'includes/faculty/my_application.php';
+                    include 'frontend/views/faculty/my_application.php';
                     break;
                 case 'score_comparison':
-                    include 'includes/faculty/score_comparison.php';
+                    include 'frontend/views/faculty/score_comparison.php';
                     break;
                 case 'apply':
-                    if ($role === 'faculty') include 'modules/apply.php';
+                    if ($role === 'faculty') include 'frontend/views/faculty/apply.php';
                     break;
                 case 'my_audit':
                 case 'checker_audit':
-                    include 'includes/audit_log.php';
+                    include 'frontend/views/shared/audit_log.php';
                     break;
                 case 'review_queue':
-                    include 'includes/checker/review_queue.php';
+                    include 'frontend/views/evaluator/review_queue.php';
                     break;
                 case 'review_application':
-                    include 'includes/checker/review_application.php';
+                    include 'frontend/views/shared/review_application.php';
                     break;
                 case 'appeals':
-                    include 'includes/appeals.php';
+                    include 'frontend/views/shared/appeals.php';
                     break;
                 case 'all_applications':
-                    include 'admin/all_applications.php';
+                    include 'frontend/views/admin/all_applications.php';
                     break;
                 case 'view_application':
-                    include 'includes/checker/review_application.php';
+                    include 'frontend/views/shared/review_application.php';
                     break;
                 case 'manage_users':
-                    include 'admin/manage_users.php';
+                    include 'frontend/views/admin/manage_users.php';
                     break;
                 case 'manage_campuses':
-                    include 'admin/manage_campuses.php';
+                    include 'frontend/views/admin/manage_campuses.php';
                     break;
                 case 'audit':
-                    include 'includes/audit_log.php';
+                    include 'frontend/views/shared/audit_log.php';
                     break;
                 case 'cycles':
-                    include 'admin/cycles.php';
+                    include 'frontend/views/admin/cycles.php';
                     break;
                 case 'config':
                     // Redirect legacy config links to the merged cycles module
@@ -791,19 +763,19 @@ include 'includes/header.php';
                     echo "<script>window.location.replace('index.php?page=cycles" . ($redir_cid ? "&cycle_id={$redir_cid}" : '') . "');</script>";
                     break;
                 case 'analytics':
-                    include 'admin/analytics.php';
+                    include 'frontend/views/admin/analytics.php';
                     break;
                 case 'feedback':
-                    include 'admin/feedback.php';
+                    include 'frontend/views/admin/feedback.php';
                     break;
                 case 'profile':
-                    include 'includes/profile.php';
+                    include 'frontend/views/shared/profile.php';
                     break;
                 case 'profile_entry':
-                    include 'includes/faculty/profile_entry.php';
+                    include 'frontend/views/faculty/profile_entry.php';
                     break;
                 case 'help':
-                    include 'includes/help.php';
+                    include 'frontend/views/shared/help.php';
                     break;
                 default:
                     break;
@@ -813,4 +785,4 @@ include 'includes/header.php';
     </div>
 </div>
 
-<?php include 'includes/footer.php'; ?>
+<?php include 'frontend/layouts/footer.php'; ?>

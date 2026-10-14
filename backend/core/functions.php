@@ -1,0 +1,1234 @@
+<?php
+/**
+ * Core helper functions for SUCFRMS
+ */
+require_once __DIR__ . '/kra_numbering.php';
+
+// -- Paths ------------------------------------------------------
+if (!defined('APP_ROOT')) define('APP_ROOT', dirname(__DIR__, 2));
+
+/**
+ * Web path of the project root (e.g. "/SUCFRMS/"), derived from the running
+ * script so it works for entry points at any depth (index.php, frontend/pages/*,
+ * backend/api/*, backend/services/reports/*) and under any Apache alias.
+ */
+if (!defined('BASE_URL')) {
+    define('BASE_URL', (function (): string {
+        $script = str_replace('\\', '/', (string)realpath($_SERVER['SCRIPT_FILENAME'] ?? ''));
+        $root   = str_replace('\\', '/', (string)realpath(APP_ROOT));
+        $name   = str_replace('\\', '/', $_SERVER['SCRIPT_NAME'] ?? '');
+        $rel    = ($root !== '' && str_starts_with($script, $root)) ? substr($script, strlen($root)) : '';
+        if ($rel === '' || !str_ends_with(strtolower($name), strtolower($rel))) return '/';
+        return rtrim(substr($name, 0, -strlen($rel)), '/') . '/';
+    })());
+}
+
+// -- Authentication --------------------------------------------
+function isLoggedIn(): bool { return isset($_SESSION['user_id']); }
+function isAdmin():    bool { return ($_SESSION['role'] ?? '') === 'admin'; }
+function isEvaluator(): bool { return ($_SESSION['role'] ?? '') === 'evaluator'; }
+/** @deprecated Use isEvaluator() */
+function isChecker():  bool { return isEvaluator(); }
+function isFaculty():  bool { return ($_SESSION['role'] ?? '') === 'faculty'; }
+/** @deprecated Use isEvaluator() */
+function isTalisayChecker(): bool { return isEvaluator(); }
+
+function requireLogin(): void {
+    if (!isLoggedIn()) { header('Location: pages/login.php'); exit; }
+}
+function requireAdmin(): void {
+    requireLogin();
+    if (!isAdmin()) { header('Location: index.php'); exit; }
+}
+
+/**
+ * Format a user's display name as "First M. Last".
+ * Pass a DB row array with first_name/middle_name/last_name keys.
+ * Falls back to full_name if parts are empty.
+ */
+function formatDisplayName(array $row, string $fallback_key = 'full_name'): string {
+    $first  = trim($row['first_name']  ?? '');
+    $middle = trim($row['middle_name'] ?? '');
+    $last   = trim($row['last_name']   ?? '');
+    if ($first === '' && $last === '') {
+        return $row[$fallback_key] ?? '';
+    }
+    $mi = $middle !== '' ? ' ' . strtoupper(substr($middle, 0, 1)) . '.' : '';
+    return trim($first . $mi . ' ' . $last);
+}
+
+/**
+ * The anonymous display name for an evaluator account.
+ * Pass a DB row (or partial row) containing checker_label and user_id.
+ * Falls back to "Evaluator #<user_id>" if a label wasn't stored (should
+ * only happen for rows created before the checker_label migration ran).
+ */
+function checkerDisplayLabel(array $row): string {
+    $label = $row['checker_label'] ?? null;
+    if ($label === null) {
+        return 'Evaluator #' . ($row['user_id'] ?? '?');
+    }
+    // Stored labels may still say "Checker #N" if the migration hasn't run yet  -  display as "Evaluator #N"
+    return preg_replace('/^Checker\s*#/i', 'Evaluator #', $label);
+}
+
+/**
+ * Next auto-incremented anonymous evaluator label ("Evaluator #1", "Evaluator #2", ...).
+ * Based on the highest existing numeric suffix so deleted accounts don't
+ * cause label reuse.
+ */
+function nextCheckerLabel($pdo): string {
+    $stmt = $pdo->query("SELECT checker_label FROM users WHERE checker_label REGEXP '^(Checker|Evaluator) #[0-9]+$'");
+    $max = 0;
+    foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $lbl) {
+        // Accept both legacy "Checker #N" and new "Evaluator #N" patterns
+        if (preg_match('/#(\d+)$/', $lbl, $m)) {
+            $n = (int)$m[1];
+            if ($n > $max) $max = $n;
+        }
+    }
+    return 'Evaluator #' . ($max + 1);
+}
+
+// -- Audit logging ---------------------------------------------
+function logAudit($pdo, $user_id, string $action, string $details = ''): void {
+    $pdo->prepare("INSERT INTO audit_logs (user_id, role_at_time, action_performed, details) VALUES (?,?,?,?)")
+        ->execute([$user_id, $_SESSION['role'] ?? 'unknown', $action, $details]);
+}
+
+// -- Notifications ---------------------------------------------
+function kraCategoryToTabSlug(?string $category): string {
+    return match ($category) {
+        'Research'                 => 'research',
+        'Extension'                => 'extension',
+        'Professional Development' => 'profdev',
+        default                    => 'instruction',
+    };
+}
+
+function createNotif($pdo, int $user_id, string $type, string $message, int $application_id = 0, int $submission_id = 0): void {
+    try {
+        $pdo->prepare("INSERT INTO notifications (user_id, type, message, application_id, submission_id) VALUES (?,?,?,?,?)")
+            ->execute([$user_id, $type, $message, $application_id ?: null, $submission_id ?: null]);
+    } catch (\Exception $e) { /* table may not exist yet  -  silent fail */ }
+}
+
+function getEffectiveSubmissionDeadline(PDO $pdo, int $cycle_id, int $faculty_user_id = 0, ?string $base_deadline = null): ?string {
+    if (!$base_deadline && $cycle_id) {
+        try {
+            $s = $pdo->prepare("SELECT submission_deadline FROM cycles WHERE cycle_id=?");
+            $s->execute([$cycle_id]);
+            $base_deadline = $s->fetchColumn() ?: null;
+        } catch (\Exception $e) {}
+    }
+    if (!$cycle_id) return $base_deadline ?: null;
+    try {
+        $s = $pdo->prepare("
+            SELECT MAX(new_deadline)
+            FROM cycle_submission_extensions
+            WHERE cycle_id = ?
+              AND (applies_to_all = 1 OR faculty_user_id = ?)
+        ");
+        $s->execute([$cycle_id, $faculty_user_id ?: 0]);
+        $ext = $s->fetchColumn();
+        if ($ext && (!$base_deadline || strtotime($ext) > strtotime($base_deadline))) {
+            return $ext;
+        }
+    } catch (\Exception $e) {}
+    return $base_deadline ?: null;
+}
+
+function getEvaluationDeadlineLabel(?string $deadline): array {
+    if (!$deadline) return ['No Deadline', '#64748b', '#f1f5f9'];
+    $today = strtotime(date('Y-m-d'));
+    $due = strtotime($deadline);
+    if ($due < $today) return ['Overdue', '#dc2626', '#fef2f2'];
+    $days = (int)floor(($due - $today) / 86400);
+    if ($days <= 3) return ['Due Soon', '#d97706', '#fffbeb'];
+    return ['On Time', '#16a34a', '#f0fdf4'];
+}
+
+function kraAssignmentCategories(): array {
+    return [
+        'Instruction' => 'KRA I',
+        'Research' => 'KRA II',
+        'Extension' => 'KRA III',
+        'Professional Development' => 'KRA IV',
+    ];
+}
+
+function ensureKraAssignmentTable(PDO $pdo): void {
+    try {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS checker_kra_assignments (
+            assignment_id INT AUTO_INCREMENT PRIMARY KEY,
+            cycle_id INT NOT NULL,
+            checker_id INT NOT NULL,
+            kra_category ENUM('Instruction','Research','Extension','Professional Development') NOT NULL,
+            assigned_by INT DEFAULT NULL,
+            assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_checker_cycle_kra (cycle_id, checker_id, kra_category),
+            INDEX idx_cka_cycle_kra (cycle_id, kra_category),
+            INDEX idx_cka_checker_cycle (checker_id, cycle_id),
+            FOREIGN KEY (cycle_id) REFERENCES cycles(cycle_id) ON DELETE CASCADE,
+            FOREIGN KEY (checker_id) REFERENCES users(user_id) ON DELETE CASCADE,
+            FOREIGN KEY (assigned_by) REFERENCES users(user_id) ON DELETE SET NULL
+        )");
+        $count = (int)$pdo->query("SELECT COUNT(*) FROM checker_kra_assignments")->fetchColumn();
+        if ($count === 0) {
+            $ins = $pdo->prepare("INSERT IGNORE INTO checker_kra_assignments (cycle_id, checker_id, kra_category, assigned_by) VALUES (?,?,?,NULL)");
+            $cycles = $pdo->query("SELECT cycle_id FROM cycles")->fetchAll(PDO::FETCH_COLUMN);
+            $checkers = $pdo->query("SELECT user_id FROM users WHERE role='evaluator' AND status='active'")->fetchAll(PDO::FETCH_COLUMN);
+            foreach ($cycles as $cycle_id) {
+                foreach ($checkers as $checker_id) {
+                    foreach (array_keys(kraAssignmentCategories()) as $kra) {
+                        $ins->execute([(int)$cycle_id, (int)$checker_id, $kra]);
+                    }
+                }
+            }
+        }
+    } catch (\Exception $e) {}
+}
+
+function getCheckerAssignedKras(PDO $pdo, int $checker_id, int $cycle_id): array {
+    if (!$checker_id || !$cycle_id) return [];
+    ensureKraAssignmentTable($pdo);
+    try {
+        $stmt = $pdo->prepare("SELECT kra_category FROM checker_kra_assignments WHERE checker_id=? AND cycle_id=?");
+        $stmt->execute([$checker_id, $cycle_id]);
+        return $stmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+    } catch (\Exception $e) {
+        return [];
+    }
+}
+
+function checkerCanReviewKra(PDO $pdo, int $checker_id, int $cycle_id, string $kra_category): bool {
+    if (isAdmin()) return true;
+    if (!isEvaluator()) return false;
+    return in_array($kra_category, getCheckerAssignedKras($pdo, $checker_id, $cycle_id), true);
+}
+
+function countAssignedCheckersForKra(PDO $pdo, int $cycle_id, string $kra_category): int {
+    ensureKraAssignmentTable($pdo);
+    try {
+        $stmt = $pdo->prepare("
+            SELECT COUNT(DISTINCT a.checker_id)
+            FROM checker_kra_assignments a
+            JOIN users u ON u.user_id = a.checker_id
+            WHERE a.cycle_id=? AND a.kra_category=? AND u.role='evaluator' AND u.status='active'
+        ");
+        $stmt->execute([$cycle_id, $kra_category]);
+        return (int)$stmt->fetchColumn();
+    } catch (\Exception $e) {
+        return 0;
+    }
+}
+
+function countAssignedCheckersForCycle(PDO $pdo, int $cycle_id): int {
+    ensureKraAssignmentTable($pdo);
+    try {
+        $stmt = $pdo->prepare("
+            SELECT COUNT(DISTINCT a.checker_id)
+            FROM checker_kra_assignments a
+            JOIN users u ON u.user_id = a.checker_id
+            WHERE a.cycle_id=? AND u.role='evaluator' AND u.status='active'
+        ");
+        $stmt->execute([$cycle_id]);
+        return max(1, (int)$stmt->fetchColumn());
+    } catch (\Exception $e) {
+        return max(1, (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role='evaluator' AND status='active'")->fetchColumn());
+    }
+}
+
+function ensureAppealTables(PDO $pdo): void {
+    try { $pdo->query("SELECT appeal_deadline FROM cycles LIMIT 1"); }
+    catch (\Exception $e) { try { $pdo->exec("ALTER TABLE cycles ADD COLUMN appeal_deadline DATE DEFAULT NULL AFTER evaluation_deadline"); } catch (\Exception $e2) {} }
+    try {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS appeals (
+            appeal_id INT AUTO_INCREMENT PRIMARY KEY,
+            application_id INT NOT NULL,
+            submission_id INT NOT NULL,
+            faculty_id INT NOT NULL,
+            checker_id INT NOT NULL,
+            cycle_id INT NOT NULL,
+            appeal_type ENUM('flag','score_change') NOT NULL,
+            original_score DECIMAL(6,2) DEFAULT NULL,
+            changed_score DECIMAL(6,2) DEFAULT NULL,
+            checker_remark TEXT DEFAULT NULL,
+            reason TEXT NOT NULL,
+            status ENUM('open','under_review','resolved') DEFAULT 'open',
+            outcome ENUM('upheld','revised','dismissed') DEFAULT NULL,
+            is_read_by_faculty TINYINT(1) DEFAULT 1,
+            is_read_by_checker TINYINT(1) DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            resolved_at TIMESTAMP NULL,
+            resolved_by INT DEFAULT NULL,
+            INDEX idx_appeals_submission_status (submission_id, status),
+            INDEX idx_appeals_faculty (faculty_id, status),
+            INDEX idx_appeals_checker (checker_id, status),
+            FOREIGN KEY (application_id) REFERENCES applications(application_id) ON DELETE CASCADE,
+            FOREIGN KEY (submission_id) REFERENCES kra_submissions(submission_id) ON DELETE CASCADE,
+            FOREIGN KEY (faculty_id) REFERENCES users(user_id) ON DELETE CASCADE,
+            FOREIGN KEY (checker_id) REFERENCES users(user_id) ON DELETE CASCADE,
+            FOREIGN KEY (cycle_id) REFERENCES cycles(cycle_id) ON DELETE CASCADE,
+            FOREIGN KEY (resolved_by) REFERENCES users(user_id) ON DELETE SET NULL
+        )");
+        $pdo->exec("CREATE TABLE IF NOT EXISTS appeal_messages (
+            message_id INT AUTO_INCREMENT PRIMARY KEY,
+            appeal_id INT NOT NULL,
+            sender_id INT NOT NULL,
+            message TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (appeal_id) REFERENCES appeals(appeal_id) ON DELETE CASCADE,
+            FOREIGN KEY (sender_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )");
+        $pdo->exec("CREATE TABLE IF NOT EXISTS appeal_attachments (
+            attachment_id INT AUTO_INCREMENT PRIMARY KEY,
+            message_id INT NOT NULL,
+            file_path VARCHAR(255) NOT NULL,
+            original_filename VARCHAR(255) NOT NULL,
+            file_size_bytes INT DEFAULT 0,
+            uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (message_id) REFERENCES appeal_messages(message_id) ON DELETE CASCADE
+        )");
+    } catch (\Exception $e) {}
+}
+
+function appealStatusLabel(array $appeal): string {
+    if (($appeal['status'] ?? '') === 'resolved') {
+        return 'Resolved' . (!empty($appeal['outcome']) ? ' - ' . ucfirst(str_replace('_', ' ', $appeal['outcome'])) : '');
+    }
+    return ($appeal['status'] ?? 'open') === 'under_review' ? 'Under Review' : 'Open';
+}
+
+function getUnreadNotifCount($pdo, int $user_id): int {
+    try {
+        $s = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE user_id=? AND is_read=0");
+        $s->execute([$user_id]);
+        return (int)$s->fetchColumn();
+    } catch (\Exception $e) { return 0; }
+}
+
+// -- Flash messages --------------------------------------------
+function flashMessage(string $type, string $msg): void {
+    $_SESSION['flash'] = ['type' => $type, 'msg' => $msg];
+}
+function showFlash(): void {
+    if (empty($_SESSION['flash'])) return;
+    $f    = $_SESSION['flash'];
+    unset($_SESSION['flash']);
+    $icon = match($f['type']) {
+        'success' => 'bi-check-circle-fill',
+        'warning' => 'bi-exclamation-triangle-fill',
+        'danger'  => 'bi-x-circle-fill',
+        default   => 'bi-info-circle-fill',
+    };
+    $color = match($f['type']) {
+        'success' => '#16a34a',
+        'warning' => '#d97706',
+        'danger'  => '#dc2626',
+        default   => '#1e4d8c',
+    };
+    $msg_html = $f['msg'];
+    // Toast: fixed bottom-right, slides in, auto-dismisses after 3.5 s, never pushes content down
+    echo "<div id='sucfrms-toast' style='position:fixed;bottom:1.5rem;right:1.5rem;z-index:999999;"
+       . "min-width:280px;max-width:400px;background:#fff;border-radius:12px;"
+       . "box-shadow:0 8px 32px rgba(0,0,0,0.18);display:flex;align-items:flex-start;gap:0.75rem;"
+       . "padding:1rem 1.1rem;border-left:4px solid {$color};animation:sucfrmsToastIn 0.3s ease;'>"
+       . "<i class='bi {$icon}' style='color:{$color};font-size:1.15rem;flex-shrink:0;margin-top:2px;'></i>"
+       . "<div style='flex:1;font-size:0.85rem;color:#1e293b;line-height:1.5;'>{$msg_html}</div>"
+       . "<button onclick=\"document.getElementById('sucfrms-toast').remove()\" "
+       .         "style='background:none;border:none;color:#94a3b8;cursor:pointer;"
+       .                "font-size:1.2rem;line-height:1;padding:0 0 2px;flex-shrink:0;'>&times;</button>"
+       . "</div>"
+       . "<style>"
+       . "@keyframes sucfrmsToastIn{from{opacity:0;transform:translateY(1rem)}to{opacity:1;transform:translateY(0)}}"
+       . "@keyframes sucfrmsToastOut{from{opacity:1;transform:translateY(0)}to{opacity:0;transform:translateY(1rem)}}"
+       . "</style>"
+       . "<script>(function(){"
+       .   "var t=document.getElementById('sucfrms-toast');"
+       .   "if(!t)return;"
+       .   "setTimeout(function(){"
+       .     "t.style.animation='sucfrmsToastOut 0.4s ease forwards';"
+       .     "setTimeout(function(){if(t&&t.parentNode)t.parentNode.removeChild(t);},400);"
+       .   "},3500);"
+       . "})();</script>";
+}
+
+// -- Output sanitization ---------------------------------------
+function sanitize(string $str): string {
+    return htmlspecialchars(strip_tags(trim($str)), ENT_QUOTES, 'UTF-8');
+}
+
+// -- Application helpers ---------------------------------------
+function getActiveCycle($pdo): array|false {
+    return $pdo->query("SELECT * FROM cycles WHERE status = 'open' ORDER BY created_at DESC LIMIT 1")->fetch();
+}
+
+
+function getOrCreateApplication($pdo, int $user_id, int $cycle_id): array {
+    $stmt = $pdo->prepare("SELECT * FROM applications WHERE user_id = ? AND cycle_id = ? LIMIT 1");
+    $stmt->execute([$user_id, $cycle_id]);
+    $app = $stmt->fetch();
+    if (!$app) {
+        $pdo->prepare("INSERT INTO applications (user_id, cycle_id, status) VALUES (?, ?, 'draft')")
+            ->execute([$user_id, $cycle_id]);
+        $stmt->execute([$user_id, $cycle_id]);
+        $app = $stmt->fetch();
+    }
+    return $app;
+}
+
+function recalcApplicationScore($pdo, int $application_id): float {
+    // -- Route through the JC01 s.2026 Orchestrator when available ---
+    // The orchestrator produces the authoritative result; the legacy path
+    // below is kept as a fallback for any call before the scoring module loads.
+    $scoring_dir = __DIR__ . '/../services/scoring/orchestrator.php';
+    if (file_exists($scoring_dir)) {
+        try {
+            if (!class_exists('\Scoring\Orchestrator')) {
+                require_once $scoring_dir;
+            }
+            $result = \Scoring\Orchestrator::run($pdo, $application_id);
+            return (float)($result['weighted_score'] ?? 0);
+        } catch (\Throwable $e) {
+            // Fall through to legacy computation on any failure
+            error_log('SUCFRMS Orchestrator error: ' . $e->getMessage());
+        }
+    }
+
+    // -- Legacy fallback ----------------------------------------------
+    $info = $pdo->prepare("SELECT u.rank FROM applications a JOIN users u ON a.user_id=u.user_id WHERE a.application_id=?");
+    $info->execute([$application_id]);
+    $rank = $info->fetchColumn() ?? '';
+
+    $stmt = $pdo->prepare("SELECT kra_category, computed_points, remarks FROM kra_submissions WHERE application_id=?");
+    $stmt->execute([$application_id]);
+    $raw = [];
+    $has_national_award = false;
+    foreach ($stmt->fetchAll() as $r) {
+        $raw[$r['kra_category']] = ($raw[$r['kra_category']] ?? 0) + kraEffectiveComputedPoints($r);
+        if ($r['kra_category'] === 'Professional Development') {
+            $parts = array_map('trim', explode('|||', $r['remarks'] ?? ''));
+            if (($parts[0] ?? '') === 'C-award' && (float)($parts[2] ?? -1) === 0.0) {
+                $has_national_award = true;
+            }
+        }
+    }
+
+    $result         = computeWeightedScore($raw, $rank, $has_national_award);
+    $potential      = computePotentialRank($raw, $rank, $has_national_award);
+    $potential_rank = $potential['potential_rank'];
+
+    try {
+        $pdo->prepare("UPDATE applications SET total_score=?, weighted_score=?, sub_rank_increment=?, potential_rank=? WHERE application_id=?")
+            ->execute([$result['raw_total'], $result['weighted_score'], $result['sub_rank_increment'], $potential_rank, $application_id]);
+    } catch (\Exception $e) {
+        $pdo->prepare("UPDATE applications SET total_score=?, weighted_score=?, sub_rank_increment=? WHERE application_id=?")
+            ->execute([$result['raw_total'], $result['weighted_score'], $result['sub_rank_increment'], $application_id]);
+    }
+
+    return $result['weighted_score'];
+}
+
+function kraEffectiveComputedPoints(array $submission): float {
+    $points = (float)($submission['computed_points'] ?? 0);
+    $parts = array_map('trim', explode('|||', (string)($submission['remarks'] ?? '')));
+    if (($parts[0] ?? '') === 'CUSTOM') {
+        return max($points, max(0.0, (float)($parts[4] ?? 0)));
+    }
+    return $points;
+}
+
+function recalcApplicationsAfterCriteriaChange(PDO $pdo, ?int $cycle_id = null, ?string $position_rank = null): int {
+    try {
+        $where = ["a.status <> 'draft'"];
+        $params = [];
+
+        if ($cycle_id) {
+            $where[] = 'a.cycle_id = ?';
+            $params[] = $cycle_id;
+        }
+        if ($position_rank !== null && $position_rank !== '') {
+            $where[] = "COALESCE(NULLIF(a.position_title, ''), u.rank) = ?";
+            $params[] = $position_rank;
+        }
+
+        $stmt = $pdo->prepare("
+            SELECT a.application_id
+            FROM applications a
+            JOIN users u ON u.user_id = a.user_id
+            WHERE " . implode(' AND ', $where)
+        );
+        $stmt->execute($params);
+
+        $count = 0;
+        foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $app_id) {
+            recalcApplicationScore($pdo, (int)$app_id);
+            $count++;
+        }
+        return $count;
+    } catch (\Throwable $e) {
+        error_log('SUCFRMS criteria recalculation error: ' . $e->getMessage());
+        return 0;
+    }
+}
+
+/**
+ * Authoritative score summary for application displays.
+ *
+ * UI/report layers should use this for KRA subtotals, grand totals,
+ * weighted score, and sub-rank values instead of re-summing/capping rows.
+ */
+function getApplicationScoreSummary($pdo, int $application_id, bool $refresh = true): array {
+    static $cache = [];
+    $cache_key = $application_id . ':' . ($refresh ? 'fresh' : 'stored');
+    if (isset($cache[$cache_key])) return $cache[$cache_key];
+
+    $result = null;
+    $scoring_dir = __DIR__ . '/../services/scoring/orchestrator.php';
+    if ($refresh && file_exists($scoring_dir)) {
+        try {
+            if (!class_exists('\Scoring\Orchestrator')) {
+                require_once $scoring_dir;
+            }
+            $result = \Scoring\Orchestrator::run($pdo, $application_id);
+            if (!empty($result['error'])) $result = null;
+        } catch (\Throwable $e) {
+            error_log('SUCFRMS score summary orchestrator error: ' . $e->getMessage());
+            $result = null;
+        }
+    }
+
+    $app_stmt = $pdo->prepare("
+        SELECT a.*, u.rank AS faculty_rank
+        FROM applications a
+        JOIN users u ON a.user_id = u.user_id
+        WHERE a.application_id = ?
+        LIMIT 1
+    ");
+    $app_stmt->execute([$application_id]);
+    $app = $app_stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+
+    $verified_stmt = $pdo->prepare("
+        SELECT kra_category, computed_points, remarks, verified
+        FROM kra_submissions
+        WHERE application_id = ?
+    ");
+    $verified_stmt->execute([$application_id]);
+
+    $kra_map = [
+        'Instruction'              => ['pts' => 0.0, 'entry_total' => 0.0, 'verified' => 0],
+        'Research'                 => ['pts' => 0.0, 'entry_total' => 0.0, 'verified' => 0],
+        'Extension'                => ['pts' => 0.0, 'entry_total' => 0.0, 'verified' => 0],
+        'Professional Development' => ['pts' => 0.0, 'entry_total' => 0.0, 'verified' => 0],
+    ];
+    foreach ($verified_stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        if (!isset($kra_map[$row['kra_category']])) continue;
+        $kra_map[$row['kra_category']]['entry_total'] += kraEffectiveComputedPoints($row);
+        $kra_map[$row['kra_category']]['verified'] = max((int)$kra_map[$row['kra_category']]['verified'], (int)$row['verified']);
+    }
+
+    if ($result) {
+        $kra_results = $result['kra_results'];
+        $kra_map['Instruction']['pts'] = (float)$kra_results['kra1']['subtotal'];
+        $kra_map['Research']['pts'] = (float)$kra_results['kra2']['subtotal'];
+        $kra_map['Extension']['pts'] = (float)$kra_results['kra3']['subtotal'];
+        $kra_map['Professional Development']['pts'] = (float)$kra_results['kra4']['subtotal'];
+        $weights = $result['iss']['weight_row_pass2']
+            ?? \Scoring\Orchestrator::getKraWeights($result['iss']['initial_reclassified_rank'] ?? ($app['faculty_rank'] ?? ''));
+        $summary = [
+            'kra1' => $kra_map['Instruction']['pts'],
+            'kra2' => $kra_map['Research']['pts'],
+            'kra3' => $kra_map['Extension']['pts'],
+            'kra4' => $kra_map['Professional Development']['pts'],
+            'raw_total' => (float)$result['grand_total'],
+            'grand_total' => (float)$result['grand_total'],
+            'weights' => $weights,
+            'weighted_score' => (float)$result['weighted_score'],
+            'sub_rank_increment' => (int)$result['sub_rank_increment'],
+            'award_bonus' => (int)($result['auto_subrank']['bonus_increment'] ?? 0),
+            'potential_rank' => $result['target_rank'] ?? ($app['potential_rank'] ?? ''),
+            'kra_map' => $kra_map,
+            'kra_results' => $kra_results,
+            'pending_documentation' => $result['pending_documentation'] ?? [],
+            'config_incomplete' => $result['config_incomplete'] ?? [],
+            'source' => 'orchestrator',
+        ];
+    } else {
+        $weights = getKraWeights($app['faculty_rank'] ?? '');
+        foreach ($kra_map as &$k) $k['pts'] = min(100, $k['entry_total']);
+        unset($k);
+        $weighted = round(
+            ($kra_map['Instruction']['pts'] * $weights['Instruction']) +
+            ($kra_map['Research']['pts'] * $weights['Research']) +
+            ($kra_map['Extension']['pts'] * $weights['Extension']) +
+            ($kra_map['Professional Development']['pts'] * $weights['Professional Development']),
+            2
+        );
+        $summary = [
+            'kra1' => $kra_map['Instruction']['pts'],
+            'kra2' => $kra_map['Research']['pts'],
+            'kra3' => $kra_map['Extension']['pts'],
+            'kra4' => $kra_map['Professional Development']['pts'],
+            'raw_total' => array_sum(array_column($kra_map, 'pts')),
+            'grand_total' => array_sum(array_column($kra_map, 'pts')),
+            'weights' => $weights,
+            'weighted_score' => $weighted,
+            'sub_rank_increment' => getSubRankIncrement($weighted),
+            'award_bonus' => 0,
+            'potential_rank' => $app['potential_rank'] ?? '',
+            'kra_map' => $kra_map,
+            'kra_results' => [],
+            'pending_documentation' => [],
+            'config_incomplete' => [],
+            'source' => 'legacy_fallback',
+        ];
+    }
+
+    $cache[$cache_key] = $summary;
+    return $summary;
+}
+
+/**
+ * Returns KRA weights (as decimals) based on faculty rank.
+ */
+/**
+ * Returns KRA weights (as decimals) based on faculty rank.
+ * Delegates to Scoring\Orchestrator::getKraWeights() — single source of truth.
+ */
+function getKraWeights(string $rank): array {
+    if (class_exists('\Scoring\Orchestrator')) {
+        return \Scoring\Orchestrator::getKraWeights($rank);
+    }
+    // Fallback (Orchestrator not loaded) — mirrors the same table
+    if (preg_match('/^instructor/i', $rank))
+        return ['Instruction'=>0.60,'Research'=>0.10,'Extension'=>0.20,'Professional Development'=>0.10];
+    if (preg_match('/^assistant professor/i', $rank))
+        return ['Instruction'=>0.50,'Research'=>0.20,'Extension'=>0.20,'Professional Development'=>0.10];
+    if (preg_match('/^associate professor/i', $rank))
+        return ['Instruction'=>0.40,'Research'=>0.30,'Extension'=>0.20,'Professional Development'=>0.10];
+    if (preg_match('/^professor (i|ii|iii|iv|v|vi)$/i', $rank))
+        return ['Instruction'=>0.30,'Research'=>0.40,'Extension'=>0.20,'Professional Development'=>0.10];
+    if (preg_match('/^(college|university) professor/i', $rank))
+        return ['Instruction'=>0.20,'Research'=>0.50,'Extension'=>0.20,'Professional Development'=>0.10];
+    return ['Instruction'=>0.60,'Research'=>0.10,'Extension'=>0.20,'Professional Development'=>0.10];
+}
+
+/**
+ * Compute weighted final score and sub-rank increment per JC01 s.2026.
+ * KRA caps: Instruction=100, Research=100, Extension=100, PD=100 (each capped at 100).
+ * Grand total max = 400 (no additional global cap per JC01).
+ */
+function computeWeightedScore(array $raw, string $rank, bool $has_national_award = false): array {
+    $weights = getKraWeights($rank);
+
+    // JC01 s.2026: each KRA capped at 100 (Extension was incorrectly 120 under old JC3 rules)
+    $kra1 = min(100, (float)($raw['Instruction']              ?? 0));
+    $kra2 = min(100, (float)($raw['Research']                 ?? 0));
+    $kra3 = min(100, (float)($raw['Extension']                ?? 0));
+    $kra4 = min(100, (float)($raw['Professional Development'] ?? 0));
+
+    $raw_total = $kra1 + $kra2 + $kra3 + $kra4;  // max 400
+
+    $weighted = round(
+        ($kra1 * $weights['Instruction']) +
+        ($kra2 * $weights['Research']) +
+        ($kra3 * $weights['Extension']) +
+        ($kra4 * $weights['Professional Development']),
+        2
+    );
+
+    $sub_rank = getSubRankIncrement($weighted);
+
+    // Award bonus: applied AFTER score bracket, only if score >= 41
+    $award_bonus = 0;
+    if ($has_national_award && $sub_rank > 0) {
+        $award_bonus = 1;
+        $sub_rank   += 1;
+    }
+
+    return [
+        'kra1'               => $kra1,
+        'kra2'               => $kra2,
+        'kra3'               => $kra3,
+        'kra4'               => $kra4,
+        'raw_total'          => $raw_total,
+        'weights'            => $weights,
+        'weighted_score'     => $weighted,
+        'sub_rank_increment' => $sub_rank,
+        'award_bonus'        => $award_bonus,
+    ];
+}
+
+/**
+ * Determine sub-rank increment from weighted score per Step 4.
+ */
+function getSubRankIncrement(float $score): int {
+    if ($score >= 91) return 6;
+    if ($score >= 81) return 5;
+    if ($score >= 71) return 4;
+    if ($score >= 61) return 3;
+    if ($score >= 51) return 2;
+    if ($score >= 41) return 1;
+    return 0;
+}
+
+function getCriteria($pdo, string $key, ?int $cycle_id = null, ?string $position_rank = null): array|false {
+    // 1. Most specific: cycle + position
+    if ($cycle_id && $position_rank) {
+        $stmt = $pdo->prepare("SELECT * FROM scoring_criteria WHERE criterion_key=? AND cycle_id=? AND position_rank=? AND is_active=1 LIMIT 1");
+        $stmt->execute([$key, $cycle_id, $position_rank]);
+        $row = $stmt->fetch();
+        if ($row) return $row;
+    }
+    // 2. Cycle-wide (no position)
+    if ($cycle_id) {
+        $stmt = $pdo->prepare("SELECT * FROM scoring_criteria WHERE criterion_key=? AND cycle_id=? AND position_rank IS NULL AND is_active=1 LIMIT 1");
+        $stmt->execute([$key, $cycle_id]);
+        $row = $stmt->fetch();
+        if ($row) return $row;
+    }
+    // 3. Global default
+    $stmt = $pdo->prepare("SELECT * FROM scoring_criteria WHERE criterion_key=? AND cycle_id IS NULL AND position_rank IS NULL AND is_active=1 LIMIT 1");
+    $stmt->execute([$key]);
+    return $stmt->fetch();
+}
+
+// -- UI helpers ------------------------------------------------
+
+/**
+ * Parse the |||-delimited remarks string into a human-readable HTML snippet.
+ * Format per KRA category:
+ *   Instruction:              SET%  ||| SEF%  ||| notes
+ *   Research:                 Type  ||| Developers ||| Affiliation ||| Area ||| Specific Contribution ||| Contribution%
+ *   Extension:                Subtype ||| Title ||| Val1 ||| Val2
+ *   Professional Development: Credential ||| Degree value
+ */
+function kraInstructionDisplayTitle(string $critType, string $storedLabel): string {
+    $raw = $storedLabel !== '' ? $storedLabel : implode('|', array_slice(explode('|', $critType), 2));
+    $label = kraCleanEntryDisplayTitle(str_replace('\\u2014', ' - ', $raw));
+    $norm = strtolower(preg_replace('/[^a-z0-9]+/', ' ', $label));
+    $isCo = str_contains($norm, 'co author') || str_contains($norm, 'coauthor');
+
+    if (str_starts_with($critType, 'B|') || $critType === 'B-material') {
+        if (str_contains($norm, 'textbook chapter')) return 'Textbook Chapter, ' . ($isCo ? 'Co-Author' : 'Sole Author');
+        if (str_contains($norm, 'manual') || str_contains($norm, 'module')) return 'Manual / Module, ' . ($isCo ? 'Co-Author' : 'Sole Author');
+        if (str_contains($norm, 'multimedia')) return 'Multimedia Teaching Materials';
+        if (str_contains($norm, 'testing') || str_contains($norm, 'validated')) return 'Validated Testing Materials';
+        if (str_contains($norm, 'program')) return 'Academic Program Dev/Revision, ' . (str_contains($norm, 'contributor') ? 'Contributor' : 'Lead');
+        if (str_contains($norm, 'textbook')) return 'Textbook, ' . ($isCo ? 'Co-Author' : 'Sole Author');
+    }
+
+    if (str_starts_with($critType, 'C|') || $critType === 'C-thesis') {
+        if (str_contains($norm, 'special') || str_contains($norm, 'capstone')) $level = 'Special Project / Capstone';
+        elseif (str_contains($norm, 'undergraduate')) $level = 'Undergraduate Thesis';
+        elseif (str_contains($norm, 'master')) $level = "Master's Thesis";
+        elseif (str_contains($norm, 'doctor')) $level = 'Doctoral Dissertation';
+        else $level = '';
+
+        if (str_contains($norm, 'panel')) return trim('Panel Member: ' . $level);
+        if (str_contains($norm, 'mentor')) return 'Mentor: Student/Team Competition Winner';
+        if ($level !== '') return 'Adviser: ' . $level;
+    }
+
+    return $label;
+}
+
+function kraExtensionSubtypeDisplayTitle(string $subtype): string {
+    return [
+        'moa-linkage' => 'MOA/Linkage Partnership',
+        'income' => 'Income Generation',
+        'accredit-local' => 'Local Accreditation/QA Service',
+        'accredit-intl' => 'International Accreditation/QA Service',
+        'judge-research' => 'Judging Research Awards',
+        'judge-other' => 'Judging Academic Competitions',
+        'consultant-local' => 'Local Consultant/Expert Service',
+        'consultant-intl' => 'International Consultant/Expert Service',
+        'media-column-occasional' => 'Occasional Newspaper/Online Column',
+        'media-column-regular' => 'Regular Column',
+        'media-tv-radio-host' => 'Hosting TV/Radio/Online Program',
+        'media-guest' => 'Guesting as Technical Expert',
+        'resource-speaker-local' => 'Resource Person/Speaker, Local',
+        'resource-speaker-intl' => 'Resource Person/Speaker, International',
+        'outreach-isr-lead' => 'Head of Outreach/Extension Activity',
+        'outreach-isr-member' => 'Participant in Outreach/Extension Activity',
+        'csr-satisfaction' => 'Client Satisfaction Rating',
+    ][$subtype] ?? ucwords(str_replace('-', ' ', $subtype));
+}
+
+function kraProfessionalDevelopmentDisplayTitle(string $critType, string $subVal): string {
+    if ($critType === 'A-org') return 'Professional Org Membership';
+    if ($critType === 'B-training') return $subVal === '2' ? 'Training/Conference, International' : 'Training/Conference, Local';
+    if ($critType === 'B-paper') return $subVal === '5' ? 'Paper Presentation, International' : 'Paper Presentation, Local';
+    if ($critType === 'B-degree') {
+        return match($subVal) {
+            '40' => 'Doctorate / Additional Doctorate',
+            '20' => "Additional Master's Degree",
+            '10' => "Post-Master's / Post-Doctoral Certificate",
+            default => 'Educational Qualification',
+        };
+    }
+    if ($critType === 'C-award') {
+        return match($subVal) {
+            '2' => 'Award / Recognition, Institutional',
+            '3' => 'Award / Recognition, Local / Regional',
+            '4' => 'Award / Recognition, National',
+            '5' => 'Award / Recognition, International (CONFIG GAP)',
+            '0' => 'Award / Recognition, Prestigious (Sub-rank Trigger)',
+            default => 'Award / Recognition',
+        };
+    }
+    return kraCleanEntryDisplayTitle($critType);
+}
+
+function formatKraRemarks(string $category, string $remarks): string {
+    $p = array_map('trim', explode('|||', $remarks));
+    $numbering = kraNumberingFindByStoredType($category, $p[0] ?? '', $p);
+    $numberedLabel = $numbering ? kraNumberingDisplayLabel($numbering) : '';
+
+    switch ($category) {
+        case 'Instruction':
+            $critType = $p[0] ?? '';
+            if ($critType === 'CUSTOM') {
+                $label = $p[3] ?? 'Custom criterion';
+                $pts = number_format((float)($p[4] ?? 0), 2);
+                $detail = $p[5] ?? '';
+                $out = '<div><strong>' . htmlspecialchars($label, ENT_QUOTES) . '</strong> <span class="text-muted" style="font-size:0.75rem;">(' . $pts . ' pts)</span></div>';
+                if ($detail !== '') $out .= '<div class="text-muted" style="font-size:0.82rem;">' . htmlspecialchars($detail, ENT_QUOTES) . '</div>';
+                return $out;
+            }
+            $d1       = $p[1] ?? '';
+            $d2       = $p[2] ?? '';
+            $notes    = $p[3] ?? '';
+            if ($critType === 'A-set-sef') {
+                $parts = [];
+                $parts[] = '<span class="text-muted" style="font-size:0.75rem;">1.1 Student Evaluation (60%)</span> <strong>' . htmlspecialchars($d1, ENT_QUOTES) . '%</strong>';
+                $parts[] = '<span class="text-muted" style="font-size:0.75rem;">1.2 Supervisor\'s Evaluation (40%)</span> <strong>' . htmlspecialchars($d2, ENT_QUOTES) . '%</strong>';
+                $parts = array_filter($parts, fn($part) => !str_contains($part, '<strong>%</strong>'));
+                if ($notes !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">Notes:</span> ' . htmlspecialchars($notes, ENT_QUOTES);
+                return implode(' &nbsp;|&nbsp; ', $parts) ?: '-';
+            } elseif ($critType === 'A-set-sef-sem') {
+                $period = $d1;
+                $sem    = $d2 === '2' ? '2nd Semester' : '1st Semester';
+                $set    = $p[3] ?? '';
+                $sef    = $p[4] ?? '';
+                $parts = [];
+                if ($period !== '') $parts[] = '<strong>' . htmlspecialchars($period, ENT_QUOTES) . '</strong>';
+                $parts[] = '<span class="text-muted" style="font-size:0.75rem;">' . $sem . '</span>';
+                if ($set !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">1.1 Student Evaluation (60%)</span> <strong>' . htmlspecialchars($set, ENT_QUOTES) . '%</strong>';
+                if ($sef !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">1.2 Supervisor\'s Evaluation (40%)</span> <strong>' . htmlspecialchars($sef, ENT_QUOTES) . '%</strong>';
+                return implode(' &nbsp;|&nbsp; ', $parts) ?: '-';
+            } elseif ($critType === 'A-set-sem' || $critType === 'A-sef-sem') {
+                $period = $d1;
+                $sem    = $d2 === '2' ? '2nd Semester' : '1st Semester';
+                $label  = $numberedLabel !== '' ? $numberedLabel : ($critType === 'A-sef-sem' ? 'SEF' : 'SET');
+                $score  = $p[3] ?? '';
+                $parts = [];
+                if ($period !== '') $parts[] = '<strong>' . htmlspecialchars($period, ENT_QUOTES) . '</strong>';
+                $parts[] = '<span class="text-muted" style="font-size:0.75rem;">' . $sem . '</span>';
+                if ($score !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">' . htmlspecialchars($label, ENT_QUOTES) . '</span> <strong>' . htmlspecialchars($score, ENT_QUOTES) . '%</strong>';
+                return implode(' &nbsp;|&nbsp; ', $parts) ?: '-';
+            } elseif (str_starts_with($critType, 'B|')) {
+                $label = kraInstructionDisplayTitle($critType, $d1);
+                $out = '<div><strong>' . htmlspecialchars($label, ENT_QUOTES) . '</strong></div>';
+                if ($d2 !== '' && $d2 !== '100') $out .= '<div class="text-muted" style="font-size:0.78rem;">Contribution: ' . htmlspecialchars($d2, ENT_QUOTES) . '%</div>';
+                return $out;
+            } elseif (str_starts_with($critType, 'C|')) {
+                $label = kraInstructionDisplayTitle($critType, $d1);
+                return '<div><strong>' . htmlspecialchars($label, ENT_QUOTES) . '</strong></div>';
+            } elseif ($critType === 'B-material') {
+                $out = '<div><strong>' . htmlspecialchars(kraInstructionDisplayTitle($critType, $d1), ENT_QUOTES) . '</strong></div>';
+                if ($d2 !== '' && $d2 !== '100') $out .= '<div class="text-muted" style="font-size:0.78rem;">Contribution: ' . htmlspecialchars($d2, ENT_QUOTES) . '%</div>';
+                return $out;
+            } elseif ($critType === 'C-thesis') {
+                return '<div><strong>' . htmlspecialchars(kraInstructionDisplayTitle($critType, $d1), ENT_QUOTES) . '</strong></div>';
+            } elseif ($critType === 'C-mentor') {
+                $competition = $d1 ?: 'Mentorship';
+                $level       = $d2 ? htmlspecialchars($d2, ENT_QUOTES) : '';
+                $placement   = $notes ? htmlspecialchars($notes, ENT_QUOTES) : '';
+                $out = '<div><strong>Mentor: Student/Team Competition Winner</strong></div>';
+                if ($competition !== 'Mentorship') $out .= '<div>' . htmlspecialchars($competition, ENT_QUOTES) . '</div>';
+                $meta = array_filter([$level, $placement]);
+                if ($meta) $out .= '<div class="text-muted" style="font-size:0.76rem;">' . implode(' &middot; ', $meta) . '</div>';
+                $out .= '<div style="font-size:0.72rem;color:#f59e0b;font-weight:600;"><i class="bi bi-exclamation-triangle me-1"></i>PENDING  -  CONFIG_MENTORSHIP_POINTS not confirmed (JC01 p.78 source gap)</div>';
+                return $out;
+            } else {
+                // Legacy format: SET%|||SEF%|||notes
+                $set   = $p[0] ?? '';
+                $sef   = $p[1] ?? '';
+                $notes = $p[2] ?? '';
+                $parts = [];
+                if ($set  !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">SET</span> <strong>' . htmlspecialchars($set, ENT_QUOTES) . '%</strong>';
+                if ($sef  !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">SEF</span> <strong>' . htmlspecialchars($sef, ENT_QUOTES) . '%</strong>';
+                if ($notes !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">Notes:</span> ' . htmlspecialchars($notes, ENT_QUOTES);
+                return implode(' &nbsp;|&nbsp; ', $parts) ?: '-';
+            }
+
+        case 'Research':
+            if (($p[0] ?? '') === 'CUSTOM') {
+                $label = $p[3] ?? 'Custom criterion';
+                $pts = number_format((float)($p[4] ?? 0), 2);
+                $detail = $p[5] ?? '';
+                $out = '<div><strong>' . htmlspecialchars($label, ENT_QUOTES) . '</strong> <span class="text-muted" style="font-size:0.75rem;">(' . $pts . ' pts)</span></div>';
+                if ($detail !== '') $out .= '<div class="text-muted" style="font-size:0.82rem;">' . htmlspecialchars($detail, ENT_QUOTES) . '</div>';
+                return $out;
+            }
+            $type    = $p[0] ?? '';
+            $dev     = $p[1] ?? '';
+            $aff     = $p[2] ?? '';
+            $area    = $p[3] ?? '';
+            $spec    = $p[4] ?? '';
+            $contrib = $p[5] ?? '';
+            $out = '';
+            if ($type  !== '') $out .= '<div><strong>' . htmlspecialchars(kraCleanEntryDisplayTitle($type), ENT_QUOTES) . '</strong></div>';
+            if ($dev   !== '') $out .= '<div class="text-muted" style="font-size:0.82rem;"><span class="text-muted" style="font-size:0.72rem;">Developers:</span> ' . htmlspecialchars($dev, ENT_QUOTES) . '</div>';
+            if ($aff   !== '') $out .= '<div class="text-muted" style="font-size:0.78rem;"><span class="text-muted" style="font-size:0.72rem;">Affiliation:</span> ' . htmlspecialchars($aff, ENT_QUOTES) . '</div>';
+            if ($area  !== '') $out .= '<div class="text-muted" style="font-size:0.78rem;"><span class="text-muted" style="font-size:0.72rem;">Area:</span> ' . htmlspecialchars($area, ENT_QUOTES) . '</div>';
+            if ($spec  !== '') $out .= '<div class="text-muted" style="font-size:0.78rem;"><span class="text-muted" style="font-size:0.72rem;">Specific Contribution:</span> ' . htmlspecialchars($spec, ENT_QUOTES) . '</div>';
+            if ($contrib !== '') $out .= '<div style="font-size:0.78rem;"><span class="text-muted">Contribution:</span> <strong>' . htmlspecialchars($contrib, ENT_QUOTES) . '%</strong></div>';
+            return $out ?: '-';
+
+        case 'Extension':
+            if (($p[0] ?? '') === 'CUSTOM') {
+                $label = $p[3] ?? 'Custom criterion';
+                $pts = number_format((float)($p[4] ?? 0), 2);
+                $detail = $p[5] ?? '';
+                $out = '<div><strong>' . htmlspecialchars($label, ENT_QUOTES) . '</strong> <span class="text-muted" style="font-size:0.75rem;">(' . $pts . ' pts)</span></div>';
+                if ($detail !== '') $out .= '<div class="text-muted" style="font-size:0.82rem;">' . htmlspecialchars($detail, ENT_QUOTES) . '</div>';
+                return $out;
+            }
+            $subtype = $p[0] ?? '';
+            $title   = $p[1] ?? '';
+            $val1    = $p[2] ?? '';
+            $val2    = $p[3] ?? '';
+            $out = '';
+            if ($subtype !== '') $out .= '<div><strong>' . htmlspecialchars(kraExtensionSubtypeDisplayTitle($subtype), ENT_QUOTES) . '</strong></div>';
+            if ($title   !== '') $out .= '<div><strong>' . htmlspecialchars($title, ENT_QUOTES) . '</strong></div>';
+            $meta = [];
+            if ($val1 !== '') $meta[] = '<span class="text-muted" style="font-size:0.78rem;">' . htmlspecialchars($val1, ENT_QUOTES) . '</span>';
+            if ($val2 !== '') $meta[] = '<span class="text-muted" style="font-size:0.78rem;">' . htmlspecialchars($val2, ENT_QUOTES) . '</span>';
+            if ($meta) $out .= '<div>' . implode(' &nbsp;&middot;&nbsp; ', $meta) . '</div>';
+            return $out ?: '-';
+
+        case 'Professional Development':
+            if (($p[0] ?? '') === 'CUSTOM') {
+                $label = $p[3] ?? 'Custom criterion';
+                $pts = number_format((float)($p[4] ?? 0), 2);
+                $detail = $p[5] ?? '';
+                $out = '<div><strong>' . htmlspecialchars($label, ENT_QUOTES) . '</strong> <span class="text-muted" style="font-size:0.75rem;">(' . $pts . ' pts)</span></div>';
+                if ($detail !== '') $out .= '<div class="text-muted" style="font-size:0.82rem;">' . htmlspecialchars($detail, ENT_QUOTES) . '</div>';
+                return $out;
+            }
+            $critType = $p[0] ?? '';
+            $desc     = $p[1] ?? '';
+            $subVal   = $p[2] ?? '';
+
+            // New format: criterion_type|||description|||sub_value
+            $critLabels = [
+                'A-org'      => ['Crit. A', 'secondary', 'Professional Org'],
+                'B-training' => ['Crit. B', 'primary',   'Training/Conference'],
+                'B-paper'    => ['Crit. B', 'primary',   'Paper Presentation'],
+                'B-degree'   => ['Crit. B', 'primary',   'Educational Qualification'],
+                'C-award'    => ['Crit. C', 'success',   'Award/Recognition'],
+            ];
+            if (isset($critLabels[$critType])) {
+                $out = '<div><strong>' . htmlspecialchars(kraProfessionalDevelopmentDisplayTitle($critType, $subVal), ENT_QUOTES) . '</strong></div>';
+                if ($desc !== '') $out .= '<div class="text-muted" style="font-size:0.82rem;">' . htmlspecialchars($desc, ENT_QUOTES) . '</div>';
+                return $out;
+            }
+            // Legacy format: credential|||degree_value
+            $cred   = $p[0] ?? '';
+            $degree = $p[1] ?? '';
+            $out = '';
+            if ($cred !== '') $out .= '<div><strong>' . htmlspecialchars($cred, ENT_QUOTES) . '</strong></div>';
+            if ($degree !== '' && $degree !== '0') {
+                $degLabel = match($degree) {
+                    '40' => 'Doctorate',
+                    '20' => "Master's Degree",
+                    '10' => 'Post-Doctoral',
+                    default => ''
+                };
+                if ($degLabel) $out .= '<div><span class="badge bg-info" style="font-size:0.72rem;">' . $degLabel . '</span></div>';
+            }
+            return $out ?: '-';
+
+        default:
+            // Fallback: just show first segment
+            return htmlspecialchars($p[0] ?? $remarks, ENT_QUOTES) ?: '-';
+    }
+}
+
+/**
+ * Renders a small ? help button with a hover popover.
+ * Usage: <?= helpBtn('Title', 'Explanation text here') ?>
+ */
+function helpBtn(string $title, string $body): string {
+    $t = htmlspecialchars($title, ENT_QUOTES);
+    $b = htmlspecialchars($body, ENT_QUOTES);
+    return '<span style="display:inline-block;vertical-align:middle;margin-left:5px;">'
+         . '<button type="button" class="help-btn" data-title="' . $t . '" data-body="' . $b . '" tabindex="0" aria-label="Help: ' . $t . '">?</button>'
+         . '</span>';
+}
+
+function statusBadge(string $status): string {
+    // User-facing labels are neutral; stored legacy workflow values are mapped here.
+    $map = [
+        'draft'          => ['#64748b', '#f1f5f9', 'Draft'],
+        'submitted'      => ['#1a3a6b', '#e8eef7', 'Submitted'],
+        'under_review'   => ['#1a3a6b', '#e8eef7', 'Under Evaluation'],
+        'talisay_review' => ['#1a3a6b', '#e8eef7', 'Under Evaluation'],
+        'approved'       => ['#1a3a6b', '#f0f4fb', 'Evaluation Complete'],
+        'reclassified'   => ['#1a3a6b', '#f0f4fb', 'Evaluation Complete'],
+        'rejected'       => ['#475569', '#f8fafc', 'Returned for Revision'],
+        'needs_revision' => ['#475569', '#f8fafc', 'Returned for Revision'],
+        'admin_rejected' => ['#475569', '#f8fafc', 'Evaluation Complete'],
+        'edit_requested' => ['#334155', '#f8fafc', 'Edit Requested'],
+    ];
+    [$tc, $bg, $label] = $map[$status] ?? ['#64748b', '#f1f5f9', ucfirst(str_replace('_', ' ', $status))];
+    return "<span style=\"display:inline-block;padding:2px 8px;font-size:0.68rem;font-weight:700;"
+         . "color:{$tc};background:{$bg};border:1px solid {$tc}33;letter-spacing:0.03em;\">{$label}</span>";
+}
+
+function facultyRanks(): array {
+    return [
+        'Instructor I', 'Instructor II', 'Instructor III',
+        'Assistant Professor I', 'Assistant Professor II',
+        'Assistant Professor III', 'Assistant Professor IV',
+        'Associate Professor I', 'Associate Professor II',
+        'Associate Professor III', 'Associate Professor IV', 'Associate Professor V',
+        'Professor I', 'Professor II', 'Professor III',
+        'Professor IV', 'Professor V', 'Professor VI',
+        'University Professor',
+    ];
+}
+
+/**
+ * Compute the potential rank/sub-rank per DBM-CHED JC No. 3, s. 2022.
+ *
+ * Steps:
+ *  1. Determine sub-rank increments from weighted score.
+ *  2. Count sub-ranks forward from current rank.
+ *  3. If increment crosses into a new rank category, re-compute using
+ *     that category's weights. If faculty qualifies (score &ge; 41 with
+ *     new weights), award the new rank; otherwise award the highest
+ *     sub-rank of the current category.
+ *  4. Flag Professor ranks for EAC; College/University Professor for CC.
+ *
+ * Returns array:
+ *   potential_rank  string   - e.g. "Associate Professor III"
+ *   flags           string[] - e.g. ['EAC accreditation required']
+ *   crossed_category bool    - true if a rank-category boundary was crossed
+ *   recomputed_score float|null - weighted score under new-category weights
+ */
+function computePotentialRank(array $raw_kra, string $current_rank, bool $has_national_award = false): array {
+    $all_ranks   = facultyRanks();
+    $current_idx = array_search($current_rank, $all_ranks);
+
+    // Unknown rank - cannot compute
+    if ($current_idx === false) {
+        return [
+            'potential_rank'    => ' - ',
+            'flags'             => ['Current rank not recognised'],
+            'crossed_category'  => false,
+            'recomputed_score'  => null,
+        ];
+    }
+
+    // Step 1 - weighted score under current rank weights
+    $result    = computeWeightedScore($raw_kra, $current_rank, $has_national_award);
+    $increment = $result['sub_rank_increment'];  // already includes award bonus if applicable
+
+    // No reclassification
+    if ($increment === 0) {
+        return [
+            'potential_rank'    => $current_rank,
+            'flags'             => ['Score below 41  -  no reclassification'],
+            'crossed_category'  => false,
+            'recomputed_score'  => null,
+        ];
+    }
+
+    // Step 2 - count sub-ranks forward (capped at end of rank list)
+    $target_idx  = min($current_idx + $increment, count($all_ranks) - 1);
+    $target_rank = $all_ranks[$target_idx];
+
+    // Step 3 - detect category crossing
+    $current_cat = getRankCategory($current_rank);
+    $target_cat  = getRankCategory($target_rank);
+    $crossed     = ($current_cat !== $target_cat);
+
+    $recomputed_score = null;
+    $flags = [];
+
+    if ($crossed) {
+        // Re-compute using the target category's weights (award bonus carries over)
+        $recomputed       = computeWeightedScore($raw_kra, $target_rank, $has_national_award);
+        $recomputed_score = $recomputed['weighted_score'];
+        $new_increment    = $recomputed['sub_rank_increment'];
+
+        if ($new_increment === 0) {
+            // Does not qualify under new-category weights - cap at highest sub-rank of current category
+            $highest_in_cat = getHighestRankInCategory($current_cat, $all_ranks);
+            $target_rank    = $highest_in_cat;
+            $flags[]        = "Score insufficient under {$target_cat} weights  -  awarded highest sub-rank of {$current_cat}";
+        } else {
+            $new_target_idx  = min($current_idx + $new_increment, count($all_ranks) - 1);
+            $target_rank     = $all_ranks[$new_target_idx];
+            $flags[]         = "Category boundary crossed  -  re-computed under {$target_cat} weights";
+        }
+    }
+
+    // Prestigious Award bonus note
+    if ($has_national_award && ($result['award_bonus'] ?? 0) > 0) {
+        $flags[] = 'Prestigious Award (Auto Sub-Rank Trigger 2) applied: +1 sub-rank bonus (JC01 s.2026 Art. IV)';
+    }
+
+    // Step 4 - accreditation flags
+    $final_cat = getRankCategory($target_rank);
+    if (in_array($final_cat, ['College Professor', 'University Professor'])) {
+        $flags[] = 'CC (Continuing Competency) certification required';
+    }
+
+    return [
+        'potential_rank'   => $target_rank,
+        'flags'            => $flags,
+        'crossed_category' => $crossed,
+        'recomputed_score' => $recomputed_score,
+    ];
+}
+
+/**
+ * Return the broad rank category for a given rank string.
+ */
+function getRankCategory(string $rank): string {
+    if (preg_match('/^Instructor/i', $rank))           return 'Instructor';
+    if (preg_match('/^Assistant Professor/i', $rank))  return 'Assistant Professor';
+    if (preg_match('/^Associate Professor/i', $rank))  return 'Associate Professor';
+    if (preg_match('/^Professor (I|II|III|IV|V|VI)$/i', $rank)) return 'Professor';
+    if (preg_match('/^University Professor/i', $rank)) return 'University Professor';
+    return 'Unknown';
+}
+
+/**
+ * Return the highest sub-rank within a given category.
+ */
+function getHighestRankInCategory(string $category, array $all_ranks): string {
+    $matches = array_filter($all_ranks, fn($r) => getRankCategory($r) === $category);
+    return $matches ? end($matches) : '';
+}
+
+// -- Confirm Delete Modal --------------------------------------
+/**
+ * Renders a reusable Bootstrap confirm-delete modal + JS helper.
+ * Call once per page (e.g. in footer). Trigger via:
+ *   confirmDelete('Are you sure?', formId)
+ */
+function renderConfirmModal(): void { ?>
+<!-- Confirm Modal -->
+<div id="confirmModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:99999;align-items:center;justify-content:center;padding:1rem;">
+  <div style="background:#fff;border-radius:16px;width:100%;max-width:480px;box-shadow:0 20px 60px rgba(0,0,0,0.25);overflow:hidden;">
+
+    <!-- Header with logo -->
+    <div style="background:#1a3a6b;padding:1.25rem 1.5rem;display:flex;align-items:center;gap:0.875rem;">
+      <img src="<?= defined('BASE_URL') ? BASE_URL . 'assets/images/logo.jpg' : (str_contains($_SERVER['PHP_SELF'] ?? '', '/pages/') ? '../assets/images/logo.jpg' : 'assets/images/logo.jpg') ?>" alt="SUCFRMS Logo"
+           style="width:40px;height:40px;border-radius:50%;object-fit:cover;border:2px solid #475569;clip-path:circle(50%);flex-shrink:0;">
+      <div>
+        <div style="color:#fff;font-weight:700;font-size:0.95rem;line-height:1.2;">SUCFRMS</div>
+        <div style="color:#bfdbfe;font-size:0.72rem;margin-top:2px;">SUC Faculty Reclassification Management System</div>
+      </div>
+    </div>
+
+    <!-- Body -->
+    <div style="padding:2rem 1.75rem 1.5rem;text-align:center;">
+      <div id="confirmModalIconWrap" style="width:68px;height:68px;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 1.25rem;">
+        <i id="confirmModalIcon" style="font-size:1.75rem;"></i>
+      </div>
+      <h5 id="confirmModalTitle" style="font-weight:700;color:#1e293b;margin-bottom:0.5rem;font-size:1.15rem;">Confirm Action</h5>
+      <p id="confirmModalMsg" style="color:#64748b;font-size:0.9rem;margin:0;line-height:1.6;">Are you sure you want to proceed?</p>
+    </div>
+
+    <!-- Divider -->
+    <div style="height:1px;background:#e2e8f0;margin:0 1.75rem;"></div>
+
+    <!-- Buttons -->
+    <div style="padding:1.25rem 1.75rem 1.75rem;display:flex;gap:0.75rem;">
+      <button type="button" id="confirmModalCancelBtn"
+              style="flex:1;padding:0.7rem 1rem;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#475569;font-weight:600;cursor:pointer;font-size:0.875rem;">
+        Cancel
+      </button>
+      <button type="button" id="confirmModalBtn"
+              style="flex:1;padding:0.7rem 1rem;border:none;border-radius:8px;color:#fff;font-weight:600;cursor:pointer;font-size:0.875rem;display:flex;align-items:center;justify-content:center;gap:0.4rem;background:#1e4d8c;">
+        <i id="confirmModalBtnIcon" class="bi bi-check-circle"></i>
+        <span id="confirmModalBtnLabel">Confirm</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+const CONFIRM_GREEN_LABELS = ['approve','activate','save','update','add','generate','unlock','set','role','submit','join','send','verify','confirm','create','assign','start','reactivate','mark','review','flag','clear flag','proceed','enable','restore','upload','print','export','change'];
+const CONFIRM_RED_LABELS   = ['delete','reject','deny','remove','logout','deactivate','revoke','disable','discard','cancel application','permanently'];
+
+function _showConfirmModal(msg, btnLabel, btnIcon, isRed, onConfirm) {
+    const modal = document.getElementById('confirmModal');
+    const wrap  = document.getElementById('confirmModalIconWrap');
+    const icon  = document.getElementById('confirmModalIcon');
+    const title = document.getElementById('confirmModalTitle');
+    const btn   = document.getElementById('confirmModalBtn');
+
+    if (isRed) {
+        wrap.style.background = '#fef2f2';
+        icon.className = 'bi ' + btnIcon;
+        icon.style.color = '#dc2626';
+        btn.style.background = '#dc2626';
+    } else {
+        wrap.style.background = '#f0fdf4';
+        icon.className = 'bi ' + btnIcon;
+        icon.style.color = '#16a34a';
+        btn.style.background = '#16a34a';
+    }
+
+    title.textContent = btnLabel;
+    document.getElementById('confirmModalMsg').textContent = msg;
+    document.getElementById('confirmModalBtnLabel').textContent = btnLabel;
+    document.getElementById('confirmModalBtnIcon').className = 'bi ' + btnIcon;
+
+    const fresh = btn.cloneNode(true);
+    btn.parentNode.replaceChild(fresh, btn);
+    fresh.addEventListener('click', function() {
+        modal.style.display = 'none';
+        onConfirm();
+    });
+
+    modal.style.display = 'flex';
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    const cancelBtn = document.getElementById('confirmModalCancelBtn');
+    if (cancelBtn) cancelBtn.addEventListener('click', function() {
+        document.getElementById('confirmModal').style.display = 'none';
+    });
+    const modal = document.getElementById('confirmModal');
+    if (modal) modal.addEventListener('click', function(e) {
+        if (e.target === this) this.style.display = 'none';
+    });
+});
+
+function confirmDelete(msg, formId, btnLabel = 'Delete', btnIcon = 'bi-trash') {
+    const labelLower = btnLabel.toLowerCase();
+    const isRed = CONFIRM_RED_LABELS.some(w => labelLower.includes(w));
+    _showConfirmModal(msg, btnLabel, btnIcon, isRed, function() {
+        document.getElementById(formId).submit();
+    });
+}
+
+function confirmAction(msg, callback, btnLabel = 'Confirm', btnIcon = 'bi-check-circle') {
+    const labelLower = btnLabel.toLowerCase();
+    const isRed = CONFIRM_RED_LABELS.some(w => labelLower.includes(w));
+    _showConfirmModal(msg, btnLabel, btnIcon, isRed, callback);
+}
+</script>
+<?php }
+
+
