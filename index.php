@@ -101,7 +101,7 @@ if (
         WHERE submission_id = ? AND application_id = ?")
         ->execute([$note ?: null, $sub_id, $app_id]);
 
-    $total_ck = (isAdmin() || isTalisayChecker())
+    $total_ck = isAdmin()
         ? 1
         : countAssignedCheckersForKra($pdo, (int)$app_row['cycle_id'], $sub_row['kra_category']);
     $total_ck = max(1, $total_ck);
@@ -139,17 +139,13 @@ if (isset($_GET['ping'])) {
 requireLogin();
 require_once 'config/db.php';
 
-// One-time cleanup: remove new_submission notifs from talisay_checker accounts
-// (these were incorrectly sent before role filtering was added)
+// One-time cleanup: remove stale talisay_checker/checker notification mismatches
 if (empty($_SESSION['_notif_cleanup_done'])) {
     try {
+        // Remove any leftover notification type mismatches from old role setup
         $pdo->exec("DELETE n FROM notifications n
             JOIN users u ON n.user_id = u.user_id
-            WHERE u.role = 'talisay_checker'
-              AND n.type IN ('new_submission', 'revision_resubmitted')");
-        $pdo->exec("DELETE n FROM notifications n
-            JOIN users u ON n.user_id = u.user_id
-            WHERE u.role = 'checker'
+            WHERE u.role = 'evaluator'
               AND n.type = 'new_talisay_submission'");
     } catch (\Exception $e) {}
     $_SESSION['_notif_cleanup_done'] = true;
@@ -169,28 +165,8 @@ if (isset($_GET['notif_action'])) {
         }
         echo json_encode(['ok' => true]);
     } elseif ($na === 'get_notifs') {
-        // Filter notification types by role so each role only sees relevant notifications
-        $role_notif = $_SESSION['role'] ?? 'faculty';
-        // new_submission = first-stage reviewer notifications only
-        // new_talisay_submission = talisay checker notifications only
-        // Build an exclusion list based on role
-        $excluded_types = [];
-        if ($role_notif === 'talisay_checker') {
-            // ITC reviewers should NOT see new_submission (that's for first-stage reviewers)
-            $excluded_types[] = 'new_submission';
-            $excluded_types[] = 'revision_resubmitted';
-        } elseif ($role_notif === 'checker') {
-            // Campus checkers should NOT see new_talisay_submission (that's for talisay only)
-            $excluded_types[] = 'new_talisay_submission';
-        }
-        if (!empty($excluded_types)) {
-            $ph = implode(',', array_fill(0, count($excluded_types), '?'));
-            $rows = $pdo->prepare("SELECT n.notif_id, n.type, n.message, n.application_id, n.submission_id, ks.kra_category, n.is_read, UNIX_TIMESTAMP(n.created_at) AS created_at FROM notifications n LEFT JOIN kra_submissions ks ON ks.submission_id = n.submission_id WHERE n.user_id=? AND n.type NOT IN ($ph) ORDER BY n.created_at DESC LIMIT 30");
-            $rows->execute(array_merge([$uid], $excluded_types));
-        } else {
-            $rows = $pdo->prepare("SELECT n.notif_id, n.type, n.message, n.application_id, n.submission_id, ks.kra_category, n.is_read, UNIX_TIMESTAMP(n.created_at) AS created_at FROM notifications n LEFT JOIN kra_submissions ks ON ks.submission_id = n.submission_id WHERE n.user_id=? ORDER BY n.created_at DESC LIMIT 30");
-            $rows->execute([$uid]);
-        }
+        $rows = $pdo->prepare("SELECT n.notif_id, n.type, n.message, n.application_id, n.submission_id, ks.kra_category, n.is_read, UNIX_TIMESTAMP(n.created_at) AS created_at FROM notifications n LEFT JOIN kra_submissions ks ON ks.submission_id = n.submission_id WHERE n.user_id=? ORDER BY n.created_at DESC LIMIT 30");
+        $rows->execute([$uid]);
         echo json_encode(['ok' => true, 'notifs' => $rows->fetchAll(PDO::FETCH_ASSOC)]);
     }
     exit;
@@ -199,14 +175,18 @@ if (isset($_GET['notif_action'])) {
 // -- Force password change if temp password is still active --
 unset($_SESSION['force_pw_change']);
 
-// -- Runtime migration: add 'inactive' to users.status ENUM --
+// -- Runtime migrations: run once per session then skip --------
+if (empty($_SESSION['_runtime_migrations_done'])) {
 try {
     $pdo->exec("ALTER TABLE users MODIFY COLUMN status ENUM('active','inactive','rejected') DEFAULT 'active'");
 } catch (\Exception $e) { /* already updated or not needed */ }
 
-// -- Runtime migration: add 'talisay_checker' to users.role ENUM --
+// -- Runtime migration: consolidate role ENUM to faculty/admin/evaluator --
 try {
-    $pdo->exec("ALTER TABLE users MODIFY COLUMN role ENUM('faculty','checker','admin','talisay_checker') DEFAULT 'faculty'");
+    // First rename any existing checker/talisay_checker/checker_faculty rows
+    $pdo->exec("UPDATE users SET role='evaluator' WHERE role IN ('checker','talisay_checker','checker_faculty')");
+    // Then update the ENUM definition
+    $pdo->exec("ALTER TABLE users MODIFY COLUMN role ENUM('faculty','admin','evaluator') DEFAULT 'faculty'");
 } catch (\Exception $e) { /* already updated */ }
 
 // -- Runtime migration: split full_name into first_name / middle_name / last_name --
@@ -265,7 +245,7 @@ try {
         id INT AUTO_INCREMENT PRIMARY KEY,
         user_id INT NOT NULL,
         type ENUM('current','previous') NOT NULL,
-        rank VARCHAR(100) NOT NULL,
+        `rank` VARCHAR(100) NOT NULL,
         mode_of_appointment VARCHAR(100) NOT NULL,
         date_of_appointment DATE DEFAULT NULL,
         employment_sector VARCHAR(150) DEFAULT NULL,
@@ -281,7 +261,7 @@ try {
         WHERE role = 'faculty'
           AND COALESCE(employee_id, '') <> ''
           AND campus_id IS NOT NULL
-          AND COALESCE(rank, '') <> ''");
+          AND COALESCE(`rank`, '') <> ''");
     $pdo->exec("UPDATE users SET email_locked = 1 WHERE role = 'faculty'");
 } catch (\Exception $e) {}
 
@@ -341,9 +321,18 @@ try {
 
 // -- Runtime migration: notifications.submission_id  -  lets a "needs_revision"
 //    notification deep-link straight to the flagged KRA entry --
+//    NOTE: ADD COLUMN IF NOT EXISTS is MariaDB-only; use information_schema check for MySQL 8.0 compat.
 try {
-    $pdo->exec("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS submission_id INT DEFAULT NULL AFTER application_id");
-} catch (\Exception $e) { /* already exists / unsupported syntax on older MySQL */ }
+    $col_check = $pdo->query("
+        SELECT COUNT(*) FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME   = 'notifications'
+          AND COLUMN_NAME  = 'submission_id'
+    ");
+    if ((int)$col_check->fetchColumn() === 0) {
+        $pdo->exec("ALTER TABLE notifications ADD COLUMN submission_id INT DEFAULT NULL AFTER application_id");
+    }
+} catch (\Exception $e) { /* notifications table may not exist yet */ }
 
 // -- Runtime migration: create help_articles table --
 try {
@@ -445,6 +434,9 @@ try {
         ADD UNIQUE KEY uq_scoring_scope_label (cycle_scope, position_scope, kra_category, criterion_label)");
 } catch (\Exception $e) { /* already exists / unsupported */ }
 
+    $_SESSION['_runtime_migrations_done'] = true;
+} // end migrations gate
+
 if (isset($_GET['action']) && $_GET['action'] === 'submit_feedback') {
     header('Content-Type: application/json');
     $subject = trim($_POST['subject'] ?? '');
@@ -530,16 +522,14 @@ if (empty($_SESSION['_notif_names_fixed'])) {
 }
 
 // Role-based allowed pages
-$faculty_pages         = ['dashboard','my_application','my_audit','profile','profile_entry','apply','score_comparison','appeals','help'];
-$checker_pages         = ['dashboard','review_queue','review_application','appeals','checker_audit','profile','help'];
-$talisay_pages         = ['dashboard','review_queue','review_application','checker_audit','profile','help'];
-$admin_pages           = ['dashboard','manage_users','audit','cycles','config','analytics','profile','all_applications','manage_campuses','view_application','appeals','help','feedback'];
+$faculty_pages   = ['dashboard','my_application','my_audit','profile','profile_entry','apply','score_comparison','appeals','help'];
+$evaluator_pages = ['dashboard','review_queue','review_application','appeals','checker_audit','profile','help'];
+$admin_pages     = ['dashboard','manage_users','audit','cycles','scoring_criteria','config','analytics','profile','all_applications','manage_campuses','view_application','appeals','help','feedback','kra_assignments','kra_assign_evaluator'];
 
 $allowed = match($role) {
-    'admin'            => $admin_pages,
-    'checker'          => $checker_pages,
-    'talisay_checker'  => $talisay_pages,
-    default            => $faculty_pages,
+    'admin'     => $admin_pages,
+    'evaluator' => $evaluator_pages,
+    default     => $faculty_pages,
 };
 
 if (!in_array($page, $allowed)) $page = 'dashboard';
@@ -547,6 +537,20 @@ if (!in_array($page, $allowed)) $page = 'dashboard';
 $faculty_profile_incomplete = ($role === 'faculty' && empty($fresh['profile_completed']));
 if ($faculty_profile_incomplete && $page !== 'profile_entry') {
     header('Location: index.php?page=profile_entry');
+    exit;
+}
+
+// Return the Auto Sub-Rank review response before rendering any page HTML.
+if ($_SERVER['REQUEST_METHOD'] === 'POST'
+    && ($_POST['action'] ?? '') === 'verify_asr_evidence'
+    && ($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '') === 'XMLHttpRequest'
+    && in_array($page, ['review_application', 'view_application'], true)) {
+    ob_start();
+    include 'includes/checker/review_application.php';
+    ob_end_clean();
+    header('Content-Type: application/json');
+    http_response_code(400);
+    echo json_encode(['ok' => false, 'error' => 'This application is not available for evidence review.']);
     exit;
 }
 
@@ -560,33 +564,46 @@ include 'includes/header.php';
         <div id="sidebarCol" class="col-auto d-none d-md-block">
             <div id="sidebarCard">
                 <!-- Profile -->
-                <div class="sidebar-profile">
-                    <?php if ($role === 'admin'): ?>
-                    <img src="assets/images/logo.jpg" alt="SUCFRMS Logo"
-                         style="width:44px;height:44px;border-radius:50%;object-fit:cover;border:2px solid var(--gold-500);clip-path:circle(50%);flex-shrink:0;">
-                    <?php else:
-                        $pic = $_SESSION['profile_pic'] ?? '';
-                        if ($pic): ?>
-                    <img src="<?= sanitize($pic) ?>" alt="Profile"
-                         style="width:44px;height:44px;border-radius:50%;object-fit:cover;border:2px solid rgba(255,255,255,.2);flex-shrink:0;">
-                    <?php else:
-                        $init_s = strtoupper(
-                            substr($_SESSION['first_name'] ?? '', 0, 1) .
-                            substr($_SESSION['last_name']  ?? '', 0, 1)
-                        ) ?: 'U';
-                    ?>
-                    <div style="width:44px;height:44px;border-radius:50%;background:linear-gradient(135deg,var(--navy-600),var(--navy-700));display:flex;align-items:center;justify-content:center;font-size:.95rem;font-weight:700;color:#fff;overflow:hidden;clip-path:circle(50%);flex-shrink:0;">
-                        <?= $init_s ?>
-                    </div>
-                    <?php endif; endif; ?>
-                    <div class="min-w-0">
-                        <p class="sidebar-profile-name text-truncate"><?= htmlspecialchars($_SESSION['full_name'] ?? '') ?></p>
-                        <span class="badge <?= $role === 'admin' ? 'bg-warning text-dark' : ($role === 'checker' ? 'bg-success' : 'bg-info') ?>">
-                            <?= ucfirst(str_replace(['talisay_checker','checker'], ['ITC Evaluator','Evaluator'], $role)) ?>
-                        </span>
+                <div style="padding:1rem;border-bottom:1px solid #e8edf4;flex-shrink:0;">
+                    <div style="display:flex;align-items:center;gap:0.75rem;">
+                        <!-- Avatar -->
+                        <?php if ($role === 'admin'): ?>
+                        <img src="assets/images/logo.jpg" alt="SUCFRMS Logo"
+                             style="width:40px;height:40px;border-radius:50%;object-fit:cover;flex-shrink:0;border:2px solid #e2e8f0;">
+                        <?php else:
+                            $pic = $_SESSION['profile_pic'] ?? '';
+                            if ($pic): ?>
+                        <img src="<?= sanitize($pic) ?>" alt="Profile"
+                             style="width:40px;height:40px;border-radius:50%;object-fit:cover;flex-shrink:0;border:2px solid #e2e8f0;">
+                        <?php else:
+                            $init_s = strtoupper(
+                                substr($_SESSION['first_name'] ?? '', 0, 1) .
+                                substr($_SESSION['last_name']  ?? '', 0, 1)
+                            ) ?: 'U';
+                        ?>
+                        <div style="width:40px;height:40px;border-radius:50%;background:#1a3a6b;display:flex;align-items:center;justify-content:center;font-size:0.88rem;font-weight:700;color:#fff;flex-shrink:0;">
+                            <?= $init_s ?>
+                        </div>
+                        <?php endif; endif; ?>
+
+                        <!-- Name + role -->
+                        <div style="min-width:0;flex:1;">
+                            <div style="font-weight:700;color:#0f172a;font-size:0.82rem;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                                <?= htmlspecialchars($_SESSION['full_name'] ?? '') ?>
+                            </div>
+                            <div style="margin-top:4px;">
+                                <?php
+                                $role_bg  = match($role) { 'admin'=>'#1a3a6b','evaluator'=>'#166534',default=>'#1e4d8c' };
+                                $role_lbl = match($role) { 'admin'=>'Administrator','evaluator'=>'Evaluator',default=>'Faculty' };
+                                ?>
+                                <span style="display:inline-block;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;
+                                             padding:2px 7px;background:<?= $role_bg ?>;color:#fff;">
+                                    <?= $role_lbl ?>
+                                </span>
+                            </div>
+                        </div>
                     </div>
                 </div>
-                <div class="sidebar-divider"></div>
                 <div class="sidebar-nav-scroll">
                 <nav class="nav flex-column">
                     <?php if (!($role === 'faculty' && $faculty_profile_incomplete)): ?>
@@ -597,12 +614,20 @@ include 'includes/header.php';
 
                     <?php if ($role === 'faculty'): ?>
                     <?php if ($faculty_profile_incomplete): ?>
-                    <div style="padding:0.7rem 0.75rem;margin-bottom:0.55rem;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:rgba(255,255,255,0.78);font-size:0.72rem;line-height:1.45;">
-                        <i class="bi bi-lock-fill me-1"></i>Please complete your profile to continue.
+                    <div style="padding:0.6rem 0.75rem;margin-bottom:0.35rem;">
+                        <div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;
+                                    color:rgba(255,255,255,0.35);margin-bottom:0.5rem;">Setup</div>
+                        <a href="?page=profile_entry"
+                           class="nav-link sidebar-link <?= $page==='profile_entry'?'active':'' ?>"
+                           style="display:flex;align-items:center;gap:0.5rem;">
+                            <i class="bi bi-person-lines-fill me-1"></i>Profile Entry
+                        </a>
+                        <div style="margin-top:0.6rem;padding:0.55rem 0.65rem;background:rgba(255,255,255,0.06);
+                                    border:1px solid rgba(255,255,255,0.1);border-radius:6px;
+                                    color:rgba(255,255,255,0.55);font-size:0.7rem;line-height:1.45;">
+                            <i class="bi bi-lock-fill me-1"></i>Complete your profile to unlock all features.
+                        </div>
                     </div>
-                    <a href="?page=profile_entry" class="nav-link sidebar-link <?= $page==='profile_entry'?'active':'' ?>">
-                        <i class="bi bi-person-lines-fill me-2"></i>Profile Entry
-                    </a>
                     <?php else: ?>
                     <div class="sidebar-section-label">My Application</div>
                     <a href="?page=my_application" class="nav-link sidebar-link <?= $page==='my_application'?'active':'' ?>">
@@ -623,26 +648,13 @@ include 'includes/header.php';
                     </a>
                     <?php endif; ?>
 
-                    <?php elseif ($role === 'checker'): ?>
+                    <?php elseif ($role === 'evaluator'): ?>
                     <div class="sidebar-section-label">Review</div>
                     <a href="?page=review_queue" class="nav-link sidebar-link <?= $page==='review_queue'?'active':'' ?>">
                         <i class="bi bi-inbox me-2"></i>Review Queue
                     </a>
                     <a href="?page=appeals" class="nav-link sidebar-link <?= $page==='appeals'?'active':'' ?>">
                         <i class="bi bi-chat-square-text me-2"></i>Appeals
-                    </a>
-                    <div class="sidebar-section-label">Account</div>
-                    <a href="?page=checker_audit" class="nav-link sidebar-link <?= $page==='checker_audit'?'active':'' ?>">
-                        <i class="bi bi-clock-history me-2"></i>My Activity Log
-                    </a>
-                    <a href="?page=profile" class="nav-link sidebar-link <?= $page==='profile'?'active':'' ?>">
-                        <i class="bi bi-person me-2"></i>Profile
-                    </a>
-
-                    <?php elseif ($role === 'talisay_checker'): ?>
-                    <div class="sidebar-section-label">ITC Review</div>
-                    <a href="?page=review_queue" class="nav-link sidebar-link <?= $page==='review_queue'?'active':'' ?>">
-                        <i class="bi bi-inbox-fill me-2"></i>Review Queue
                     </a>
                     <div class="sidebar-section-label">Account</div>
                     <a href="?page=checker_audit" class="nav-link sidebar-link <?= $page==='checker_audit'?'active':'' ?>">
@@ -665,7 +677,7 @@ include 'includes/header.php';
                         <i class="bi bi-graph-up me-2"></i>Analytics
                     </a>
                     <?php
-                    $setup_pages = ['manage_users','manage_campuses','cycles','config'];
+                    $setup_pages = ['manage_users','manage_campuses','cycles','scoring_criteria','config','kra_assignments','kra_assign_evaluator'];
                     $setup_active = in_array($page, $setup_pages);
                     ?>
                     <div class="sidebar-group <?= $setup_active ? 'open' : '' ?>">
@@ -677,10 +689,16 @@ include 'includes/header.php';
                         </button>
                         <div class="sidebar-submenu">
                             <a href="?page=cycles" class="nav-link sidebar-link sidebar-sublink <?= in_array($page,['cycles','config'])?'active':'' ?>">
-                                <i class="bi bi-calendar-range me-2"></i>Cycles &amp; Criteria
+                                <i class="bi bi-calendar-range me-2"></i>Cycles
+                            </a>
+                            <a href="?page=scoring_criteria" class="nav-link sidebar-link sidebar-sublink <?= $page==='scoring_criteria'?'active':'' ?>">
+                                <i class="bi bi-sliders2 me-2"></i>Scoring Criteria
                             </a>
                             <a href="?page=manage_users" class="nav-link sidebar-link sidebar-sublink <?= $page==='manage_users'?'active':'' ?>">
                                 <i class="bi bi-people-fill me-2"></i>Manage Users
+                            </a>
+                            <a href="?page=kra_assignments" class="nav-link sidebar-link sidebar-sublink <?= in_array($page,['kra_assignments','kra_assign_evaluator'])?'active':'' ?>">
+                                <i class="bi bi-ui-checks-grid me-2"></i>KRA Assignments
                             </a>
                             <a href="?page=manage_campuses" class="nav-link sidebar-link sidebar-sublink <?= $page==='manage_campuses'?'active':'' ?>">
                                 <i class="bi bi-geo-alt me-2"></i>Manage Campuses
@@ -695,7 +713,7 @@ include 'includes/header.php';
                         <?php
                         try {
                             $fb_new = $pdo->query("SELECT COUNT(*) FROM feedback_submissions WHERE status='new'")->fetchColumn();
-                            if ($fb_new > 0) echo '<span class="badge rounded-pill ms-auto" style="background:#334155;font-size:0.65rem;padding:0.25em 0.5em;">'.$fb_new.'</span>';
+                            if ($fb_new > 0) echo '<span class="badge rounded-pill ms-auto" style="background:#334155;color:#fff;font-size:0.65rem;padding:0.25em 0.5em;">'.$fb_new.'</span>';
                         } catch(\Exception $e) {}
                         ?>
                     </a>
@@ -709,18 +727,6 @@ include 'includes/header.php';
 
                 <div class="sidebar-bottom">
                     <div class="sidebar-divider" style="margin:0 0 .75rem;"></div>
-                    <?php if ($role === 'faculty'): ?>
-                    <a href="pages/portal.php"
-                       style="display:flex;align-items:center;gap:0.4rem;padding:0.3rem 0.75rem;
-                              margin-bottom:0.4rem;border-radius:6px;text-decoration:none;
-                              font-size:0.7rem;font-weight:600;color:#64748b;
-                              transition:background 0.15s,color 0.15s;"
-                       onmouseover="this.style.background='rgba(0,0,0,0.04)';this.style.color='#1a3a6b'"
-                       onmouseout="this.style.background='';this.style.color='#64748b'">
-                        <i class="bi bi-grid-1x2" style="font-size:0.7rem;"></i>
-                        My Portal
-                    </a>
-                    <?php endif; ?>
                     <div class="sidebar-clock">
                         <span class="sidebar-live"><span class="sidebar-live-dot"></span>Live</span>
                         <div class="sidebar-datetime">
@@ -729,10 +735,23 @@ include 'includes/header.php';
                         </div>
                     </div>
                     <div class="sidebar-version">SUCFRMS v1.0</div>
-                    <a href="#" class="sidebar-signout"
-                       onclick="document.getElementById('logout-modal').style.display='flex'; return false;">
-                        <i class="bi bi-box-arrow-right"></i>Sign Out
-                    </a>
+                    <div style="display:flex;gap:0.4rem;padding:0 0.1rem;">
+                        <?php if ($role === 'faculty'): ?>
+                        <a href="pages/portal.php"
+                           style="flex:1;display:flex;align-items:center;justify-content:center;gap:0.3rem;
+                                  padding:0.4rem 0.5rem;font-size:0.72rem;font-weight:600;
+                                  background:transparent;border:1px solid #e2e8f0;color:#64748b;
+                                  text-decoration:none;transition:all 0.15s;"
+                           onmouseover="this.style.background='#f1f5f9';this.style.color='#1a3a6b';this.style.borderColor='#1a3a6b'"
+                           onmouseout="this.style.background='transparent';this.style.color='#64748b';this.style.borderColor='#e2e8f0'">
+                            <i class="bi bi-grid-1x2" style="font-size:0.75rem;"></i> Portal
+                        </a>
+                        <?php endif; ?>
+                        <a href="#" class="sidebar-signout" style="flex:1;"
+                           onclick="document.getElementById('logout-modal').style.display='flex'; return false;">
+                            <i class="bi bi-box-arrow-right"></i>Sign Out
+                        </a>
+                    </div>
                 </div>
             </div>
         </div>
@@ -742,8 +761,8 @@ include 'includes/header.php';
             <?php showFlash(); ?>
             <?php switch ($page) {
                 case 'dashboard':
-                    $dash_role = $role === 'talisay_checker' ? 'talisay_checker' : $role;
-                    include 'includes/dashboards/' . $dash_role . '_dashboard.php';
+                    $dash_file = $role === 'evaluator' ? 'checker' : $role;
+                    include 'includes/dashboards/' . $dash_file . '_dashboard.php';
                     break;
                 case 'my_application':
                     include 'includes/faculty/my_application.php';
@@ -776,6 +795,12 @@ include 'includes/header.php';
                 case 'manage_users':
                     include 'admin/manage_users.php';
                     break;
+                case 'kra_assignments':
+                    include 'admin/kra_assignments.php';
+                    break;
+                case 'kra_assign_evaluator':
+                    include 'admin/kra_assign_evaluator.php';
+                    break;
                 case 'manage_campuses':
                     include 'admin/manage_campuses.php';
                     break;
@@ -784,6 +809,9 @@ include 'includes/header.php';
                     break;
                 case 'cycles':
                     include 'admin/cycles.php';
+                    break;
+                case 'scoring_criteria':
+                    include 'admin/scoring_criteria.php';
                     break;
                 case 'config':
                     // Redirect legacy config links to the merged cycles module

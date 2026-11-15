@@ -9,7 +9,7 @@ requireLogin();
 require_once __DIR__ . '/../config/db.php';
 header('Content-Type: text/html; charset=UTF-8');
 $target_uid = $_SESSION['user_id'];
-if ((isAdmin() || isChecker()) && !empty($_GET['uid'])) {
+if ((isAdmin() || isEvaluator()) && !empty($_GET['uid'])) {
     $target_uid = intval($_GET['uid']);
 }
 
@@ -65,8 +65,8 @@ foreach ($all_subs as $s) $subs_by_cat[$s['kra_category']][] = $s;
 $kra_info = [
     'Instruction'              => ['num'=>'I',   'max'=>100, 'label'=>'Teaching Effectiveness'],
     'Research'                 => ['num'=>'II',  'max'=>100, 'label'=>'Research, Innovation & Creative Work'],
-    'Extension'                => ['num'=>'III', 'max'=>120, 'label'=>'Extension Services'],
-    'Professional Development' => ['num'=>'IV',  'max'=>120, 'label'=>'Professional Development'],
+    'Extension'                => ['num'=>'III', 'max'=>100, 'label'=>'Extension Services'],
+    'Professional Development' => ['num'=>'IV',  'max'=>100, 'label'=>'Professional Development'],
 ];
 
 $rank   = $faculty['rank'] ?? '';
@@ -172,7 +172,7 @@ body { font-family:'Times New Roman', Times, serif; font-size:11pt; color:#000; 
         <?php
         $back_url = '../index.php?page=dashboard';
         if (isAdmin()) $back_url = '../index.php?page=view_application&id=' . $app_id;
-        elseif (isChecker()) $back_url = '../index.php?page=review_application&id=' . $app_id;
+        elseif (isEvaluator()) $back_url = '../index.php?page=review_application&id=' . $app_id;
         ?>
         <a href="<?= $back_url ?>" class="btn btn-outline">&larr; Back</a>
         <a href="kra_pdf.php?uid=<?= $target_uid ?>&cycle_id=<?= $cycle['cycle_id'] ?>" class="btn btn-white">&#128424; Print ISS</a>

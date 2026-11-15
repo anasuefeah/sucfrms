@@ -40,7 +40,7 @@ catch (\Exception $e) {
 // The tab recalculates on every page view via AutoSubRankCalculator.
 
 // Faculty info
-$fac = $pdo->prepare("SELECT full_name, first_name, last_name, middle_name, rank, profile_pic FROM users WHERE user_id=?");
+$fac = $pdo->prepare("SELECT full_name, first_name, last_name, middle_name, `rank`, profile_pic FROM users WHERE user_id=?");
 $fac->execute([$uid]);
 $fac         = $fac->fetch();
 $full_name = formatDisplayName($fac);
@@ -83,36 +83,20 @@ if ($active_cycle) {
     }
 }
 
-// Document completeness check  -  presence only, not authenticity
-// Count entries that have at least one attached file (evidence presence only)
-$entries_with_files_q = $pdo->prepare("
-    SELECT COUNT(DISTINCT pe.entry_id)
-    FROM pre_eval_entries pe
-    WHERE pe.user_id = ?
-      AND EXISTS (SELECT 1 FROM pre_eval_files pf WHERE pf.entry_id = pe.entry_id)
-");
-$entries_with_files_q->execute([$uid]);
-$entries_with_files  = (int)$entries_with_files_q->fetchColumn();
-$entries_total_q = $pdo->prepare("SELECT COUNT(*) FROM pre_eval_entries WHERE user_id=?");
-$entries_total_q->execute([$uid]);
-$entry_count_total  = (int)$entries_total_q->fetchColumn();
-$docs_completeness_pct = $entry_count_total > 0
-    ? min(100, (int)round(($entries_with_files / $entry_count_total) * 100))
-    : 0;
-$documents_present = ($entry_count_total > 0 && $entries_with_files === $entry_count_total);
+// Current scores — two-pass Orchestrator-aligned engine (includes/pre_eval_scoring.php)
+require_once __DIR__ . '/../includes/pre_eval_scoring.php';
 
-// Current scores
-$sc = $pdo->prepare("SELECT kra_category, SUM(computed_points) as total FROM pre_eval_entries WHERE user_id=? GROUP BY kra_category");
-$sc->execute([$uid]);
-$raw = [];
-foreach ($sc->fetchAll() as $r) $raw[$r['kra_category']] = (float)$r['total'];
-
-$score_result = computeWeightedScore($raw, $rank);
-$weighted     = $score_result['weighted_score'];
-$sub_rank     = $score_result['sub_rank_increment'];
-$weights      = $score_result['weights'];
-$potential    = computePotentialRank($raw, $rank);
-$pot_rank     = $potential['potential_rank'];
+$_pe_result = peAggregateScores($pdo, $uid, $rank);
+$weighted   = $_pe_result['weighted_score'];
+$sub_rank   = $_pe_result['sub_rank_increment'];
+$weights    = $_pe_result['weights'];
+$pot_rank   = $_pe_result['pot_rank'];
+$raw = [
+    'Instruction'             => $_pe_result['kra1'],
+    'Research'                => $_pe_result['kra2'],
+    'Extension'               => $_pe_result['kra3'],
+    'Professional Development'=> $_pe_result['kra4'],
+];
 
 $kra_cats = ['Instruction','Research','Extension','Professional Development'];
 $kra_tabs = [
@@ -143,17 +127,50 @@ foreach ($kra_tabs as $slug => $t) {
     }
 }
 
-// Evidence guide  -  load ALL criteria for all KRA categories
+// Evidence guide — load criteria for the active cycle + faculty rank, fall back to globals
 $all_criteria = [];
 try {
-    $cg = $pdo->query("
-        SELECT kra_category, criterion_label, max_points, description
-        FROM scoring_criteria
-        WHERE cycle_id IS NULL AND position_rank IS NULL AND is_active = 1
-        ORDER BY kra_category, CASE WHEN criterion_label LIKE 'Criterion A%' THEN 1 WHEN criterion_label LIKE 'Criterion B%' THEN 2 WHEN criterion_label LIKE 'Criterion C%' THEN 3 WHEN criterion_label LIKE 'Criterion D%' THEN 4 ELSE 5 END ASC, max_points DESC, criterion_label ASC
-    ");
-    foreach ($cg->fetchAll() as $row) {
-        $all_criteria[$row['kra_category']][] = $row;
+    // Determine active cycle and faculty rank for the most specific criteria lookup
+    $pe_cycle = $pdo->query("SELECT cycle_id FROM cycles WHERE status='open' ORDER BY created_at DESC LIMIT 1")->fetch();
+    $pe_cycle_id = $pe_cycle ? (int)$pe_cycle['cycle_id'] : 0;
+    $pe_rank = $_SESSION['rank'] ?? '';
+
+    if ($pe_cycle_id && $pe_rank) {
+        // Try cycle + position-specific first
+        $cg = $pdo->prepare("
+            SELECT kra_category, criterion_label, max_points, description
+            FROM scoring_criteria
+            WHERE cycle_id=? AND position_rank=? AND is_active=1
+            ORDER BY kra_category,
+                CASE WHEN criterion_label LIKE 'Criterion A%' THEN 1
+                     WHEN criterion_label LIKE 'Criterion B%' THEN 2
+                     WHEN criterion_label LIKE 'Criterion C%' THEN 3
+                     WHEN criterion_label LIKE 'Criterion D%' THEN 4 ELSE 5 END ASC,
+                max_points DESC, criterion_label ASC
+        ");
+        $cg->execute([$pe_cycle_id, $pe_rank]);
+        $rows = $cg->fetchAll();
+        foreach ($rows as $row) $all_criteria[$row['kra_category']][] = $row;
+    }
+
+    // Fall back to globals for any KRA category with no cycle-specific rows
+    $missing_cats = array_diff(['Instruction','Research','Extension','Professional Development'], array_keys($all_criteria));
+    if ($missing_cats || !$all_criteria) {
+        $placeholders = implode(',', array_fill(0, count($missing_cats ?: ['Instruction','Research','Extension','Professional Development']), '?'));
+        $cg2 = $pdo->prepare("
+            SELECT kra_category, criterion_label, max_points, description
+            FROM scoring_criteria
+            WHERE cycle_id IS NULL AND position_rank IS NULL AND is_active=1
+              AND kra_category IN ({$placeholders})
+            ORDER BY kra_category,
+                CASE WHEN criterion_label LIKE 'Criterion A%' THEN 1
+                     WHEN criterion_label LIKE 'Criterion B%' THEN 2
+                     WHEN criterion_label LIKE 'Criterion C%' THEN 3
+                     WHEN criterion_label LIKE 'Criterion D%' THEN 4 ELSE 5 END ASC,
+                max_points DESC, criterion_label ASC
+        ");
+        $cg2->execute($missing_cats ?: ['Instruction','Research','Extension','Professional Development']);
+        foreach ($cg2->fetchAll() as $row) $all_criteria[$row['kra_category']][] = $row;
     }
 } catch (\Exception $e) { $all_criteria = []; }
 ?>
@@ -188,26 +205,48 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f3f8;min-height:100vh
 .pg{display:flex;min-height:calc(100vh - 48px);}
 
 /* Score sidebar */
-.sidebar{width:200px;flex-shrink:0;background:#fff;border-right:1px solid #e2e8f0;padding:.85rem .85rem;position:sticky;top:48px;height:calc(100vh - 48px);overflow-y:auto;display:flex;flex-direction:column;gap:.6rem;}
-.sb-heading{font-size:.58rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.1em;}
-.score-big{text-align:center;padding:.6rem 0;border-bottom:1px solid #f1f5f9;border-top:1px solid #f1f5f9;}
-.score-num{font-size:1.9rem;font-weight:800;line-height:1;}
-.score-sub{font-size:.6rem;color:#94a3b8;margin-top:2px;}
-.score-min{font-size:.6rem;font-weight:600;margin-top:3px;}
+.sidebar{width:230px;flex-shrink:0;background:#1a2744;border-right:none;padding:.6rem .65rem;position:sticky;top:48px;height:calc(100vh - 48px);overflow:hidden;display:flex;flex-direction:column;gap:.4rem;}
+
+/* Sidebar boxes */
+.sb-box{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);padding:.5rem .6rem;}
+
+/* Nav links */
+.sb-nav-link{display:flex;align-items:center;gap:.45rem;padding:.38rem .5rem;text-decoration:none;font-size:.76rem;font-weight:600;color:rgba(255,255,255,.45);transition:background .15s,color .15s;}
+.sb-nav-link:hover{background:rgba(255,255,255,.06);color:rgba(255,255,255,.85);}
+.sb-nav-link.active{background:rgba(255,255,255,.1);color:#fff;border-left:2px solid rgba(255,255,255,.4);}
+.sb-nav-link i{font-size:.8rem;}
+
+/* Score block */
+.sb-heading{font-size:.54rem;font-weight:700;color:rgba(255,255,255,.3);text-transform:uppercase;letter-spacing:.14em;margin-bottom:.3rem;}
+.score-big{text-align:center;padding:.3rem 0 .35rem;}
+.score-num{font-size:1.75rem;font-weight:700;line-height:1;color:#fff;letter-spacing:-.5px;}
+.score-sub{font-size:.57rem;color:rgba(255,255,255,.35);margin-top:2px;}
+.score-min{font-size:.6rem;font-weight:600;margin-top:3px;color:rgba(255,255,255,.55);}
+
+/* KRA rows */
+.sb-kra-list{display:flex;flex-direction:column;gap:.38rem;}
 .kra-row{display:flex;flex-direction:column;gap:2px;}
-.kra-row-head{display:flex;justify-content:space-between;}
-.kra-row-label{font-size:.65rem;color:#1e293b;font-weight:600;}
-.kra-row-pts{font-size:.65rem;font-weight:700;color:#1a3a6b;}
-.kra-bar{height:3px;background:#f1f5f9;overflow:hidden;}
-.kra-bar-fill{height:100%;transition:width .4s;}
-.kra-row-raw{font-size:.58rem;color:#94a3b8;}
-.rank-box{background:#f8fafc;border:1px solid #e2e8f0;padding:.6rem;}
-.rank-box-label{font-size:.58rem;color:#94a3b8;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;}
-.rank-cur{font-size:.75rem;font-weight:700;color:#1a3a6b;}
-.rank-arrow{color:#94a3b8;margin:0 3px;font-size:.68rem;}
-.rank-pot{font-size:.75rem;font-weight:700;color:#1e4d8c;}
-.increment-badge{display:inline-flex;align-items:center;gap:3px;background:#f0f4fb;border:1px solid #bfdbfe;padding:2px 6px;font-size:.62rem;font-weight:700;color:#1e4d8c;margin-top:.35rem;}
-.sb-note{font-size:.58rem;color:#94a3b8;line-height:1.5;padding-top:.6rem;border-top:1px solid #f1f5f9;margin-top:auto;}
+.kra-row-head{display:flex;justify-content:space-between;align-items:center;}
+.kra-row-label{font-size:.64rem;color:rgba(255,255,255,.55);font-weight:500;}
+.kra-row-pts{font-size:.64rem;font-weight:700;color:rgba(255,255,255,.85);}
+.kra-bar{height:2px;background:rgba(255,255,255,.08);overflow:hidden;}
+.kra-bar-fill{height:100%;background:rgba(255,255,255,.35);transition:width .4s;}
+.kra-row-raw{font-size:.56rem;color:rgba(255,255,255,.3);}
+
+/* Rank box */
+.rank-box{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);padding:.5rem .6rem;}
+.rank-box-label{font-size:.54rem;font-weight:700;color:rgba(255,255,255,.3);text-transform:uppercase;letter-spacing:.1em;margin-bottom:.4rem;}
+.rank-row{display:flex;justify-content:space-between;align-items:center;padding:.25rem 0;border-bottom:1px solid rgba(255,255,255,.06);}
+.rank-row:last-of-type{border-bottom:none;}
+.rank-row-key{font-size:.58rem;color:rgba(255,255,255,.35);font-weight:600;text-transform:uppercase;letter-spacing:.06em;}
+.rank-row-val{font-size:.72rem;font-weight:700;color:#fff;text-align:right;}
+.rank-row-val.dim{color:rgba(255,255,255,.5);font-weight:500;}
+.increment-badge{display:flex;align-items:center;gap:4px;margin-top:.35rem;font-size:.6rem;font-weight:600;color:rgba(255,255,255,.45);}
+
+/* Note & sign out */
+.sb-note{font-size:.55rem;color:rgba(255,255,255,.25);line-height:1.5;margin-top:auto;}
+.sb-signout{display:flex;align-items:center;justify-content:center;gap:.45rem;width:100%;padding:.45rem .6rem;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.05);color:rgba(255,255,255,.5);font-size:.74rem;font-weight:600;cursor:pointer;transition:background .15s,color .15s,border-color .15s;}
+.sb-signout:hover{background:rgba(255,255,255,.1);color:#fff;border-color:rgba(255,255,255,.25);}
 
 /* Main */
 .main{flex:1;min-width:0;padding:.9rem 1.25rem 3rem;}
@@ -304,7 +343,7 @@ textarea.fi{resize:vertical;min-height:52px;}
 /* Buttons */
 .btn-p{background:#1a3a6b;color:#fff;border:none;padding:.4rem .9rem;font-size:.75rem;font-weight:600;cursor:pointer;}
 .btn-p:hover{background:#1e4d8c;}
-.btn-s{background:#fff;color:#1a3a6b;border:1px solid #1a3a6b;padding:.4rem .9rem;font-size:.75rem;font-weight:600;cursor:pointer;}
+.btn-s{background:#fff;color:#1a3a6b;border:1px solid #1a3a6b;padding:.4rem .9rem;font-size:.75rem;font-weight:600;cursor:pointer;font-family:inherit;}
 .btn-s:hover{background:#f0f4fb;}
 .btn-xs{padding:2px 8px;border:1px solid;font-size:.65rem;font-weight:600;cursor:pointer;background:#fff;}
 .btn-attach{border-color:#1a3a6b;color:#1a3a6b;}
@@ -314,7 +353,7 @@ textarea.fi{resize:vertical;min-height:52px;}
 
 @media(max-width:900px){
     .panels{grid-template-columns:1fr;}
-    .sidebar{width:100%;height:auto;position:static;border-right:none;border-bottom:1px solid #e2e8f0;}
+    .sidebar{width:100%;height:auto;position:static;border-right:none;border-bottom:1px solid rgba(255,255,255,.1);}
     .pg{flex-direction:column;}
 }
 @media(max-width:600px){
@@ -361,6 +400,7 @@ textarea.fi{resize:vertical;min-height:52px;}
 <body>
 
 <!-- Navbar -->
+<?php $pe_view = $_GET['view'] ?? 'self'; ?>
 <nav class="pnav">
     <img src="../assets/images/logo.jpg" class="pnav-logo" alt="">
     <span class="pnav-title">SUC Faculty Reclassification Management System (SUCFRMS)</span>
@@ -384,21 +424,38 @@ textarea.fi{resize:vertical;min-height:52px;}
 
 <!-- -- Score sidebar -- -->
 <aside class="sidebar">
-    <div class="sb-heading">Score Estimate</div>
+
+    <!-- Nav links -->
+    <div class="sb-box" style="display:flex;flex-direction:column;gap:2px;">
+        <a href="pre_evaluation.php"
+           class="sb-nav-link <?= $pe_view !== 'analytics' ? 'active' : '' ?>">
+            <i class="bi bi-pencil-square"></i> Self Assessment
+        </a>
+        <a href="pre_evaluation.php?view=analytics"
+           class="sb-nav-link <?= $pe_view === 'analytics' ? 'active' : '' ?>">
+            <i class="bi bi-bar-chart-line"></i> Analytics
+        </a>
+    </div>
+
+    <!-- Score box -->
+    <div class="sb-box">
+        <div class="sb-heading">Score Estimate</div>
 
     <div class="score-big">
-        <div class="score-num" id="sbScore"
-             style="color:<?= $weighted>=41?'#1e4d8c':($weighted>0?'#475569':'#94a3b8') ?>">
+        <div class="score-num" id="sbScore" style="color:#fff;">
             <?= number_format($weighted,2) ?>
         </div>
         <div class="score-sub">Weighted / 100</div>
-        <div class="score-min" id="sbMinNote"
-             style="color:<?= $weighted>=41?'#1e4d8c':'#334155' ?>">
-            <?= $weighted>=41?'OK Meets minimum (41)':'X Below minimum (41)' ?>
+        <div class="score-min" id="sbMinNote" style="color:rgba(255,255,255,.55);">
+            <?= $weighted>=41?'✓ Meets minimum (41)':'✗ Below minimum (41)' ?>
         </div>
-    </div>
+    </div><!-- /.score-big -->
+    </div><!-- /.sb-box score -->
 
-    <div>
+    <!-- KRA rows box -->
+    <div class="sb-box">
+        <div class="sb-heading">KRA Breakdown</div>
+        <div class="sb-kra-list">
     <?php foreach ($kra_tabs as $slug => $t):
         if (!in_array($slug, ['instruction','research','extension','profdev'])) continue;
         $rpts  = min($t['max'], $raw[$t['cat']] ?? 0);
@@ -413,41 +470,391 @@ textarea.fi{resize:vertical;min-height:52px;}
         <div class="kra-bar">
             <div class="kra-bar-fill" style="width:<?= $pct ?>%;background:<?= $t['color'] ?>;"></div>
         </div>
-        <div class="kra-row-raw"><?= number_format($rpts,1) ?>/<?= $t['max'] ?> | <?= round($weights[$t['cat']]*100) ?>% wt</div>
     </div>
     <?php endforeach; ?>
-    </div>
+        </div><!-- /.sb-kra-list -->
+    </div><!-- /.sb-box kra -->
 
     <div class="rank-box">
         <div class="rank-box-label">Rank Projection</div>
-        <div style="display:flex;align-items:center;gap:3px;flex-wrap:wrap;">
-            <span class="rank-cur" id="sbCurRank"><?= sanitize($rank?:' - ') ?></span>
-            <?php if ($pot_rank && $pot_rank !== $rank && $pot_rank !== ' - '): ?>
-            <span class="rank-arrow">-></span>
-            <span class="rank-pot" id="sbPotRank"><?= sanitize($pot_rank) ?></span>
-            <?php endif; ?>
+        <div class="rank-row">
+            <span class="rank-row-key">Current</span>
+            <span class="rank-row-val dim" id="sbCurRank"><?= sanitize($rank?:'-') ?></span>
+        </div>
+        <div class="rank-row">
+            <span class="rank-row-key">Projected</span>
+            <span class="rank-row-val" id="sbPotRank">
+                <?php if ($pot_rank && $pot_rank !== $rank && $pot_rank !== ' - '): ?>
+                    <?= sanitize($pot_rank) ?>
+                <?php else: ?>
+                    <?= sanitize($rank?:'-') ?>
+                <?php endif; ?>
+            </span>
         </div>
         <?php if ($sub_rank > 0): ?>
         <div class="increment-badge"
-             title="Sub-rank = the number of steps forward in the rank scale your weighted score earns (e.g. +2 means you move up 2 positions from your current rank)."
+             title="Sub-rank = the number of steps forward in the rank scale your weighted score earns."
              style="cursor:help;">
+            <i class="bi bi-graph-up-arrow" style="font-size:.6rem;"></i>
             +<?= $sub_rank ?> sub-rank<?= $sub_rank>1?'s':'' ?>
-            <i class="bi bi-question-circle" style="font-size:.58rem;opacity:.65;margin-left:2px;"></i>
         </div>
+        <?php
+        $asr = $_pe_result['auto_subrank'] ?? [];
+        if (!empty($asr['applied'])): ?>
+        <div style="margin-top:.3rem;font-size:.6rem;font-weight:600;color:rgba(255,255,255,.45);letter-spacing:.04em;text-transform:uppercase;">
+            Auto Sub-Rank active
+        </div>
+        <?php endif; ?>
         <?php elseif ($weighted > 0): ?>
-        <div class="below-note" style="font-size:.6rem;color:#475569;margin-top:.3rem;font-weight:600;">Score below 41</div>
+        <div class="increment-badge"><i class="bi bi-dash"></i> Score below 41</div>
         <?php endif; ?>
     </div>
 
     <div class="sb-note">
-        <i class="bi bi-info-circle me-1"></i>Estimate only - final scores are reviewed by your evaluator.
+        <i class="bi bi-info-circle"></i> Estimate only — final scores are reviewed by your evaluator.
     </div>
+
+    <button onclick="document.getElementById('pe-logout-modal').style.display='flex'"
+            class="sb-signout">
+        <i class="bi bi-box-arrow-right" style="font-size:0.88rem;"></i> Sign Out
+    </button>
 </aside>
+
+<!-- ── Sign Out Confirmation Modal ────────────────────────────────────── -->
+<div id="pe-logout-modal"
+     style="display:none;position:fixed;inset:0;background:rgba(15,23,42,0.55);
+            z-index:100003;align-items:center;justify-content:center;">
+    <div style="background:#fff;border-radius:0;width:100%;max-width:360px;
+                margin:1rem;box-shadow:0 8px 40px rgba(0,0,0,0.18);overflow:hidden;border:1px solid #e2e8f0;">
+
+        <!-- Header -->
+        <div style="background:#1a3a6b;padding:0.85rem 1.1rem;display:flex;align-items:center;gap:0.6rem;">
+            <img src="../assets/images/logo.jpg" alt=""
+                 style="width:28px;height:28px;object-fit:cover;border-radius:50%;border:1.5px solid rgba(255,255,255,0.25);flex-shrink:0;">
+            <div>
+                <div style="color:#fff;font-weight:700;font-size:0.78rem;line-height:1.2;">SUCFRMS</div>
+                <div style="color:#93c5fd;font-size:0.62rem;">SUC Faculty Reclassification Management System</div>
+            </div>
+        </div>
+
+        <!-- Body -->
+        <div style="padding:1.35rem 1.25rem 1rem;">
+            <div style="font-weight:700;color:#1e293b;font-size:0.88rem;margin-bottom:5px;">Sign Out</div>
+            <p style="color:#64748b;font-size:0.78rem;margin:0;line-height:1.55;">
+                Are you sure you want to sign out of your account?
+            </p>
+        </div>
+
+        <!-- Buttons -->
+        <div style="padding:0 1.25rem 1.1rem;display:flex;gap:0.5rem;">
+            <button onclick="document.getElementById('pe-logout-modal').style.display='none'"
+                    style="flex:1;padding:0.5rem;border:1px solid #e2e8f0;border-radius:0;
+                           background:#fff;color:#475569;font-weight:600;cursor:pointer;font-size:0.78rem;">
+                Cancel
+            </button>
+            <a href="logout.php"
+               style="flex:1;padding:0.5rem;border:none;border-radius:0;background:#dc2626;
+                      color:#fff;font-weight:700;font-size:0.78rem;text-align:center;
+                      text-decoration:none;display:flex;align-items:center;justify-content:center;">
+                Sign Out
+            </a>
+        </div>
+
+    </div>
+</div>
+<script>
+// Close modal on backdrop click
+document.getElementById('pe-logout-modal').addEventListener('click', function(e) {
+    if (e.target === this) this.style.display = 'none';
+});
+</script>
 
 <!-- -- Main -- -->
 <div class="main">
 
     <a href="portal.php" class="back-link"><i class="bi bi-arrow-left"></i> Back to Portal</a>
+
+    <?php if ($pe_view === 'analytics'): ?>
+    <?php
+    // ── Analytics data prep ──────────────────────────────────────────────
+    $ana_meta = [
+        'Instruction'              => ['KRA I',   'Instruction',          40, '#1e4d8c', '#dbeafe'],
+        'Research'                 => ['KRA II',  'Research',             30, '#0f766e', '#ccfbf1'],
+        'Extension'                => ['KRA III', 'Extension',            20, '#7c3aed', '#ede9fe'],
+        'Professional Development' => ['KRA IV',  'Prof. Development',    10, '#b45309', '#fef3c7'],
+    ];
+    $total_entries_all = 0;
+    $entries_with_files_all = 0;
+    foreach (array_keys($ana_meta) as $kname) {
+        $eq = $pdo->prepare("SELECT COUNT(*) FROM pre_eval_entries WHERE user_id=? AND kra_category=?");
+        $eq->execute([$uid, $kname]);
+        $ec = (int)$eq->fetchColumn();
+        $total_entries_all += $ec;
+        $fq = $pdo->prepare("SELECT COUNT(DISTINCT e.entry_id) FROM pre_eval_entries e JOIN pre_eval_files f ON f.entry_id=e.entry_id WHERE e.user_id=? AND e.kra_category=?");
+        $fq->execute([$uid, $kname]);
+        $entries_with_files_all += (int)$fq->fetchColumn();
+    }
+    $evidence_pct = $total_entries_all > 0 ? min(100, round(($entries_with_files_all / $total_entries_all) * 100)) : 0;
+
+    // Points needed to reach next thresholds
+    $thresholds = [
+        41  => 'Minimum eligibility',
+        51  => 'Next rank tier (51)',
+        61  => 'Next rank tier (61)',
+        71  => 'Next rank tier (71)',
+        81  => 'Next rank tier (81)',
+        91  => 'Next rank tier (91)',
+    ];
+    $next_threshold = null;
+    $next_label = '';
+    foreach ($thresholds as $t => $tl) {
+        if ($weighted < $t) { $next_threshold = $t; $next_label = $tl; break; }
+    }
+    $pts_to_next = $next_threshold ? max(0, round($next_threshold - $weighted, 2)) : 0;
+
+    // Best KRA to improve (most room vs weight contribution)
+    $best_kra = null; $best_room = -1;
+    foreach ($ana_meta as $kname => [$kshort, $klabel, $kwt]) {
+        $kpts = $raw[$kname] ?? 0;
+        $room = max(0, 100 - $kpts) * ($kwt / 100);
+        if ($room > $best_room) { $best_room = $room; $best_kra = $kname; }
+    }
+
+    // Rank scale for showing steps
+    $all_ranks_scale = [
+        'Instructor I','Instructor II','Instructor III',
+        'Assistant Professor I','Assistant Professor II','Assistant Professor III','Assistant Professor IV',
+        'Associate Professor I','Associate Professor II','Associate Professor III','Associate Professor IV','Associate Professor V',
+        'Professor I','Professor II','Professor III','Professor IV','Professor V','Professor VI',
+        'University Professor',
+    ];
+    $cur_rank_idx  = array_search($rank, $all_ranks_scale);
+    $proj_rank_idx = array_search($pot_rank, $all_ranks_scale);
+    $rank_steps    = ($cur_rank_idx !== false && $proj_rank_idx !== false) ? $proj_rank_idx - $cur_rank_idx : 0;
+    ?>
+
+    <!-- ── Page heading ── -->
+    <div style="background:#fff;border:1px solid #e2e8f0;padding:0.85rem 1.25rem;margin-bottom:1.25rem;
+                display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;">
+        <div style="display:flex;align-items:center;gap:0.75rem;">
+            <div style="width:36px;height:36px;background:#1a3a6b;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+                <i class="bi bi-bar-chart-fill" style="color:#fff;font-size:0.9rem;"></i>
+            </div>
+            <div>
+                <div style="font-size:0.92rem;font-weight:700;color:#0f172a;line-height:1.2;">Analytics</div>
+                <div style="font-size:0.72rem;color:#94a3b8;margin-top:2px;">Self-assessment score summary and reclassification readiness</div>
+            </div>
+        </div>
+        <a href="pre_evaluation.php"
+           style="display:inline-flex;align-items:center;gap:5px;padding:0.35rem 0.85rem;
+                  border:1px solid #e2e8f0;background:#f8fafc;color:#475569;
+                  font-size:0.75rem;font-weight:600;text-decoration:none;"
+           onmouseover="this.style.background='#1a3a6b';this.style.color='#fff';this.style.borderColor='#1a3a6b'"
+           onmouseout="this.style.background='#f8fafc';this.style.color='#475569';this.style.borderColor='#e2e8f0'">
+            <i class="bi bi-pencil-square"></i> Edit Entries
+        </a>
+    </div>
+
+    <!-- ── Eligibility status + key numbers ── -->
+    <div style="display:grid;grid-template-columns:1fr 1px 1fr 1px 1fr;background:#fff;border:1px solid #e2e8f0;margin-bottom:1.25rem;">
+        <?php
+        $pts_to_min = max(0, 41 - $weighted);
+        $status_color = $weighted >= 41 ? '#1a3a6b' : '#475569';
+        $status_label = $weighted >= 41 ? 'Eligible' : 'Below Minimum';
+        $cells = [
+            ['Weighted Score', number_format($weighted,2), 'out of 100'],
+            ['Status',         $status_label,              $weighted>=41 ? 'qualifies for reclassification' : 'need '.number_format($pts_to_min,2).' more pts'],
+            ['KRA Entries',    $total_entries_all,         'across all four KRAs'],
+        ];
+        foreach ($cells as $ci => $c):
+        ?>
+        <?php if ($ci > 0): ?><div style="background:#e2e8f0;width:1px;"></div><?php endif; ?>
+        <div style="padding:1.1rem 1rem;text-align:center;">
+            <div style="font-size:0.58rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#94a3b8;margin-bottom:4px;"><?= $c[0] ?></div>
+            <div style="font-size:1.25rem;font-weight:800;color:<?= $ci===1?$status_color:'#1a3a6b' ?>;line-height:1;letter-spacing:-0.5px;"><?= $c[1] ?></div>
+            <div style="font-size:0.65rem;color:#94a3b8;margin-top:4px;"><?= $c[2] ?></div>
+        </div>
+        <?php endforeach; ?>
+    </div>
+
+    <!-- ── Eligibility message ── -->
+    <?php if ($weighted >= 41): ?>
+    <div style="border:1px solid #e2e8f0;background:#fff;padding:0.75rem 1rem;margin-bottom:1.25rem;">
+        <div style="font-size:0.78rem;font-weight:700;color:#1a3a6b;margin-bottom:3px;">You meet the eligibility threshold.</div>
+        <div style="font-size:0.75rem;color:#475569;line-height:1.65;">
+            Your weighted score of <strong><?= number_format($weighted,2) ?></strong> clears the 41-point minimum required for reclassification.
+            <?php if ($next_threshold): ?>
+            Your next scoring tier is <strong><?= $next_threshold ?> points</strong> — you need <strong><?= number_format($pts_to_next,2) ?> more weighted points</strong> to reach it, which would further advance your projected rank.
+            <?php endif; ?>
+        </div>
+    </div>
+    <?php else: ?>
+    <div style="border:1px solid #e2e8f0;background:#fff;padding:0.75rem 1rem;margin-bottom:1.25rem;">
+        <div style="font-size:0.78rem;font-weight:700;color:#1e293b;margin-bottom:3px;">You need <?= number_format($pts_to_min,2) ?> more weighted points to qualify.</div>
+        <div style="font-size:0.75rem;color:#475569;line-height:1.65;">
+            Your current weighted score is <strong><?= number_format($weighted,2) ?></strong>. The minimum for reclassification is <strong>41.00</strong>.
+            Weighted points are calculated per KRA based on your rank's weight table — higher-weight KRAs move your score faster.
+            See the breakdown below to identify where you have the most room to grow.
+        </div>
+    </div>
+    <?php endif; ?>
+
+    <!-- ── KRA Breakdown ── -->
+    <div style="background:#fff;border:1px solid #e2e8f0;margin-bottom:1.25rem;">
+        <div style="padding:0.6rem 1rem;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;justify-content:space-between;background:#f8fafc;">
+            <div style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.09em;color:#64748b;">KRA Score Breakdown</div>
+            <div style="font-size:0.7rem;color:#64748b;">Total weighted: <strong style="color:#1a3a6b;"><?= number_format($weighted,2) ?> / 100</strong></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 55px 85px 75px;padding:0.4rem 1rem;background:#f8fafc;border-bottom:1px solid #e2e8f0;">
+            <?php foreach (['KRA','Weight','Weighted','Potential'] as $ch): ?>
+            <div style="font-size:0.57rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#94a3b8;"><?= $ch ?></div>
+            <?php endforeach; ?>
+        </div>
+        <?php foreach ($ana_meta as $kname => [$kshort, $klabel, $kwt, $col, $bg]):
+            $kpts  = $raw[$kname] ?? 0;
+            $kwpts = round($kpts * ($kwt/100), 2);
+            $bar   = min(100, $kpts);
+            $room  = max(0, 100 - $kpts);
+            $eq2   = $pdo->prepare("SELECT COUNT(*) FROM pre_eval_entries WHERE user_id=? AND kra_category=?");
+            $eq2->execute([$uid, $kname]);
+            $kcount = (int)$eq2->fetchColumn();
+            $is_best = ($kname === $best_kra && $room > 0);
+        ?>
+        <div style="display:grid;grid-template-columns:1fr 55px 85px 75px;padding:0.7rem 1rem;border-bottom:1px solid #f1f5f9;align-items:center;<?= $is_best?'background:#fafafa;':'' ?>">
+            <div>
+                <div style="font-size:0.8rem;font-weight:700;color:#1e293b;"><?= $kshort ?> — <?= $klabel ?>
+                    <?php if ($is_best): ?><span style="font-size:0.58rem;font-weight:700;background:#1a3a6b;color:#fff;padding:1px 6px;margin-left:5px;vertical-align:middle;">BEST GAIN</span><?php endif; ?>
+                </div>
+                <div style="font-size:0.64rem;color:#94a3b8;margin-top:1px;"><?= $kcount ?> entr<?= $kcount===1?'y':'ies' ?></div>
+                <div style="height:3px;background:#e2e8f0;margin-top:6px;overflow:hidden;width:85%;">
+                    <div style="height:100%;width:<?= $bar ?>%;background:<?= $bar>=100?'#16a34a':'#1a3a6b' ?>;transition:width .3s;"></div>
+                </div>
+            </div>
+            <div style="font-size:0.78rem;color:#475569;"><?= $kwt ?>%</div>
+            <div style="font-size:0.82rem;font-weight:700;color:#1a3a6b;"><?= number_format($kwpts,2) ?><span style="font-size:0.62rem;font-weight:400;color:#94a3b8;"> pts</span></div>
+            <div style="font-size:0.75rem;color:#64748b;"><?= $room > 0 ? number_format($room,1).' avail.' : '— full' ?></div>
+        </div>
+        <?php endforeach; ?>
+        <div style="display:grid;grid-template-columns:1fr 55px 85px 75px;padding:0.6rem 1rem;background:#f8fafc;border-top:2px solid #e2e8f0;">
+            <div style="font-size:0.75rem;font-weight:700;color:#1a3a6b;">Final Weighted Score</div>
+            <div></div>
+            <div style="font-size:0.95rem;font-weight:800;color:#1a3a6b;"><?= number_format($weighted,2) ?></div>
+            <div></div>
+        </div>
+    </div>
+
+    <!-- ── Rank Projection + What to do next ── -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.25rem;">
+
+        <!-- Rank Projection -->
+        <div style="background:#fff;border:1px solid #e2e8f0;">
+            <div style="padding:0.6rem 1rem;border-bottom:1px solid #e2e8f0;font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.09em;color:#64748b;background:#f8fafc;">Rank Projection</div>
+            <div style="padding:1rem 1.1rem;">
+                <div style="display:flex;align-items:stretch;gap:0.75rem;margin-bottom:0.85rem;">
+                    <div style="flex:1;padding:0.65rem 0.75rem;border:1px solid #e2e8f0;background:#f8fafc;">
+                        <div style="font-size:0.58rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.07em;margin-bottom:3px;">Current Rank</div>
+                        <div style="font-size:0.82rem;font-weight:700;color:#334155;"><?= htmlspecialchars($rank ?: '—') ?></div>
+                    </div>
+                    <div style="display:flex;align-items:center;color:#94a3b8;font-size:1rem;">→</div>
+                    <div style="flex:1;padding:0.65rem 0.75rem;border:1px solid <?= $rank_steps>0?'#1a3a6b':'#e2e8f0' ?>;background:<?= $rank_steps>0?'#f0f4fb':'#f8fafc' ?>;">
+                        <div style="font-size:0.58rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.07em;margin-bottom:3px;">Projected Rank</div>
+                        <div style="font-size:0.82rem;font-weight:800;color:#1a3a6b;"><?= htmlspecialchars($pot_rank ?: '—') ?></div>
+                    </div>
+                </div>
+                <div style="font-size:0.76rem;color:#475569;line-height:1.65;border-top:1px solid #f1f5f9;padding-top:0.65rem;">
+                <?php if ($weighted < 41): ?>
+                    Your score of <strong><?= number_format($weighted,2) ?></strong> is below the 41-point minimum. No rank advancement is projected until you reach the threshold.
+                    <?php if ($_pe_result['has_national_award'] ?? false): ?>
+                    <br><i class="bi bi-trophy" style="color:#94a3b8;margin-right:3px;font-size:.68rem;"></i><span style="font-size:.72rem;color:#64748b;">Prestigious award detected — this will further advance your rank once your score reaches 41.</span>
+                    <?php endif; ?>
+                <?php elseif ($rank_steps === 0): ?>
+                    Your score meets the minimum but does not yet produce a rank increment. A score above 50 begins advancing your projected rank.
+                <?php else: ?>
+                    A score of <strong><?= number_format($weighted,2) ?></strong> projects your rank from <em><?= htmlspecialchars($rank) ?></em> to <strong><?= htmlspecialchars($pot_rank) ?></strong>.
+                <?php endif; ?>
+                </div>
+
+                <?php
+                $has_asr_award = $_pe_result['has_national_award'] ?? false;
+                $has_asr_phd   = $_pe_result['has_doctorate']      ?? false;
+                if ($has_asr_award || $has_asr_phd):
+                ?>
+                <div style="margin-top:.65rem;padding-top:.6rem;border-top:1px solid #f1f5f9;">
+                    <div style="font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#94a3b8;margin-bottom:.35rem;">Why this rank advanced</div>
+                    <div style="font-size:.75rem;color:#334155;line-height:1.65;">
+                    <?php if ($has_asr_award && $has_asr_phd): ?>
+                    You enabled Auto Sub-Rank through both a <strong>doctorate</strong> and a <strong>prestigious award</strong> in your Prof. Development entries.
+                    The doctorate shifted your base rank one step up before scoring, and the award further advanced it —
+                    which is why your projected rank jumped to <strong><?= htmlspecialchars($pot_rank) ?></strong> even though your weighted score is low.
+                    In the official application, an evaluator must still verify the award evidence.
+                    <?php elseif ($has_asr_award): ?>
+                    You enabled Auto Sub-Rank by adding a <strong>prestigious award</strong> in Prof. Development.
+                    This automatically advances your projected rank beyond what the score alone would produce —
+                    which is why the projected rank shows <strong><?= htmlspecialchars($pot_rank) ?></strong>.
+                    In the official application, an evaluator must verify the award evidence before this is granted.
+                    <?php elseif ($has_asr_phd): ?>
+                    You enabled Auto Sub-Rank through a <strong>doctorate degree</strong> in Prof. Development.
+                    This shifts your base rank one step up before scoring runs,
+                    which can push your projected rank higher than the score alone would suggest.
+                    <?php endif; ?>
+                    </div>
+                </div>
+                <?php endif; ?>
+            </div>
+        </div>
+
+        <!-- What to do next -->
+        <div style="background:#fff;border:1px solid #e2e8f0;">
+            <div style="padding:0.6rem 1rem;border-bottom:1px solid #e2e8f0;font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.09em;color:#64748b;background:#f8fafc;">What to Do Next</div>
+            <div>
+            <?php
+            $recs = [];
+            if ($total_entries_all === 0)
+                $recs[] = ['No entries added yet',
+                    'Go to any KRA tab and start adding entries. Each entry calculates a score estimate automatically — you don\'t need a cycle to be open to begin.'];
+            if ($weighted < 41)
+                $recs[] = ['You need '.number_format($pts_to_min,2).' more weighted points',
+                    'Weighted points depend on your rank\'s weight table. '.(isset($ana_meta[$best_kra])?$ana_meta[$best_kra][0].' ('.$ana_meta[$best_kra][2].'% weight) offers the most gain — adding entries there will move your score the fastest.':'Focus on KRAs with the highest weight percentage.')];
+            if ($best_kra && ($raw[$best_kra] ?? 0) < 100 && $total_entries_all > 0 && $weighted >= 41)
+                $recs[] = [$ana_meta[$best_kra][0].' — '.$ana_meta[$best_kra][1].' has the most room to grow',
+                    'You still have '.number_format(100-($raw[$best_kra]??0),1).' raw points available in this KRA. Filling it closer to 100 will increase your weighted contribution.'];
+            foreach (array_keys($ana_meta) as $kname) {
+                if (($raw[$kname] ?? 0) === 0.0 && $total_entries_all > 0) {
+                    $recs[] = ['Zero score in '.$ana_meta[$kname][1],
+                        'Even one valid entry with a document will improve your total. Zero in any KRA drags your weighted score down — there is no penalty for adding, only upside.'];
+                    break;
+                }
+            }
+            if ($evidence_pct < 100 && $total_entries_all > 0)
+                $recs[] = ['Prepare your supporting documents',
+                    'For each entry you have added, identify the corresponding certificate, report, or official document you will need to attach when the cycle opens. Use the Evidence Checklist in the Evidence Repository to track what you still need to prepare.'];
+            if ($weighted >= 41 && $next_threshold)
+                $recs[] = ['Next scoring tier: '.$next_threshold.' points',
+                    number_format($pts_to_next,2).' more weighted points moves you into the next bracket, which would improve your projected rank further.'];
+            if (empty($recs))
+                $recs[] = ['Your self-assessment is in good shape',
+                    'You are above the minimum and have entries in your KRAs. Review each entry for accuracy and attach evidence files before the cycle opens. The Self-Assessment is advisory only — final scores are determined by evaluators.'];
+
+            foreach ($recs as $ridx => [$rtitle,$rmsg]):
+            ?>
+            <div style="padding:0.75rem 1rem;border-bottom:<?= $ridx<count($recs)-1?'1px solid #f1f5f9':'none' ?>;">
+                <div style="font-size:0.78rem;font-weight:700;color:#1e293b;margin-bottom:3px;"><?= htmlspecialchars($rtitle) ?></div>
+                <div style="font-size:0.73rem;color:#475569;line-height:1.65;"><?= htmlspecialchars($rmsg) ?></div>
+            </div>
+            <?php endforeach; ?>
+            </div>
+
+            <!-- Disclaimer -->
+            <div style="padding:0.65rem 1rem;border-top:1px solid #e2e8f0;background:#f8fafc;">
+                <div style="font-size:0.67rem;color:#94a3b8;line-height:1.5;">
+                    <i class="bi bi-info-circle" style="margin-right:4px;"></i>
+                    These are <strong>estimates only</strong> — final scores are confirmed by authorised evaluators. The two-pass weight system means your projected rank may shift once a cycle opens and official scoring begins.
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <?php else: // self assessment ?>
 
     <?php if (!$eligible): ?>
     <!-- -- Eligibility gate banner -- -->
@@ -461,21 +868,22 @@ textarea.fi{resize:vertical;min-height:52px;}
 
     <?php endif; ?>
 
-    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.6rem;margin-bottom:1rem;">
-        <div>
-            <div style="font-size:.9rem;font-weight:700;color:#1a3a6b;">Self-Assessment</div>
-            <div style="font-size:.68rem;color:#94a3b8;margin-top:2px;">Self-assess your KRA scores before a cycle opens.</div>
+    <div style="background:#fff;border:1px solid #e2e8f0;padding:0.85rem 1.25rem;margin-bottom:1.25rem;
+                display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;">
+        <div style="display:flex;align-items:center;gap:0.75rem;">
+            <div style="width:36px;height:36px;background:#1a3a6b;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+                <i class="bi bi-pencil-square" style="color:#fff;font-size:0.9rem;"></i>
+            </div>
+            <div>
+                <div style="font-size:0.92rem;font-weight:700;color:#0f172a;line-height:1.2;">Self-Assessment</div>
+                <div style="font-size:0.72rem;color:#94a3b8;margin-top:2px;">Self-assess your KRA scores before a cycle opens.</div>
+            </div>
         </div>
         <div style="display:flex;gap:.4rem;flex-wrap:wrap;">
-            <button class="btn-s" onclick="openDrawer()" style="font-size:.75rem;">
-                Evidence Guide
-            </button>
-            <a href="evidence_repository.php" class="btn-s" style="text-decoration:none;font-size:.75rem;">
-                Evidence Repository
-            </a>
-            <a href="pre_eval_pdf.php" target="_blank" class="btn-s" style="font-size:.75rem;text-decoration:none;" title="Download self-assessment PDF">
-                Print Summary
-            </a>
+            <button class="btn-s" onclick="openDrawer()" style="font-size:.75rem;font-weight:600;">Evidence Guide</button>
+            <a href="evidence_repository.php" class="btn-s" style="text-decoration:none;font-size:.75rem;font-weight:600;">Evidence Repository</a>
+            <button class="btn-s" onclick="openPdfViewer('pre_eval_pdf.php','Summary')" style="font-size:.75rem;font-weight:600;">Summary</button>
+            <button class="btn-s" onclick="openPdfViewer('pre_eval_iss_pdf.php','ISS')" style="font-size:.75rem;font-weight:600;">ISS</button>
         </div>
     </div>
 
@@ -551,7 +959,7 @@ textarea.fi{resize:vertical;min-height:52px;}
         // Always recalculate on page load
         $pe_calc   = new \Scoring\AutoSubRankCalculator($pdo, 0, $uid);
         $pe_result = $pe_calc->calculateForPreEval(
-            (float)($score_result['weighted_score'] ?? 0),
+            (float)($_pe_result['weighted_score'] ?? 0),
             $rank,
             $pe_has_doctorate, $pe_doc_details,
             $pe_has_award,     $pe_awd_details
@@ -574,21 +982,39 @@ textarea.fi{resize:vertical;min-height:52px;}
         <?php endif; ?>
 
         <!-- Result banner -->
-        <div style="background:<?= $pe_ri > 0 ? '#f0fdf4' : '#f8fafc' ?>;border:1.5px solid <?= $pe_ri > 0 ? '#bbf7d0' : '#e2e8f0' ?>;border-radius:8px;padding:.75rem 1rem;margin-bottom:.85rem;display:flex;align-items:center;gap:.6rem;">
-            <?php if ($pe_ri > 0): ?>
+        <?php if ($pe_ri > 0): ?>
+        <div style="background:#f0fdf4;border:1.5px solid #bbf7d0;border-radius:8px;padding:.75rem 1rem;margin-bottom:.85rem;display:flex;align-items:center;gap:.6rem;">
             <i class="bi bi-arrow-up-circle-fill" style="color:#16a34a;font-size:1.1rem;flex-shrink:0;"></i>
             <div>
                 <div style="font-weight:700;color:#16a34a;font-size:.88rem;">+<?= $pe_ri ?> automatic sub-rank<?= $pe_ri > 1 ? 's' : '' ?></div>
-                <div style="font-size:.72rem;color:#64748b;margin-top:2px;">System-calculated  -  no manual choice required</div>
+                <div style="font-size:.72rem;color:#64748b;margin-top:2px;">System-calculated — no manual choice required</div>
             </div>
-            <?php else: ?>
+        </div>
+        <?php elseif ($pe_has_award): ?>
+        <div style="background:#fffbeb;border:1.5px solid #fde68a;border-radius:8px;padding:.75rem 1rem;margin-bottom:.85rem;display:flex;align-items:center;gap:.6rem;">
+            <i class="bi bi-clock-fill" style="color:#d97706;font-size:1.1rem;flex-shrink:0;"></i>
+            <div>
+                <div style="font-weight:700;color:#92400e;font-size:.88rem;">Prestigious award detected — counted as +1 sub-rank</div>
+                <div style="font-size:.72rem;color:#64748b;margin-top:2px;">Self-assessment counts this directly. In the official application, an evaluator must still verify the evidence. Score: <strong><?= number_format((float)($_pe_result['weighted_score'] ?? 0), 2) ?></strong></div>
+            </div>
+        </div>
+        <?php elseif ($pe_has_doctorate): ?>
+        <div style="background:#eff6ff;border:1.5px solid #bfdbfe;border-radius:8px;padding:.75rem 1rem;margin-bottom:.85rem;display:flex;align-items:center;gap:.6rem;">
+            <i class="bi bi-mortarboard-fill" style="color:#1e4d8c;font-size:1.1rem;flex-shrink:0;"></i>
+            <div>
+                <div style="font-weight:700;color:#1e4d8c;font-size:.88rem;">Doctorate detected — pending score qualification</div>
+                <div style="font-size:.72rem;color:#64748b;margin-top:2px;">You need a weighted score ≥ 41 before the doctorate sub-rank applies. Current score: <strong><?= number_format((float)($_pe_result['weighted_score'] ?? 0), 2) ?></strong></div>
+            </div>
+        </div>
+        <?php else: ?>
+        <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:8px;padding:.75rem 1rem;margin-bottom:.85rem;display:flex;align-items:center;gap:.6rem;">
             <i class="bi bi-dash-circle" style="color:#64748b;font-size:1.1rem;flex-shrink:0;"></i>
             <div>
                 <div style="font-weight:600;color:#64748b;font-size:.88rem;">No automatic sub-rank increase</div>
                 <div style="font-size:.72rem;color:#94a3b8;margin-top:2px;">Add a doctorate or award entry in Prof. Development to qualify</div>
             </div>
-            <?php endif; ?>
         </div>
+        <?php endif; ?>
 
         <!-- Criterion 1: Doctorate -->
         <div class="add-form" style="margin-bottom:.75rem;">
@@ -900,7 +1326,7 @@ textarea.fi{resize:vertical;min-height:52px;}
                         <div class="score-preview"><i class="bi bi-calculator"></i>Est. score: <span id="scorePreview">0.00</span> pts</div>
                         <div style="display:flex;gap:.4rem;">
                             <button class="btn-s" onclick="cancelForm()">Cancel</button>
-                            <button class="btn-p" onclick="saveEntry()">Save Entry</button>
+                            <button class="btn-p" id="saveBtn" onclick="saveEntry()">Save Entry</button>
                         </div>
                     </div>
                 </div>
@@ -966,8 +1392,41 @@ textarea.fi{resize:vertical;min-height:52px;}
     <?php endif; // end autosubrank / posreq / kra panel ?>
 
     </div><!-- /panels -->
+    <?php endif; // end self assessment view ?>
 </div><!-- /main -->
 </div><!-- /pg -->
+
+<!-- -- PDF Viewer Modal -- -->
+<div id="pdfViewerOverlay"
+     style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:2000;
+            align-items:center;justify-content:center;padding:1rem;">
+    <div style="background:#fff;width:100%;max-width:900px;height:90vh;display:flex;
+                flex-direction:column;border:1px solid #e2e8f0;
+                box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+        <!-- Header -->
+        <div style="display:flex;align-items:center;justify-content:space-between;
+                    padding:0.6rem 1rem;background:#1a3a6b;flex-shrink:0;">
+            <span id="pdfViewerTitle" style="color:#fff;font-weight:700;font-size:0.85rem;"></span>
+            <div style="display:flex;align-items:center;gap:0.5rem;">
+                <a id="pdfViewerNewTab" href="#" target="_blank"
+                   style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;
+                          border:1px solid rgba(255,255,255,0.4);color:#fff;
+                          font-size:0.72rem;font-weight:600;text-decoration:none;background:rgba(255,255,255,0.1);"
+                   onmouseover="this.style.background='rgba(255,255,255,0.2)'"
+                   onmouseout="this.style.background='rgba(255,255,255,0.1)'">
+                    <i class="bi bi-box-arrow-up-right"></i> Open in new tab
+                </a>
+                <button onclick="closePdfViewer()"
+                        style="background:none;border:none;color:rgba(255,255,255,0.7);
+                               font-size:1.3rem;cursor:pointer;line-height:1;padding:0 2px;"
+                        onmouseover="this.style.color='#fff'"
+                        onmouseout="this.style.color='rgba(255,255,255,0.7)'">&times;</button>
+            </div>
+        </div>
+        <!-- iframe -->
+        <iframe id="pdfViewerFrame" src="" style="flex:1;border:none;width:100%;"></iframe>
+    </div>
+</div>
 
 <!-- -- Evidence Guide Drawer -- -->
 <div class="drawer-overlay" id="drawerOverlay" onclick="closeDrawer()"></div>
@@ -1017,9 +1476,16 @@ textarea.fi{resize:vertical;min-height:52px;}
                 </div>
                 <?php foreach ($crits as $cr):
                     $desc = trim($cr['description'] ?? '');
-                    $evidences = $desc
-                        ? array_filter(array_map('trim', preg_split('/\.\s+(?=[A-Z])/', $desc)))
-                        : [];
+                    // Support both newline-separated bullets (new format) and legacy sentence-based text
+                    if ($desc) {
+                        $evidences = array_values(array_filter(array_map('trim', explode("\n", $desc))));
+                        if (count($evidences) === 1) {
+                            // Legacy single-line: split on ". " followed by capital letter
+                            $evidences = array_values(array_filter(array_map('trim', preg_split('/\.\s+(?=[A-Z])/', $desc))));
+                        }
+                    } else {
+                        $evidences = [];
+                    }
                 ?>
                 <div class="crit-item" data-label="<?= htmlspecialchars(strtolower($cr['criterion_label'])) ?>" data-cat="<?= htmlspecialchars($cat) ?>">
                     <div class="crit-item-hd" onclick="toggleCrit(this)">
@@ -1081,7 +1547,47 @@ function toggleForm(){
 function cancelForm(){
     document.getElementById('addForm').style.display='none';
     document.getElementById('addBtn').innerHTML='<i class="bi bi-plus-lg"></i> Add Entry';
+    const sb = document.getElementById('saveBtn');
+    if (sb) sb.textContent = 'Save Entry';
     resetForm();
+}
+
+function editEntry(eid, btn){
+    if (!ELIGIBLE) return;
+    const remarks = btn.dataset.remarks || '';
+    const notes   = btn.dataset.notes   || '';
+    // Show form
+    const f = document.getElementById('addForm');
+    f.style.display = 'block';
+    document.getElementById('addBtn').innerHTML = '<i class="bi bi-x"></i> Cancel';
+    // Set edit ID
+    document.getElementById('editId').value = eid;
+    // Pre-populate notes
+    const notesEl = document.getElementById('entryNotes');
+    if (notesEl) notesEl.value = notes || '';
+    // Pre-populate form fields from remarks
+    const parts = remarks.split('|||').map(s => s.trim());
+    const ctype = parts[0] || '';
+    // Set criterion type selector if present
+    const critSel = document.getElementById('critType') || document.querySelector('[id^="critType"]');
+    if (critSel) { critSel.value = ctype; critSel.dispatchEvent(new Event('change')); }
+    // After a tick (to let dependent fields render), fill sub-fields
+    setTimeout(() => {
+        const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+        setVal('f1', parts[1] || '');
+        setVal('f2', parts[2] || '');
+        setVal('f3', parts[3] || '');
+        setVal('f4', parts[4] || '');
+        setVal('f5', parts[5] || '');
+        // Trigger preview update
+        if (typeof previewScore === 'function') previewScore();
+        if (typeof updatePdOpts === 'function') updatePdOpts();
+    }, 80);
+    // Scroll form into view
+    f.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // Update save button label
+    const sb = document.getElementById('saveBtn');
+    if (sb) sb.textContent = 'Update Entry';
 }
 function resetForm(){
     document.getElementById('editId').value='';
@@ -1186,16 +1692,19 @@ function previewScore(){
 // -- Save entry -------------------------------------------------
 function saveEntry(){
     const remarks=buildRemarks();
-    if(!remarks){alert('Please fill in the required fields.');return;}
+    if(!remarks){showToast('Please fill in the required fields.','warning');return;}
     const notes=document.getElementById('entryNotes')?.value||'';
     const editId=document.getElementById('editId')?.value||'';
     const fd=new FormData();
     fd.append('action','save_entry'); fd.append('cat',CAT);
     fd.append('remarks',remarks); fd.append('notes',notes);
     if(editId) fd.append('entry_id',editId);
+    const saveBtn = document.querySelector('[onclick="saveEntry()"]');
+    if(saveBtn){ saveBtn.disabled=true; saveBtn.textContent='Saving…'; }
     fetch(AJAX,{method:'POST',body:fd}).then(x=>x.json()).then(d=>{
+        if(saveBtn){ saveBtn.disabled=false; saveBtn.textContent= editId ? 'Update Entry' : 'Save Entry'; }
         if(d.ok){cancelForm();loadEntries();refreshScore();}
-        else alert(d.error||'Save failed.');
+        else showToast(d.error||'Save failed.','error');
     });
 }
 
@@ -1241,7 +1750,7 @@ function entryCard(e){
         </div>
         ${files?`<div class="entry-files">${files}</div>`:''}
         <div class="entry-actions">
-            <button class="btn-xs btn-attach" onclick="trigAttach(${e.entry_id})"><i class="bi bi-paperclip"></i> Attach</button>
+            <button class="btn-xs btn-attach" onclick="editEntry(${e.entry_id}, this)" data-remarks="${esc(e.remarks)}" data-notes="${esc(e.notes||'')}"><i class="bi bi-pencil"></i> Edit</button>
             <button class="btn-xs btn-rm" onclick="delEntry(${e.entry_id})"><i class="bi bi-trash"></i> Remove</button>
         </div>
     </div>`;
@@ -1275,7 +1784,7 @@ function attachFile(input){
     fd.append('evidence',input.files[0]);
     fetch(AJAX,{method:'POST',body:fd}).then(x=>x.json()).then(d=>{
         if(d.ok){loadEntries();refreshScore();}
-        else alert(d.error||'Upload failed.');
+        else showToast(d.error||'Upload failed.','error');
         input.value=''; attachTarget=null;
     });
 }
@@ -1332,12 +1841,12 @@ function refreshScore(){
         const sv=document.getElementById('sbScore');
         if(sv){
             sv.textContent=d.weighted.toFixed(2);
-            sv.style.color=d.weighted>=41?'#1e4d8c':d.weighted>0?'#475569':'#94a3b8';
+            sv.style.color='#fff';
         }
         const mn=document.getElementById('sbMinNote');
         if(mn){
-            mn.textContent=d.weighted>=41?'OK Meets minimum (41)':'X Below minimum (41)';
-            mn.style.color=d.weighted>=41?'#1e4d8c':'#334155';
+            mn.textContent=d.weighted>=41?'✓ Meets minimum (41)':'✗ Below minimum (41)';
+            mn.style.color='rgba(255,255,255,.55)';
         }
         // Update KRA bars
         const SLUGS=['instruction','research','extension','profdev'];
@@ -1354,10 +1863,8 @@ function refreshScore(){
             const wpts=Math.round(raw*((WEIGHTS[i]||0)/100)*10)/10;
             const pts=row.querySelector('.kra-row-pts');
             const bar=row.querySelector('.kra-bar-fill');
-            const rawTxt=row.querySelector('.kra-row-raw');
             if(pts) pts.textContent=wpts.toFixed(1)+'pt';
             if(bar) bar.style.width=pct+'%';
-            if(rawTxt) rawTxt.textContent=raw.toFixed(1)+'/'+mx+' | '+(WEIGHTS[i]||0)+'% wt';
         });
 
         // Update rank projection + increment badge
@@ -1367,12 +1874,9 @@ function refreshScore(){
             const curRankEl = document.getElementById('sbCurRank');
             const curRank   = curRankEl ? curRankEl.textContent.trim() : '';
             const potRank   = d.pot_rank || '';
-            if (potEl) potEl.textContent = potRank;
+            if (potEl) potEl.textContent = (potRank && potRank !== curRank && potRank !== ' - ') ? potRank : curRank;
 
-            // Show/hide arrow + pot rank
-            const arrow = incWrap.querySelector('.rank-arrow');
-            if (arrow) arrow.style.display = (potRank && potRank !== curRank && potRank !== ' - ') ? '' : 'none';
-            if (potEl) potEl.style.display  = (potRank && potRank !== curRank && potRank !== ' - ') ? '' : 'none';
+            // No arrow element in new layout — skip arrow hide/show
 
             // Rebuild increment badge
             let badge = incWrap.querySelector('.increment-badge');
@@ -1404,8 +1908,8 @@ function refreshScore(){
         if (bars.length && d.kra_detail) {
             if (barsWrap) barsWrap.style.display = '';
             bars.forEach(row => {
-                const detailKey = row.dataset.detail;   // kra1 / kra2 / kra3 / kra4
-                const field     = row.dataset.key;      // criterion_a, criterion_b etc.
+                const detailKey = row.dataset.detail;
+                const field     = row.dataset.key;
                 const cap       = parseFloat(row.dataset.cap) || 0;
                 const detail    = d.kra_detail?.[detailKey] || {};
                 const val       = parseFloat(detail[field] ?? 0);
@@ -1417,7 +1921,6 @@ function refreshScore(){
                     ptsEl.textContent = cap
                         ? `${val.toFixed(1)} / ${cap}`
                         : val.toFixed(1);
-                    // Turn red when at or over cap
                     ptsEl.style.color = (cap && val >= cap) ? '#dc2626' : '#1a3a6b';
                 }
                 if (fillEl && cap) {
@@ -1425,12 +1928,10 @@ function refreshScore(){
                     fillEl.style.width = pct + '%';
                     fillEl.style.background = pct >= 100 ? '#dc2626' : '#1e4d8c';
                 } else if (fillEl) {
-                    // No hard cap (Research)  -  show filled proportionally to 100 pts
                     fillEl.style.width = Math.min(100, val) + '%';
                 }
             });
         }
-
         // -- Gap-to-threshold note in sidebar ---------------
         let gapEl = document.getElementById('sbGapNote');
         if (!gapEl) {
@@ -1446,7 +1947,7 @@ function refreshScore(){
             const gap = Math.max(0, 41 - d.weighted);
             if (gap > 0 && d.weighted > 0) {
                 gapEl.textContent = `Need ${gap.toFixed(1)} more pts to qualify`;
-                gapEl.style.color = '#c2410c';
+                gapEl.style.color = 'rgba(255,255,255,.45)';
             } else {
                 gapEl.textContent = '';
             }
@@ -1473,6 +1974,30 @@ function closeDrawer(){
     document.getElementById('drawerOverlay').classList.remove('open');
     document.body.style.overflow='';
 }
+
+// -- PDF Viewer Modal ------------------------------------------
+function openPdfViewer(url, title) {
+    document.getElementById('pdfViewerTitle').textContent = title;
+    document.getElementById('pdfViewerFrame').src = url;
+    document.getElementById('pdfViewerNewTab').href = url;
+    var overlay = document.getElementById('pdfViewerOverlay');
+    overlay.style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+}
+function closePdfViewer() {
+    var overlay = document.getElementById('pdfViewerOverlay');
+    overlay.style.display = 'none';
+    document.getElementById('pdfViewerFrame').src = '';
+    document.body.style.overflow = '';
+}
+document.getElementById('pdfViewerOverlay').addEventListener('click', function(e) {
+    if (e.target === this) closePdfViewer();
+});
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && document.getElementById('pdfViewerOverlay').style.display !== 'none') {
+        closePdfViewer();
+    }
+});
 function switchDrawerTab(btn, cat){
     drawerCat = cat;
     document.querySelectorAll('.d-tab').forEach(b=>b.classList.remove('active'));
@@ -1516,8 +2041,7 @@ setInterval(refreshSelfAssessment, 5000);
 function peConfirm(icon, color, title, msg, btnLabel, onConfirm) {
     const m = document.getElementById('peConfirmModal');
     document.getElementById('peConfirmIcon').className       = 'bi ' + icon;
-    document.getElementById('peConfirmIcon').style.color     = color;
-    document.getElementById('peConfirmIconWrap').style.background = color + '18';
+    document.getElementById('peConfirmIcon').style.color     = '#fff';
     document.getElementById('peConfirmTitle').textContent    = title;
     document.getElementById('peConfirmMsg').innerHTML        = msg;
     document.getElementById('peConfirmBtn').textContent      = btnLabel;
@@ -1533,8 +2057,11 @@ function peConfirm(icon, color, title, msg, btnLabel, onConfirm) {
 document.addEventListener('DOMContentLoaded', () => {
     const m = document.getElementById('peConfirmModal');
     if (!m) return;
-    document.getElementById('peConfirmCancelBtn')
-        .addEventListener('click', () => { m.style.display = 'none'; document.body.style.overflow = ''; });
+    // Wire both cancel buttons
+    ['peConfirmCancelBtn','peConfirmCancelBtn2'].forEach(id => {
+        const btn = document.getElementById(id);
+        if (btn) btn.addEventListener('click', () => { m.style.display = 'none'; document.body.style.overflow = ''; });
+    });
     m.addEventListener('click', e => { if (e.target === m) { m.style.display = 'none'; document.body.style.overflow = ''; } });
 });
 </script>
@@ -1542,64 +2069,43 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- -- In-page Confirm Modal ----------------------------------- -->
 <div id="peConfirmModal"
      style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;
-            background:rgba(0,0,0,0.5);z-index:99999;overflow:hidden;
+            background:rgba(15,23,42,0.55);z-index:99999;overflow:hidden;
             align-items:center;justify-content:center;padding:1rem;">
-    <div style="background:#fff;border-radius:14px;width:100%;max-width:400px;
-                box-shadow:0 24px 64px rgba(0,0,0,0.28);overflow:hidden;
-                animation:peModalIn .18s ease;max-height:90vh;">
+    <div style="background:#fff;width:100%;max-width:360px;border:1px solid #e2e8f0;
+                box-shadow:0 8px 32px rgba(0,0,0,0.18);overflow:hidden;">
 
         <!-- Header -->
-        <div style="background:#1a3a6b;padding:.85rem 1.25rem;display:flex;align-items:center;gap:.65rem;">
-            <img src="../assets/images/logo.jpg" alt=""
-                 style="width:32px;height:32px;border-radius:50%;object-fit:cover;
-                        border:2px solid rgba(255,255,255,.25);flex-shrink:0;">
-            <div>
-                <div style="color:#fff;font-weight:700;font-size:.85rem;line-height:1.2;">SUCFRMS</div>
-                <div style="color:rgba(255,255,255,.5);font-size:.65rem;">Self-Assessment</div>
+        <div style="background:#1a3a6b;padding:.7rem 1rem;display:flex;align-items:center;justify-content:space-between;">
+            <div style="display:flex;align-items:center;gap:.5rem;">
+                <i id="peConfirmIcon" class="bi bi-trash" style="font-size:.85rem;color:#fff;"></i>
+                <span id="peConfirmTitle" style="color:#fff;font-weight:700;font-size:.85rem;"></span>
             </div>
+            <button id="peConfirmCancelBtn"
+                    style="background:none;border:none;color:rgba(255,255,255,.6);font-size:1.1rem;cursor:pointer;line-height:1;padding:0;"
+                    onmouseover="this.style.color='#fff'" onmouseout="this.style.color='rgba(255,255,255,.6)'">&times;</button>
         </div>
 
         <!-- Body -->
-        <div style="padding:1.5rem 1.5rem 1rem;text-align:center;">
-            <div id="peConfirmIconWrap"
-                 style="width:56px;height:56px;border-radius:50%;display:inline-flex;align-items:center;
-                        justify-content:center;margin-bottom:.85rem;">
-                <i id="peConfirmIcon" class="bi bi-trash" style="font-size:1.5rem;"></i>
-            </div>
-            <div id="peConfirmTitle"
-                 style="font-size:.97rem;font-weight:700;color:#0f172a;margin-bottom:.4rem;"></div>
-            <div id="peConfirmMsg"
-                 style="font-size:.82rem;color:#64748b;line-height:1.55;"></div>
+        <div style="padding:.9rem 1rem;">
+            <div id="peConfirmMsg" style="font-size:.8rem;color:#475569;line-height:1.6;"></div>
         </div>
 
-        <!-- Divider -->
-        <div style="height:1px;background:#f1f5f9;margin:0 1.25rem;"></div>
-
         <!-- Buttons -->
-        <div style="padding:.85rem 1.25rem 1.25rem;display:flex;gap:.5rem;">
-            <button id="peConfirmCancelBtn"
-                    style="flex:1;padding:.6rem;border:1.5px solid #e2e8f0;border-radius:8px;
-                           background:#fff;color:#475569;font-weight:600;font-size:.83rem;cursor:pointer;
-                           transition:background .12s;">
+        <div style="padding:0 1rem .9rem;display:flex;gap:.5rem;justify-content:flex-end;">
+            <button id="peConfirmCancelBtn2"
+                    style="padding:.4rem 1rem;border:1px solid #e2e8f0;background:#fff;
+                           color:#475569;font-weight:600;font-size:.78rem;cursor:pointer;"
+                    onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='#fff'">
                 Cancel
             </button>
             <button id="peConfirmBtn"
-                    style="flex:1;padding:.6rem;border:none;border-radius:8px;
-                           color:#fff;font-weight:700;font-size:.83rem;cursor:pointer;
-                           transition:opacity .12s;">
+                    style="padding:.4rem 1.1rem;border:none;color:#fff;
+                           font-weight:700;font-size:.78rem;cursor:pointer;">
                 Confirm
             </button>
         </div>
-
     </div>
 </div>
-
-<style>
-@keyframes peModalIn {
-    from { opacity:0; transform:scale(.95) translateY(8px); }
-    to   { opacity:1; transform:scale(1)   translateY(0);   }
-}
-</style>
 
 </body>
 </html>

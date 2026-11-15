@@ -16,6 +16,23 @@ namespace Scoring;
 class KRA2Scorer
 {
     const CAP = 100;
+    private static ?\PDO $pdo_ref = null;
+    private static ?int $criteria_cycle_id = null;
+    private static ?string $criteria_position_rank = null;
+    private static ?array $criteria_label_points = null;
+
+    public static function setPdo(\PDO $pdo): void
+    {
+        self::$pdo_ref = $pdo;
+        self::$criteria_label_points = null;
+    }
+
+    public static function setCriteriaContext(?int $cycleId, ?string $positionRank): void
+    {
+        self::$criteria_cycle_id = $cycleId ?: null;
+        self::$criteria_position_rank = $positionRank !== null && trim($positionRank) !== '' ? trim($positionRank) : null;
+        self::$criteria_label_points = null;
+    }
 
     // ACI indexing: accepted only through last issue of 2024; no ACI from Jan 1, 2025
     const ACI_CUTOFF = '2024-12-31';
@@ -89,6 +106,15 @@ class KRA2Scorer
             $developers = $parts[1] ?? '';
             $contrib    = min(100, max(1, (float)($parts[5] ?? 100)));
             $pts      = 0.0;
+
+            if ($label === 'CUSTOM') {
+                $letter = strtoupper($parts[1] ?? '');
+                $pts = max(0.0, (float)($parts[4] ?? 0));
+                if ($letter === 'B') $crit_b_raw += $pts;
+                elseif ($letter === 'C') $crit_c_raw += $pts;
+                else $crit_a_raw += $pts;
+                continue;
+            }
 
             // -- Criterion A: Research Outputs ------------------------
             if (self::isResearchOutput($label)) {
@@ -266,15 +292,17 @@ class KRA2Scorer
     private static function resolveResearchBase(string $label, array &$config_i): ?float
     {
         $l = strtolower($label);
+        $configured = self::configuredPointsForLabel($label);
+        if ($configured !== null) return $configured;
+        if (preg_match('/\((\d+(?:\.\d+)?)\s*pts?\)/i', $label, $m)) return (float)$m[1];
         if (str_contains($l, 'book') && !str_contains($l, 'chapter'))          return 100.0;
         if (str_contains($l, 'monograph'))                                       return 100.0;
         if (str_contains($l, 'journal') || str_contains($l, 'article'))         return 50.0;
         if (str_contains($l, 'chapter') && str_contains($l, 'book'))            return 35.0;
         if (str_contains($l, 'policy') || str_contains($l, 'project output') || str_contains($l, 'product')) return 35.0;
-        if (str_contains($l, 'citation'))                                        return 10.0;
+        if (str_contains($l, 'citation') && str_contains($l, 'intl'))              return 10.0;
+        if (str_contains($l, 'citation'))                                          return 5.0;  // local citation: 5 pts per DB seed
         if (str_contains($l, 'scholar'))                                         return 10.0;
-        // Extract from label pattern
-        if (preg_match('/\((\d+(?:\.\d+)?)\s*pts?\)/i', $label, $m)) return (float)$m[1];
         $config_i[] = "KRA II Crit A: Cannot resolve base points for '{$label}'  -  CONFIG_INCOMPLETE.";
         return null;
     }
@@ -282,6 +310,9 @@ class KRA2Scorer
     private static function resolveInventionBase(string $label, array &$config_i): ?float
     {
         $l = strtolower($label);
+        $configured = self::configuredPointsForLabel($label);
+        if ($configured !== null) return $configured;
+        if (preg_match('/\((\d+(?:\.\d+)?)\s*pts?\)/i', $label, $m)) return (float)$m[1];
         if (str_contains($l, 'grant') && (str_contains($l, 'patent') || str_contains($l, 'invention'))) return 80.0;
         if (str_contains($l, 'publication') && str_contains($l, 'patent')) return 20.0;
         if (str_contains($l, 'acceptance') && str_contains($l, 'patent'))  return 10.0;
@@ -292,7 +323,6 @@ class KRA2Scorer
         if (str_contains($l, 'software') && str_contains($l, 'update'))    return 4.0;
         if (str_contains($l, 'software'))          return 10.0;
         if (str_contains($l, 'plant variety') || str_contains($l, 'animal breed') || str_contains($l, 'microbial')) return 10.0;
-        if (preg_match('/\((\d+(?:\.\d+)?)\s*pts?\)/i', $label, $m)) return (float)$m[1];
         $config_i[] = "KRA II Crit B: Cannot resolve invention base for '{$label}'  -  CONFIG_INCOMPLETE.";
         return null;
     }
@@ -300,6 +330,9 @@ class KRA2Scorer
     private static function resolveCreativeBase(string $label, array &$config_i): ?float
     {
         $l = strtolower($label);
+        $configured = self::configuredPointsForLabel($label);
+        if ($configured !== null) return $configured;
+        if (preg_match('/\((\d+(?:\.\d+)?)\s*pts?\)/i', $label, $m)) return (float)$m[1];
         // Performing arts  -  music
         if (str_contains($l, 'composition') || str_contains($l, 'arrangement') || str_contains($l, 'production')) return 20.0;
         if (str_contains($l, 'performance') || str_contains($l, 'conducting'))                                     return 10.0;
@@ -313,13 +346,14 @@ class KRA2Scorer
             || str_contains($l, 'architect') || str_contains($l, 'engineer') || str_contains($l, 'interior')) return 20.0;
         // Film (one shared rate)
         if (str_contains($l, 'film') || str_contains($l, 'documentary') || str_contains($l, 'animated')) return 20.0;
-        // Literary
+        // Literary — corrected per DB seed (kra2_c_essay=10, kra2_c_poetry=10, kra2_c_short_story=10)
         if (str_contains($l, 'novel'))       return 20.0;
         if (str_contains($l, 'short story')) return 10.0;
-        if (str_contains($l, 'poetry'))      return 2.0;
-        if (str_contains($l, 'essay'))       return 2.0;
-        if (str_contains($l, 'exhibition') || str_contains($l, 'juried') || str_contains($l, 'peer-reviewed design')) return 20.0;
-        if (preg_match('/\((\d+(?:\.\d+)?)\s*pts?\)/i', $label, $m)) return (float)$m[1];
+        if (str_contains($l, 'poetry'))      return 10.0;
+        if (str_contains($l, 'essay'))       return 10.0;
+        // Exhibition — corrected per DB seed (kra2_c_exhibition=10, kra2_c_juried_design=20)
+        if (str_contains($l, 'juried') || str_contains($l, 'peer-reviewed design')) return 20.0;
+        if (str_contains($l, 'exhibition'))  return 10.0;
         $config_i[] = "KRA II Crit C: Cannot resolve creative work base for '{$label}'  -  CONFIG_INCOMPLETE.";
         return null;
     }
@@ -334,6 +368,10 @@ class KRA2Scorer
         $label   = $parts[0] ?? '';
         $contrib = min(100, max(1, (float)($parts[5] ?? 100)));
         $dummy   = [];
+
+        if ($label === 'CUSTOM') {
+            return max(0.0, (float)($parts[4] ?? 0));
+        }
 
         if (self::isInvention($label)) {
             $base = self::resolveInventionBase($label, $dummy);
@@ -350,5 +388,57 @@ class KRA2Scorer
         }
         $isCo = self::isCoAuthor($label) || self::isCoInventor($label) || self::isCoCreator($label);
         return round($isCo ? $base * ($contrib / 100) : $base, 2);
+    }
+
+    private static function configuredPointsForLabel(string $label): ?float
+    {
+        $points = self::criteriaLabelPoints();
+        if (!$points) return null;
+        $key = self::normaliseCriterionLabel($label);
+        return $points[$key] ?? null;
+    }
+
+    private static function criteriaLabelPoints(): array
+    {
+        if (self::$criteria_label_points !== null) return self::$criteria_label_points;
+        self::$criteria_label_points = [];
+        if (self::$pdo_ref === null) return self::$criteria_label_points;
+
+        try {
+            $stmt = self::$pdo_ref->prepare("SELECT criterion_label, max_points, cycle_id, position_rank FROM scoring_criteria WHERE kra_category='Research' AND is_active=1");
+            $stmt->execute();
+            $best = [];
+            foreach ($stmt->fetchAll(\PDO::FETCH_ASSOC) as $row) {
+                $key = self::normaliseCriterionLabel((string)$row['criterion_label']);
+                $score = self::criteriaScopeScore($row);
+                if ($key !== '' && (!isset($best[$key]) || $score > $best[$key])) {
+                    self::$criteria_label_points[$key] = (float)$row['max_points'];
+                    $best[$key] = $score;
+                }
+            }
+        } catch (\Exception $e) {
+            self::$criteria_label_points = [];
+        }
+
+        return self::$criteria_label_points;
+    }
+
+    private static function normaliseCriterionLabel(string $label): string
+    {
+        $label = preg_replace('/\(\s*\d+(?:\.\d+)?\s*pts?\.?\s*\)/i', '', $label);
+        $label = preg_replace('/^Criterion\s+[A-Z]\s*[-:]\s*/i', '', (string)$label);
+        return strtolower(trim(preg_replace('/[^a-z0-9]+/i', ' ', $label)));
+    }
+
+    private static function criteriaScopeScore(array $row): int
+    {
+        $row_cycle = isset($row['cycle_id']) ? (int)$row['cycle_id'] : null;
+        $row_position = isset($row['position_rank']) && $row['position_rank'] !== null ? trim((string)$row['position_rank']) : null;
+        if (self::$criteria_cycle_id !== null && $row_cycle === self::$criteria_cycle_id) {
+            if (self::$criteria_position_rank !== null && $row_position === self::$criteria_position_rank) return 3;
+            if ($row_position === null || $row_position === '') return 2;
+        }
+        if ($row_cycle === null || $row_cycle === 0) return 1;
+        return 0;
     }
 }

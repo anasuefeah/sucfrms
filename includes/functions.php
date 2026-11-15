@@ -2,20 +2,40 @@
 /**
  * Core helper functions for SUCFRMS
  */
+require_once __DIR__ . '/kra_numbering.php';
+require_once __DIR__ . '/revision_workflow.php';
 
 // -- Authentication --------------------------------------------
 function isLoggedIn(): bool { return isset($_SESSION['user_id']); }
 function isAdmin():    bool { return ($_SESSION['role'] ?? '') === 'admin'; }
-function isChecker():  bool { return ($_SESSION['role'] ?? '') === 'checker'; }
+function isEvaluator(): bool { return ($_SESSION['role'] ?? '') === 'evaluator'; }
+/** @deprecated Use isEvaluator() — kept as alias for any legacy callers */
+function isChecker():  bool { return isEvaluator(); }
 function isFaculty():  bool { return ($_SESSION['role'] ?? '') === 'faculty'; }
-function isTalisayChecker(): bool { return ($_SESSION['role'] ?? '') === 'talisay_checker'; }
 
 function requireLogin(): void {
-    if (!isLoggedIn()) { header('Location: pages/login.php'); exit; }
+    if (!isLoggedIn()) {
+        // Use an absolute path so this works whether called from the project root
+        // (index.php) OR from a standalone page under /pages/ (kra_pdf.php, etc.)
+        $login = rtrim(dirname($_SERVER['SCRIPT_NAME']), '/\\');
+        // If the script lives under /pages/, go up one level first
+        if (str_ends_with(str_replace('\\', '/', $login), '/pages')) {
+            $login = dirname($login);
+        }
+        header('Location: ' . $login . '/pages/login.php');
+        exit;
+    }
 }
 function requireAdmin(): void {
     requireLogin();
-    if (!isAdmin()) { header('Location: index.php'); exit; }
+    if (!isAdmin()) {
+        $root = rtrim(dirname($_SERVER['SCRIPT_NAME']), '/\\');
+        if (str_ends_with(str_replace('\\', '/', $root), '/pages')) {
+            $root = dirname($root);
+        }
+        header('Location: ' . $root . '/index.php');
+        exit;
+    }
 }
 
 /**
@@ -35,7 +55,7 @@ function formatDisplayName(array $row, string $fallback_key = 'full_name'): stri
 }
 
 /**
- * The anonymous display name for an evaluator/talisay_checker account.
+ * The anonymous display name for an evaluator account.
  * Pass a DB row (or partial row) containing checker_label and user_id.
  * Falls back to "Evaluator #<user_id>" if a label wasn't stored (should
  * only happen for rows created before the checker_label migration ran).
@@ -154,7 +174,7 @@ function ensureKraAssignmentTable(PDO $pdo): void {
         if ($count === 0) {
             $ins = $pdo->prepare("INSERT IGNORE INTO checker_kra_assignments (cycle_id, checker_id, kra_category, assigned_by) VALUES (?,?,?,NULL)");
             $cycles = $pdo->query("SELECT cycle_id FROM cycles")->fetchAll(PDO::FETCH_COLUMN);
-            $checkers = $pdo->query("SELECT user_id FROM users WHERE role='checker' AND status='active'")->fetchAll(PDO::FETCH_COLUMN);
+            $checkers = $pdo->query("SELECT user_id FROM users WHERE role='evaluator' AND status='active'")->fetchAll(PDO::FETCH_COLUMN);
             foreach ($cycles as $cycle_id) {
                 foreach ($checkers as $checker_id) {
                     foreach (array_keys(kraAssignmentCategories()) as $kra) {
@@ -179,8 +199,8 @@ function getCheckerAssignedKras(PDO $pdo, int $checker_id, int $cycle_id): array
 }
 
 function checkerCanReviewKra(PDO $pdo, int $checker_id, int $cycle_id, string $kra_category): bool {
-    if (isAdmin() || isTalisayChecker()) return true;
-    if (!isChecker()) return false;
+    if (isAdmin()) return true;
+    if (!isEvaluator()) return false;
     return in_array($kra_category, getCheckerAssignedKras($pdo, $checker_id, $cycle_id), true);
 }
 
@@ -191,7 +211,7 @@ function countAssignedCheckersForKra(PDO $pdo, int $cycle_id, string $kra_catego
             SELECT COUNT(DISTINCT a.checker_id)
             FROM checker_kra_assignments a
             JOIN users u ON u.user_id = a.checker_id
-            WHERE a.cycle_id=? AND a.kra_category=? AND u.role='checker' AND u.status='active'
+            WHERE a.cycle_id=? AND a.kra_category=? AND u.role='evaluator' AND u.status='active'
         ");
         $stmt->execute([$cycle_id, $kra_category]);
         return (int)$stmt->fetchColumn();
@@ -207,12 +227,12 @@ function countAssignedCheckersForCycle(PDO $pdo, int $cycle_id): int {
             SELECT COUNT(DISTINCT a.checker_id)
             FROM checker_kra_assignments a
             JOIN users u ON u.user_id = a.checker_id
-            WHERE a.cycle_id=? AND u.role='checker' AND u.status='active'
+            WHERE a.cycle_id=? AND u.role='evaluator' AND u.status='active'
         ");
         $stmt->execute([$cycle_id]);
         return max(1, (int)$stmt->fetchColumn());
     } catch (\Exception $e) {
-        return max(1, (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role='checker' AND status='active'")->fetchColumn());
+        return max(1, (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role='evaluator' AND status='active'")->fetchColumn());
     }
 }
 
@@ -375,7 +395,7 @@ function recalcApplicationScore($pdo, int $application_id): float {
     }
 
     // -- Legacy fallback ----------------------------------------------
-    $info = $pdo->prepare("SELECT u.rank FROM applications a JOIN users u ON a.user_id=u.user_id WHERE a.application_id=?");
+    $info = $pdo->prepare("SELECT u.`rank` FROM applications a JOIN users u ON a.user_id=u.user_id WHERE a.application_id=?");
     $info->execute([$application_id]);
     $rank = $info->fetchColumn() ?? '';
 
@@ -384,7 +404,7 @@ function recalcApplicationScore($pdo, int $application_id): float {
     $raw = [];
     $has_national_award = false;
     foreach ($stmt->fetchAll() as $r) {
-        $raw[$r['kra_category']] = ($raw[$r['kra_category']] ?? 0) + (float)$r['computed_points'];
+        $raw[$r['kra_category']] = ($raw[$r['kra_category']] ?? 0) + kraEffectiveComputedPoints($r);
         if ($r['kra_category'] === 'Professional Development') {
             $parts = array_map('trim', explode('|||', $r['remarks'] ?? ''));
             if (($parts[0] ?? '') === 'C-award' && (float)($parts[2] ?? -1) === 0.0) {
@@ -406,6 +426,49 @@ function recalcApplicationScore($pdo, int $application_id): float {
     }
 
     return $result['weighted_score'];
+}
+
+function kraEffectiveComputedPoints(array $submission): float {
+    $points = (float)($submission['computed_points'] ?? 0);
+    $parts = array_map('trim', explode('|||', (string)($submission['remarks'] ?? '')));
+    if (($parts[0] ?? '') === 'CUSTOM') {
+        return max($points, max(0.0, (float)($parts[4] ?? 0)));
+    }
+    return $points;
+}
+
+function recalcApplicationsAfterCriteriaChange(PDO $pdo, ?int $cycle_id = null, ?string $position_rank = null): int {
+    try {
+        $where = ["a.status <> 'draft'"];
+        $params = [];
+
+        if ($cycle_id) {
+            $where[] = 'a.cycle_id = ?';
+            $params[] = $cycle_id;
+        }
+        if ($position_rank !== null && $position_rank !== '') {
+            $where[] = "COALESCE(NULLIF(a.position_title, ''), u.`rank`) = ?";
+            $params[] = $position_rank;
+        }
+
+        $stmt = $pdo->prepare("
+            SELECT a.application_id
+            FROM applications a
+            JOIN users u ON u.user_id = a.user_id
+            WHERE " . implode(' AND ', $where)
+        );
+        $stmt->execute($params);
+
+        $count = 0;
+        foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $app_id) {
+            recalcApplicationScore($pdo, (int)$app_id);
+            $count++;
+        }
+        return $count;
+    } catch (\Throwable $e) {
+        error_log('SUCFRMS criteria recalculation error: ' . $e->getMessage());
+        return 0;
+    }
 }
 
 /**
@@ -435,7 +498,7 @@ function getApplicationScoreSummary($pdo, int $application_id, bool $refresh = t
     }
 
     $app_stmt = $pdo->prepare("
-        SELECT a.*, u.rank AS faculty_rank
+        SELECT a.*, u.`rank` AS faculty_rank
         FROM applications a
         JOIN users u ON a.user_id = u.user_id
         WHERE a.application_id = ?
@@ -445,10 +508,9 @@ function getApplicationScoreSummary($pdo, int $application_id, bool $refresh = t
     $app = $app_stmt->fetch(PDO::FETCH_ASSOC) ?: [];
 
     $verified_stmt = $pdo->prepare("
-        SELECT kra_category, COALESCE(SUM(computed_points),0) AS entry_total, MAX(verified) AS verified
+        SELECT kra_category, computed_points, remarks, verified
         FROM kra_submissions
         WHERE application_id = ?
-        GROUP BY kra_category
     ");
     $verified_stmt->execute([$application_id]);
 
@@ -460,8 +522,8 @@ function getApplicationScoreSummary($pdo, int $application_id, bool $refresh = t
     ];
     foreach ($verified_stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
         if (!isset($kra_map[$row['kra_category']])) continue;
-        $kra_map[$row['kra_category']]['entry_total'] = (float)$row['entry_total'];
-        $kra_map[$row['kra_category']]['verified'] = (int)$row['verified'];
+        $kra_map[$row['kra_category']]['entry_total'] += kraEffectiveComputedPoints($row);
+        $kra_map[$row['kra_category']]['verified'] = max((int)$kra_map[$row['kra_category']]['verified'], (int)$row['verified']);
     }
 
     if ($result) {
@@ -528,8 +590,15 @@ function getApplicationScoreSummary($pdo, int $application_id, bool $refresh = t
 /**
  * Returns KRA weights (as decimals) based on faculty rank.
  */
+/**
+ * Returns KRA weights (as decimals) based on faculty rank.
+ * Delegates to Scoring\Orchestrator::getKraWeights() — single source of truth.
+ */
 function getKraWeights(string $rank): array {
-    $rank = strtolower(trim($rank));
+    if (class_exists('\Scoring\Orchestrator')) {
+        return \Scoring\Orchestrator::getKraWeights($rank);
+    }
+    // Fallback (Orchestrator not loaded) — mirrors the same table
     if (preg_match('/^instructor/i', $rank))
         return ['Instruction'=>0.60,'Research'=>0.10,'Extension'=>0.20,'Professional Development'=>0.10];
     if (preg_match('/^assistant professor/i', $rank))
@@ -540,7 +609,6 @@ function getKraWeights(string $rank): array {
         return ['Instruction'=>0.30,'Research'=>0.40,'Extension'=>0.20,'Professional Development'=>0.10];
     if (preg_match('/^(college|university) professor/i', $rank))
         return ['Instruction'=>0.20,'Research'=>0.50,'Extension'=>0.20,'Professional Development'=>0.10];
-    // Default: Instructor weights
     return ['Instruction'=>0.60,'Research'=>0.10,'Extension'=>0.20,'Professional Development'=>0.10];
 }
 
@@ -634,19 +702,107 @@ function getCriteria($pdo, string $key, ?int $cycle_id = null, ?string $position
  *   Extension:                Subtype ||| Title ||| Val1 ||| Val2
  *   Professional Development: Credential ||| Degree value
  */
+function kraInstructionDisplayTitle(string $critType, string $storedLabel): string {
+    $raw = $storedLabel !== '' ? $storedLabel : implode('|', array_slice(explode('|', $critType), 2));
+    $label = kraCleanEntryDisplayTitle(str_replace('\\u2014', ' - ', $raw));
+    $norm = strtolower(preg_replace('/[^a-z0-9]+/', ' ', $label));
+    $isCo = str_contains($norm, 'co author') || str_contains($norm, 'coauthor');
+
+    if (str_starts_with($critType, 'B|') || $critType === 'B-material') {
+        if (str_contains($norm, 'textbook chapter')) return 'Textbook Chapter, ' . ($isCo ? 'Co-Author' : 'Sole Author');
+        if (str_contains($norm, 'manual') || str_contains($norm, 'module')) return 'Manual / Module, ' . ($isCo ? 'Co-Author' : 'Sole Author');
+        if (str_contains($norm, 'multimedia')) return 'Multimedia Teaching Materials';
+        if (str_contains($norm, 'testing') || str_contains($norm, 'validated')) return 'Validated Testing Materials';
+        if (str_contains($norm, 'program')) return 'Academic Program Dev/Revision, ' . (str_contains($norm, 'contributor') ? 'Contributor' : 'Lead');
+        if (str_contains($norm, 'textbook')) return 'Textbook, ' . ($isCo ? 'Co-Author' : 'Sole Author');
+    }
+
+    if (str_starts_with($critType, 'C|') || $critType === 'C-thesis') {
+        if (str_contains($norm, 'special') || str_contains($norm, 'capstone')) $level = 'Special Project / Capstone';
+        elseif (str_contains($norm, 'undergraduate')) $level = 'Undergraduate Thesis';
+        elseif (str_contains($norm, 'master')) $level = "Master's Thesis";
+        elseif (str_contains($norm, 'doctor')) $level = 'Doctoral Dissertation';
+        else $level = '';
+
+        if (str_contains($norm, 'panel')) return trim('Panel Member: ' . $level);
+        if (str_contains($norm, 'mentor')) return 'Mentor: Student/Team Competition Winner';
+        if ($level !== '') return 'Adviser: ' . $level;
+    }
+
+    return $label;
+}
+
+function kraExtensionSubtypeDisplayTitle(string $subtype): string {
+    return [
+        'moa-linkage' => 'MOA/Linkage Partnership',
+        'income' => 'Income Generation',
+        'accredit-local' => 'Local Accreditation/QA Service',
+        'accredit-intl' => 'International Accreditation/QA Service',
+        'judge-research' => 'Judging Research Awards',
+        'judge-other' => 'Judging Academic Competitions',
+        'consultant-local' => 'Local Consultant/Expert Service',
+        'consultant-intl' => 'International Consultant/Expert Service',
+        'media-column-occasional' => 'Occasional Newspaper/Online Column',
+        'media-column-regular' => 'Regular Column',
+        'media-tv-radio-host' => 'Hosting TV/Radio/Online Program',
+        'media-guest' => 'Guesting as Technical Expert',
+        'resource-speaker-local' => 'Resource Person/Speaker, Local',
+        'resource-speaker-intl' => 'Resource Person/Speaker, International',
+        'outreach-isr-lead' => 'Head of Outreach/Extension Activity',
+        'outreach-isr-member' => 'Participant in Outreach/Extension Activity',
+        'csr-satisfaction' => 'Client Satisfaction Rating',
+    ][$subtype] ?? ucwords(str_replace('-', ' ', $subtype));
+}
+
+function kraProfessionalDevelopmentDisplayTitle(string $critType, string $subVal): string {
+    if ($critType === 'A-org') return 'Professional Org Membership';
+    if ($critType === 'B-training') return $subVal === '2' ? 'Training/Conference, International' : 'Training/Conference, Local';
+    if ($critType === 'B-paper') return $subVal === '5' ? 'Paper Presentation, International' : 'Paper Presentation, Local';
+    if ($critType === 'B-degree') {
+        return match($subVal) {
+            '40' => 'Doctorate / Additional Doctorate',
+            '20' => "Additional Master's Degree",
+            '10' => "Post-Master's / Post-Doctoral Certificate",
+            default => 'Educational Qualification',
+        };
+    }
+    if ($critType === 'C-award') {
+        return match($subVal) {
+            '2' => 'Award / Recognition, Institutional',
+            '3' => 'Award / Recognition, Local / Regional',
+            '4' => 'Award / Recognition, National',
+            '5' => 'Award / Recognition, International (CONFIG GAP)',
+            '0' => 'Award / Recognition, Prestigious (Sub-rank Trigger)',
+            default => 'Award / Recognition',
+        };
+    }
+    return kraCleanEntryDisplayTitle($critType);
+}
+
 function formatKraRemarks(string $category, string $remarks): string {
     $p = array_map('trim', explode('|||', $remarks));
+    $numbering = kraNumberingFindByStoredType($category, $p[0] ?? '', $p);
+    $numberedLabel = $numbering ? kraNumberingDisplayLabel($numbering) : '';
 
     switch ($category) {
         case 'Instruction':
             $critType = $p[0] ?? '';
+            if ($critType === 'CUSTOM') {
+                $label = $p[3] ?? 'Custom criterion';
+                $pts = number_format((float)($p[4] ?? 0), 2);
+                $detail = $p[5] ?? '';
+                $out = '<div><strong>' . htmlspecialchars($label, ENT_QUOTES) . '</strong> <span class="text-muted" style="font-size:0.75rem;">(' . $pts . ' pts)</span></div>';
+                if ($detail !== '') $out .= '<div class="text-muted" style="font-size:0.82rem;">' . htmlspecialchars($detail, ENT_QUOTES) . '</div>';
+                return $out;
+            }
             $d1       = $p[1] ?? '';
             $d2       = $p[2] ?? '';
             $notes    = $p[3] ?? '';
             if ($critType === 'A-set-sef') {
                 $parts = [];
-                if ($d1 !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">SET</span> <strong>' . htmlspecialchars($d1, ENT_QUOTES) . '%</strong>';
-                if ($d2 !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">SEF</span> <strong>' . htmlspecialchars($d2, ENT_QUOTES) . '%</strong>';
+                $parts[] = '<span class="text-muted" style="font-size:0.75rem;">1.1 Student Evaluation (60%)</span> <strong>' . htmlspecialchars($d1, ENT_QUOTES) . '%</strong>';
+                $parts[] = '<span class="text-muted" style="font-size:0.75rem;">1.2 Supervisor\'s Evaluation (40%)</span> <strong>' . htmlspecialchars($d2, ENT_QUOTES) . '%</strong>';
+                $parts = array_filter($parts, fn($part) => !str_contains($part, '<strong>%</strong>'));
                 if ($notes !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">Notes:</span> ' . htmlspecialchars($notes, ENT_QUOTES);
                 return implode(' &nbsp;|&nbsp; ', $parts) ?: '-';
             } elseif ($critType === 'A-set-sef-sem') {
@@ -657,41 +813,39 @@ function formatKraRemarks(string $category, string $remarks): string {
                 $parts = [];
                 if ($period !== '') $parts[] = '<strong>' . htmlspecialchars($period, ENT_QUOTES) . '</strong>';
                 $parts[] = '<span class="text-muted" style="font-size:0.75rem;">' . $sem . '</span>';
-                if ($set !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">SET</span> <strong>' . htmlspecialchars($set, ENT_QUOTES) . '%</strong>';
-                if ($sef !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">SEF</span> <strong>' . htmlspecialchars($sef, ENT_QUOTES) . '%</strong>';
+                if ($set !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">1.1 Student Evaluation (60%)</span> <strong>' . htmlspecialchars($set, ENT_QUOTES) . '%</strong>';
+                if ($sef !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">1.2 Supervisor\'s Evaluation (40%)</span> <strong>' . htmlspecialchars($sef, ENT_QUOTES) . '%</strong>';
                 return implode(' &nbsp;|&nbsp; ', $parts) ?: '-';
             } elseif ($critType === 'A-set-sem' || $critType === 'A-sef-sem') {
                 $period = $d1;
                 $sem    = $d2 === '2' ? '2nd Semester' : '1st Semester';
-                $label  = $critType === 'A-sef-sem' ? 'SEF' : 'SET';
+                $label  = $numberedLabel !== '' ? $numberedLabel : ($critType === 'A-sef-sem' ? 'SEF' : 'SET');
                 $score  = $p[3] ?? '';
                 $parts = [];
                 if ($period !== '') $parts[] = '<strong>' . htmlspecialchars($period, ENT_QUOTES) . '</strong>';
                 $parts[] = '<span class="text-muted" style="font-size:0.75rem;">' . $sem . '</span>';
-                if ($score !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">' . $label . '</span> <strong>' . htmlspecialchars($score, ENT_QUOTES) . '%</strong>';
+                if ($score !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">' . htmlspecialchars($label, ENT_QUOTES) . '</span> <strong>' . htmlspecialchars($score, ENT_QUOTES) . '%</strong>';
                 return implode(' &nbsp;|&nbsp; ', $parts) ?: '-';
             } elseif (str_starts_with($critType, 'B|')) {
-                $label = $d1 ?: implode('|', array_slice(explode('|', $critType), 2));
-                $label = str_replace('\\u2014', ' - ', $label);
-                $out = '<div><span class="badge bg-info" style="font-size:0.7rem;">Crit. B</span> ' . htmlspecialchars($label, ENT_QUOTES) . '</div>';
+                $label = kraInstructionDisplayTitle($critType, $d1);
+                $out = '<div><strong>' . htmlspecialchars($label, ENT_QUOTES) . '</strong></div>';
                 if ($d2 !== '' && $d2 !== '100') $out .= '<div class="text-muted" style="font-size:0.78rem;">Contribution: ' . htmlspecialchars($d2, ENT_QUOTES) . '%</div>';
                 return $out;
             } elseif (str_starts_with($critType, 'C|')) {
-                $label = $d1 ?: implode('|', array_slice(explode('|', $critType), 2));
-                $label = str_replace('\\u2014', ' - ', $label);
-                return '<div><span class="badge bg-warning text-dark" style="font-size:0.7rem;">Crit. C</span> ' . htmlspecialchars($label, ENT_QUOTES) . '</div>';
+                $label = kraInstructionDisplayTitle($critType, $d1);
+                return '<div><strong>' . htmlspecialchars($label, ENT_QUOTES) . '</strong></div>';
             } elseif ($critType === 'B-material') {
-                $out = '<div><span class="badge bg-info" style="font-size:0.7rem;">Crit. B</span> ' . htmlspecialchars($d1, ENT_QUOTES) . '</div>';
+                $out = '<div><strong>' . htmlspecialchars(kraInstructionDisplayTitle($critType, $d1), ENT_QUOTES) . '</strong></div>';
                 if ($d2 !== '' && $d2 !== '100') $out .= '<div class="text-muted" style="font-size:0.78rem;">Contribution: ' . htmlspecialchars($d2, ENT_QUOTES) . '%</div>';
                 return $out;
             } elseif ($critType === 'C-thesis') {
-                return '<div><span class="badge bg-warning text-dark" style="font-size:0.7rem;">Crit. C</span> ' . htmlspecialchars($d1, ENT_QUOTES) . '</div>';
+                return '<div><strong>' . htmlspecialchars(kraInstructionDisplayTitle($critType, $d1), ENT_QUOTES) . '</strong></div>';
             } elseif ($critType === 'C-mentor') {
                 $competition = $d1 ?: 'Mentorship';
                 $level       = $d2 ? htmlspecialchars($d2, ENT_QUOTES) : '';
                 $placement   = $notes ? htmlspecialchars($notes, ENT_QUOTES) : '';
-                $out = '<div><span class="badge bg-secondary" style="font-size:0.7rem;">Crit. C - Mentor</span> '
-                     . htmlspecialchars($competition, ENT_QUOTES) . '</div>';
+                $out = '<div><strong>Mentor: Student/Team Competition Winner</strong></div>';
+                if ($competition !== 'Mentorship') $out .= '<div>' . htmlspecialchars($competition, ENT_QUOTES) . '</div>';
                 $meta = array_filter([$level, $placement]);
                 if ($meta) $out .= '<div class="text-muted" style="font-size:0.76rem;">' . implode(' &middot; ', $meta) . '</div>';
                 $out .= '<div style="font-size:0.72rem;color:#f59e0b;font-weight:600;"><i class="bi bi-exclamation-triangle me-1"></i>PENDING  -  CONFIG_MENTORSHIP_POINTS not confirmed (JC01 p.78 source gap)</div>';
@@ -709,6 +863,14 @@ function formatKraRemarks(string $category, string $remarks): string {
             }
 
         case 'Research':
+            if (($p[0] ?? '') === 'CUSTOM') {
+                $label = $p[3] ?? 'Custom criterion';
+                $pts = number_format((float)($p[4] ?? 0), 2);
+                $detail = $p[5] ?? '';
+                $out = '<div><strong>' . htmlspecialchars($label, ENT_QUOTES) . '</strong> <span class="text-muted" style="font-size:0.75rem;">(' . $pts . ' pts)</span></div>';
+                if ($detail !== '') $out .= '<div class="text-muted" style="font-size:0.82rem;">' . htmlspecialchars($detail, ENT_QUOTES) . '</div>';
+                return $out;
+            }
             $type    = $p[0] ?? '';
             $dev     = $p[1] ?? '';
             $aff     = $p[2] ?? '';
@@ -716,7 +878,7 @@ function formatKraRemarks(string $category, string $remarks): string {
             $spec    = $p[4] ?? '';
             $contrib = $p[5] ?? '';
             $out = '';
-            if ($type  !== '') $out .= '<div><span class="badge bg-primary" style="font-size:0.72rem;">' . htmlspecialchars($type, ENT_QUOTES) . '</span></div>';
+            if ($type  !== '') $out .= '<div><strong>' . htmlspecialchars(kraCleanEntryDisplayTitle($type), ENT_QUOTES) . '</strong></div>';
             if ($dev   !== '') $out .= '<div class="text-muted" style="font-size:0.82rem;"><span class="text-muted" style="font-size:0.72rem;">Developers:</span> ' . htmlspecialchars($dev, ENT_QUOTES) . '</div>';
             if ($aff   !== '') $out .= '<div class="text-muted" style="font-size:0.78rem;"><span class="text-muted" style="font-size:0.72rem;">Affiliation:</span> ' . htmlspecialchars($aff, ENT_QUOTES) . '</div>';
             if ($area  !== '') $out .= '<div class="text-muted" style="font-size:0.78rem;"><span class="text-muted" style="font-size:0.72rem;">Area:</span> ' . htmlspecialchars($area, ENT_QUOTES) . '</div>';
@@ -725,12 +887,20 @@ function formatKraRemarks(string $category, string $remarks): string {
             return $out ?: '-';
 
         case 'Extension':
+            if (($p[0] ?? '') === 'CUSTOM') {
+                $label = $p[3] ?? 'Custom criterion';
+                $pts = number_format((float)($p[4] ?? 0), 2);
+                $detail = $p[5] ?? '';
+                $out = '<div><strong>' . htmlspecialchars($label, ENT_QUOTES) . '</strong> <span class="text-muted" style="font-size:0.75rem;">(' . $pts . ' pts)</span></div>';
+                if ($detail !== '') $out .= '<div class="text-muted" style="font-size:0.82rem;">' . htmlspecialchars($detail, ENT_QUOTES) . '</div>';
+                return $out;
+            }
             $subtype = $p[0] ?? '';
             $title   = $p[1] ?? '';
             $val1    = $p[2] ?? '';
             $val2    = $p[3] ?? '';
             $out = '';
-            if ($subtype !== '') $out .= '<div><span class="badge bg-primary" style="font-size:0.72rem;">' . htmlspecialchars($subtype, ENT_QUOTES) . '</span></div>';
+            if ($subtype !== '') $out .= '<div><strong>' . htmlspecialchars(kraExtensionSubtypeDisplayTitle($subtype), ENT_QUOTES) . '</strong></div>';
             if ($title   !== '') $out .= '<div><strong>' . htmlspecialchars($title, ENT_QUOTES) . '</strong></div>';
             $meta = [];
             if ($val1 !== '') $meta[] = '<span class="text-muted" style="font-size:0.78rem;">' . htmlspecialchars($val1, ENT_QUOTES) . '</span>';
@@ -739,6 +909,14 @@ function formatKraRemarks(string $category, string $remarks): string {
             return $out ?: '-';
 
         case 'Professional Development':
+            if (($p[0] ?? '') === 'CUSTOM') {
+                $label = $p[3] ?? 'Custom criterion';
+                $pts = number_format((float)($p[4] ?? 0), 2);
+                $detail = $p[5] ?? '';
+                $out = '<div><strong>' . htmlspecialchars($label, ENT_QUOTES) . '</strong> <span class="text-muted" style="font-size:0.75rem;">(' . $pts . ' pts)</span></div>';
+                if ($detail !== '') $out .= '<div class="text-muted" style="font-size:0.82rem;">' . htmlspecialchars($detail, ENT_QUOTES) . '</div>';
+                return $out;
+            }
             $critType = $p[0] ?? '';
             $desc     = $p[1] ?? '';
             $subVal   = $p[2] ?? '';
@@ -752,9 +930,7 @@ function formatKraRemarks(string $category, string $remarks): string {
                 'C-award'    => ['Crit. C', 'success',   'Award/Recognition'],
             ];
             if (isset($critLabels[$critType])) {
-                [$badge, $color, $label] = $critLabels[$critType];
-                $out = '<div><span class="badge bg-' . $color . '" style="font-size:0.7rem;">' . $badge . '</span> ';
-                $out .= '<span style="font-size:0.78rem;">' . htmlspecialchars($label, ENT_QUOTES) . '</span></div>';
+                $out = '<div><strong>' . htmlspecialchars(kraProfessionalDevelopmentDisplayTitle($critType, $subVal), ENT_QUOTES) . '</strong></div>';
                 if ($desc !== '') $out .= '<div class="text-muted" style="font-size:0.82rem;">' . htmlspecialchars($desc, ENT_QUOTES) . '</div>';
                 return $out;
             }
@@ -798,12 +974,12 @@ function statusBadge(string $status): string {
         'draft'          => ['#64748b', '#f1f5f9', 'Draft'],
         'submitted'      => ['#1a3a6b', '#e8eef7', 'Submitted'],
         'under_review'   => ['#1a3a6b', '#e8eef7', 'Under Evaluation'],
-        'talisay_review' => ['#1a3a6b', '#e8eef7', 'Under Evaluation'],
+        'talisay_review' => ['#1a3a6b', '#e8eef7', 'ITC Review'],
         'approved'       => ['#1a3a6b', '#f0f4fb', 'Evaluation Complete'],
         'reclassified'   => ['#1a3a6b', '#f0f4fb', 'Evaluation Complete'],
         'rejected'       => ['#475569', '#f8fafc', 'Returned for Revision'],
-        'needs_revision' => ['#475569', '#f8fafc', 'Returned for Revision'],
-        'admin_rejected' => ['#475569', '#f8fafc', 'Evaluation Complete'],
+        'needs_revision' => ['#c2410c', '#fff7ed', 'Needs Revision'],
+        'admin_rejected' => ['#dc2626', '#fef2f2', 'Returned by Admin'],
         'edit_requested' => ['#334155', '#f8fafc', 'Edit Requested'],
     ];
     [$tc, $bg, $label] = $map[$status] ?? ['#64748b', '#f1f5f9', ucfirst(str_replace('_', ' ', $status))];
@@ -900,9 +1076,9 @@ function computePotentialRank(array $raw_kra, string $current_rank, bool $has_na
         }
     }
 
-    // National/International Award bonus note
+    // Prestigious Award bonus note
     if ($has_national_award && ($result['award_bonus'] ?? 0) > 0) {
-        $flags[] = 'National/International Award applied: +1 sub-rank bonus (JC3 s.2022 Step 4)';
+        $flags[] = 'Prestigious Award (Auto Sub-Rank Trigger 2) applied: +1 sub-rank bonus (JC01 s.2026 Art. IV)';
     }
 
     // Step 4 - accreditation flags
@@ -947,39 +1123,49 @@ function getHighestRankInCategory(string $category, array $all_ranks): string {
  */
 function renderConfirmModal(): void { ?>
 <!-- Confirm Modal -->
-<div id="confirmModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:99999;align-items:center;justify-content:center;padding:1rem;">
-  <div style="background:#fff;border-radius:16px;width:100%;max-width:480px;box-shadow:0 20px 60px rgba(0,0,0,0.25);overflow:hidden;">
+<div id="confirmModal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,0.55);z-index:99999;align-items:center;justify-content:center;padding:1rem;">
+  <div style="background:#fff;border-radius:0;width:100%;max-width:400px;
+              box-shadow:0 8px 40px rgba(0,0,0,0.18);overflow:hidden;
+              border:1px solid #e2e8f0;">
 
-    <!-- Header with logo -->
-    <div style="background:#1a3a6b;padding:1.25rem 1.5rem;display:flex;align-items:center;gap:0.875rem;">
-      <img src="assets/images/logo.jpg" alt="SUCFRMS Logo"
-           style="width:40px;height:40px;border-radius:50%;object-fit:cover;border:2px solid #475569;clip-path:circle(50%);flex-shrink:0;">
+    <!-- Header -->
+    <div style="background:#1a3a6b;padding:0.9rem 1.25rem;display:flex;align-items:center;gap:0.65rem;">
+      <img src="<?= defined('BASE_URL') ? BASE_URL . 'assets/images/logo.jpg' : (str_contains($_SERVER['PHP_SELF'] ?? '', '/pages/') ? '../assets/images/logo.jpg' : 'assets/images/logo.jpg') ?>" alt=""
+           style="width:30px;height:30px;border-radius:50%;object-fit:cover;border:1.5px solid rgba(255,255,255,0.25);flex-shrink:0;">
       <div>
-        <div style="color:#fff;font-weight:700;font-size:0.95rem;line-height:1.2;">SUCFRMS</div>
-        <div style="color:#bfdbfe;font-size:0.72rem;margin-top:2px;">SUC Faculty Reclassification Management System</div>
+        <div style="color:#fff;font-weight:700;font-size:0.8rem;line-height:1.2;">SUCFRMS</div>
+        <div style="color:#93c5fd;font-size:0.65rem;">SUC Faculty Reclassification Management System</div>
       </div>
     </div>
 
     <!-- Body -->
-    <div style="padding:2rem 1.75rem 1.5rem;text-align:center;">
-      <div id="confirmModalIconWrap" style="width:68px;height:68px;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 1.25rem;">
-        <i id="confirmModalIcon" style="font-size:1.75rem;"></i>
+    <div style="padding:1.5rem 1.5rem 1.25rem;">
+      <div style="display:flex;align-items:flex-start;gap:0.85rem;">
+        <div id="confirmModalIconWrap"
+             style="width:36px;height:36px;border-radius:0;display:flex;align-items:center;
+                    justify-content:center;flex-shrink:0;margin-top:2px;">
+          <i id="confirmModalIcon" style="font-size:1.1rem;"></i>
+        </div>
+        <div>
+          <div id="confirmModalTitle"
+               style="font-weight:700;color:#1e293b;font-size:0.9rem;margin-bottom:4px;">Confirm Action</div>
+          <p id="confirmModalMsg"
+             style="color:#64748b;font-size:0.8rem;margin:0;line-height:1.55;">Are you sure you want to proceed?</p>
+        </div>
       </div>
-      <h5 id="confirmModalTitle" style="font-weight:700;color:#1e293b;margin-bottom:0.5rem;font-size:1.15rem;">Confirm Action</h5>
-      <p id="confirmModalMsg" style="color:#64748b;font-size:0.9rem;margin:0;line-height:1.6;">Are you sure you want to proceed?</p>
     </div>
 
-    <!-- Divider -->
-    <div style="height:1px;background:#e2e8f0;margin:0 1.75rem;"></div>
-
     <!-- Buttons -->
-    <div style="padding:1.25rem 1.75rem 1.75rem;display:flex;gap:0.75rem;">
+    <div style="padding:0.75rem 1.5rem 1.25rem;display:flex;gap:0.5rem;">
       <button type="button" id="confirmModalCancelBtn"
-              style="flex:1;padding:0.7rem 1rem;border:1px solid #cbd5e1;border-radius:8px;background:#fff;color:#475569;font-weight:600;cursor:pointer;font-size:0.875rem;">
+              style="flex:1;padding:0.55rem 0.75rem;border:1px solid #e2e8f0;border-radius:0;
+                     background:#fff;color:#475569;font-weight:600;cursor:pointer;font-size:0.8rem;">
         Cancel
       </button>
       <button type="button" id="confirmModalBtn"
-              style="flex:1;padding:0.7rem 1rem;border:none;border-radius:8px;color:#fff;font-weight:600;cursor:pointer;font-size:0.875rem;display:flex;align-items:center;justify-content:center;gap:0.4rem;background:#1e4d8c;">
+              style="flex:1;padding:0.55rem 0.75rem;border:none;border-radius:0;
+                     color:#fff;font-weight:700;cursor:pointer;font-size:0.8rem;
+                     display:flex;align-items:center;justify-content:center;gap:0.35rem;background:#1a3a6b;">
         <i id="confirmModalBtnIcon" class="bi bi-check-circle"></i>
         <span id="confirmModalBtnLabel">Confirm</span>
       </button>
@@ -1004,10 +1190,10 @@ function _showConfirmModal(msg, btnLabel, btnIcon, isRed, onConfirm) {
         icon.style.color = '#dc2626';
         btn.style.background = '#dc2626';
     } else {
-        wrap.style.background = '#f0fdf4';
+        wrap.style.background = '#eff6ff';
         icon.className = 'bi ' + btnIcon;
-        icon.style.color = '#16a34a';
-        btn.style.background = '#16a34a';
+        icon.style.color = '#1a3a6b';
+        btn.style.background = '#1a3a6b';
     }
 
     title.textContent = btnLabel;

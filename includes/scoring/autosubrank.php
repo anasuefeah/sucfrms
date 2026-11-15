@@ -2,12 +2,11 @@
 /**
  * AutoSubRankCalculator
  * -----------------------------------------------------------------------------
- * Determines the optimal doctorate / award mode automatically.
- * No manual faculty choice. System calculates based on:
- *   1. Weighted score vs. 41-point threshold
- *   2. Rank eligibility (Professor I+ cannot trigger doctorate for sub-rank)
- *   3. Historical doctorate usage (first doctorate in career only)
- *   4. Award eligibility (score >= 41 required to trigger)
+ * Determines doctorate / award mode for JC01 s.2026 auto sub-rank review.
+ * System calculates based on:
+ *   1. Rank eligibility (Professor I+ cannot trigger doctorate for sub-rank)
+ *   2. Historical doctorate usage (first doctorate in career only)
+ *   3. Prestigious award detection, flagged for human confirmation
  *
  * Usage (main application):
  *   $calc = new \Scoring\AutoSubRankCalculator($pdo, $application_id);
@@ -25,15 +24,18 @@ namespace Scoring;
 
 class AutoSubRankCalculator
 {
-    // Score threshold above which doctorate triggering is optimal
+    // Retained for old records and pre-existing UI text only.
+    // JC01 s.2026 auto sub-rank triggers are not score-threshold based.
     const SCORE_THRESHOLD = 41.0;
 
     // Points awarded when doctorate is used in points_only mode
     const DOCTORATE_POINTS = 40.0;
 
     // Ranks that are NOT eligible for doctorate-based sub-rank trigger
-    // (Professor I and above  -  doctorate only contributes 40 pts for them)
+    // (Associate Professor V, Professor I and above — doctorate only contributes 40 pts for them)
+    // Reference: JC01 s.2026 Auto Sub Rank section — "NOT eligible: Associate Professor V or any Professor rank"
     const INELIGIBLE_RANK_PATTERNS = [
+        '/^Associate\s+Professor\s+V$/i',
         '/^Professor\s+(I|II|III|IV|V|VI)$/i',
         '/^University\s+Professor/i',
     ];
@@ -77,7 +79,7 @@ class AutoSubRankCalculator
 
         // Load application + faculty rank
         $stmt = $this->pdo->prepare(
-            "SELECT a.weighted_score, u.user_id, u.rank
+            "SELECT a.weighted_score, u.user_id, u.`rank`
              FROM applications a
              JOIN users u ON a.user_id = u.user_id
              WHERE a.application_id = ?"
@@ -251,22 +253,24 @@ class AutoSubRankCalculator
         $stmt->execute([$application_id]);
         $row = $stmt->fetch(\PDO::FETCH_ASSOC);
 
-        if (!$row) {
-            // No record yet  -  default to points_only (safe fallback: add 40 pts)
-            return self::DOCTORATE_POINTS;
-        }
+        if (!$row) return 0.0;
 
         // triggered = doctorate used for rank increase, NOT for points
         if ($row['doctorate_mode'] === 'triggered') {
             return 0.0;
         }
 
-        // points_only or blocked_historical = add 40 points
-        if (in_array($row['doctorate_mode'], ['points_only', 'blocked_historical'])) {
+        // points_only, blocked_historical, or not_eligible-with-doctorate = add 40 points
+        // not_eligible covers rank-blocked faculty (Associate Professor V, Professor ranks) who
+        // still have a doctorate — it contributes points to KRA IV instead of a rank trigger.
+        if (in_array($row['doctorate_mode'], ['points_only', 'blocked_historical'], true)) {
             return (float)($row['doctorate_points'] ?: self::DOCTORATE_POINTS);
         }
+        if ($row['doctorate_mode'] === 'not_eligible' && (float)($row['doctorate_points'] ?? 0) > 0) {
+            return (float)$row['doctorate_points'];
+        }
 
-        // not_eligible = faculty has no doctorate or rank blocks it  -  add 40 pts if doctorate present
+        // not_eligible with no doctorate_points = no doctorate present
         return 0.0;
     }
 
@@ -283,10 +287,13 @@ class AutoSubRankCalculator
         $stmt->execute([$user_id]);
         $row = $stmt->fetch(\PDO::FETCH_ASSOC);
 
-        if (!$row) return self::DOCTORATE_POINTS;
+        if (!$row) return 0.0;
         if ($row['doctorate_mode'] === 'triggered') return 0.0;
         if (in_array($row['doctorate_mode'], ['points_only', 'blocked_historical'])) {
             return (float)($row['doctorate_points'] ?: self::DOCTORATE_POINTS);
+        }
+        if ($row['doctorate_mode'] === 'not_eligible' && (float)($row['doctorate_points'] ?? 0) > 0) {
+            return (float)$row['doctorate_points'];
         }
         return 0.0;
     }
@@ -301,7 +308,7 @@ class AutoSubRankCalculator
             'points_only'        => 'POINTS ONLY (40 pts)',
             'not_eligible'       => 'NOT ELIGIBLE',
             'blocked_historical' => 'ALREADY USED (40 pts)',
-            'insufficient_score' => 'SCORE TOO LOW',
+            'insufficient_score' => 'NEEDS REVIEW',
             default              => strtoupper(str_replace('_', ' ', $mode)),
         };
     }
@@ -358,7 +365,8 @@ class AutoSubRankCalculator
             if (!$rank_eligible) {
                 $doctorate_mode   = 'not_eligible';
                 $doctorate_points = self::DOCTORATE_POINTS;
-                $doctorate_reason = "Your rank ({$rank}) is not eligible for doctorate-based sub-rank increase. "
+                $doctorate_reason = "Your rank ({$rank}) is not eligible for doctorate-based sub-rank increase per JC01 s.2026 "
+                                  . "(Associate Professor V and all Professor ranks are excluded). "
                                   . "Doctorate contributes " . (int)self::DOCTORATE_POINTS . " points to your KRA IV score.";
             } else {
                 // Check historical usage (only for real applications, not pre-eval)
@@ -373,19 +381,11 @@ class AutoSubRankCalculator
                     $doctorate_points = self::DOCTORATE_POINTS;
                     $doctorate_reason = "Your doctorate was already used for auto sub-rank in {$cycle} (evaluation completed {$date}). "
                                       . "It now contributes " . (int)self::DOCTORATE_POINTS . " points to your score instead.";
-                } elseif ($weighted_score >= self::SCORE_THRESHOLD) {
+                } else {
                     $doctorate_mode   = 'triggered';
                     $doctorate_points = 0.0;
-                    $doctorate_reason = "Your weighted score is {$weighted_score} (at or above the "
-                                      . (int)self::SCORE_THRESHOLD . "-point threshold). "
-                                      . "Triggering your doctorate grants +1 sub-rank  -  this is the optimal strategy.";
-                } else {
-                    $doctorate_mode   = 'points_only';
-                    $doctorate_points = self::DOCTORATE_POINTS;
-                    $doctorate_reason = "Your weighted score is {$weighted_score} (below the "
-                                      . (int)self::SCORE_THRESHOLD . "-point threshold). "
-                                      . "Using your doctorate as " . (int)self::DOCTORATE_POINTS
-                                      . " points is optimal to maximise your score.";
+                    $doctorate_reason = "Your doctorate is detected for auto sub-rank review. "
+                                      . "JC01 s.2026 treats the doctorate as a rank trigger when rank and first-doctorate rules are met, not as ordinary KRA IV points.";
                 }
             }
         } else {
@@ -398,21 +398,20 @@ class AutoSubRankCalculator
         $award_reason = '';
 
         if ($has_award) {
-            if ($weighted_score >= self::SCORE_THRESHOLD) {
+            if ($isPreEval) {
+                // Self-assessment: no evaluator involved, award counts directly as +1.
                 $award_mode   = 'triggered';
-                $award_reason = "Your weighted score is {$weighted_score} (at or above the "
-                              . (int)self::SCORE_THRESHOLD . "-point threshold). "
-                              . "Your national/international award qualifies for +1 sub-rank increase.";
+                $award_reason = "A prestigious national/international award was detected in your Prof. Development entries. "
+                              . "In self-assessment this is counted as +1 sub-rank automatically. "
+                              . "Note: in the official reclassification application, an evaluator must still verify the award evidence.";
             } else {
+                // Official application: human checker confirmation required before sub-rank is granted.
                 $award_mode   = 'insufficient_score';
-                $award_reason = "Your weighted score is {$weighted_score} (below the "
-                              . (int)self::SCORE_THRESHOLD . "-point threshold). "
-                              . "A score of at least " . (int)self::SCORE_THRESHOLD
-                              . " is required for an award to trigger sub-rank increase.";
+                $award_reason = "A prestigious award (Auto Sub-Rank Trigger 2) was detected. JC01 s.2026 requires human confirmation before the sub-rank can be granted — the system never auto-approves this trigger.";
             }
         } else {
-            $award_reason = "No national/international award found in your KRA IV entries. "
-                          . "Add an award entry (C-award with sub-value = 0) to enable this criterion.";
+            $award_reason = "No prestigious award found in your KRA IV entries. "
+                          . "Add an award entry (C-award with sub-value = 0) for a prestigious national/international award (e.g. Ramon Magsaysay Award) to enable this criterion.";
         }
 
         // -- Combined display reason ------------------------------------------
@@ -485,8 +484,9 @@ class AutoSubRankCalculator
     }
 
     /**
-     * Detect national/international award from kra_submissions.
-     * C-award with sub-value = 0 = national/international trigger.
+     * Detect prestigious award (Auto Sub-Rank Trigger 2) from kra_submissions.
+     * C-award with sub-value = 0 = prestigious award sub-rank trigger
+     * (Ramon Magsaysay-tier; requires human checker confirmation, never auto-approved).
      */
     public function detectAwardFromSubmissions(): array
     {
@@ -505,7 +505,7 @@ class AutoSubRankCalculator
             $subVal = (float)($parts[2] ?? -1);
 
             if ($crit === 'C-award' && $subVal === 0.0) {
-                return [true, $desc ?: 'National/International Award'];
+                return [true, $desc ?: 'Prestigious Award (Auto Sub-Rank Trigger 2)'];
             }
         }
 
@@ -754,14 +754,33 @@ class AutoSubrank
         [$has_doctorate, ] = $calc->detectDoctoratFromSubmissions();
 
         // Indexed journal article within the last 3 years (KRA II Criterion A).
+        // We check for a publication year in the remarks (title/description fields
+        // often contain the year). Falls back to submitted_at if no year is found.
         $indexed_verified = false;
         $cutoff = strtotime('-3 years');
         foreach (($subs_by_cat['Research'] ?? []) as $s) {
             $parts = array_map('trim', explode('|||', $s['remarks'] ?? ''));
             $crit  = $parts[0] ?? '';
-            if (in_array($crit, ['journal_indexed_sole', 'journal_indexed_co'], true)) {
-                $ts = strtotime($s['submitted_at'] ?? '');
-                if ($ts !== false && $ts >= $cutoff) { $indexed_verified = true; break; }
+            if (!in_array($crit, ['journal_indexed_sole', 'journal_indexed_co',
+                                   'Indexed Journal Article, Sole Author',
+                                   'Indexed Journal Article, Co-Author'], true)
+                && !str_contains(strtolower($crit), 'journal')
+                && !str_contains(strtolower($crit), 'indexed')) {
+                continue;
+            }
+            // Try to extract a 4-digit year from any remarks field (e.g. title, area)
+            $pub_ts = false;
+            $remarks_text = implode(' ', $parts);
+            if (preg_match('/\b(20\d{2}|19\d{2})\b/', $remarks_text, $ym)) {
+                $pub_ts = mktime(0, 0, 0, 12, 31, (int)$ym[1]); // end of that year
+            }
+            // Fall back to submitted_at if no year found in remarks
+            if ($pub_ts === false) {
+                $pub_ts = strtotime($s['submitted_at'] ?? '');
+            }
+            if ($pub_ts !== false && $pub_ts >= $cutoff) {
+                $indexed_verified = true;
+                break;
             }
         }
 
@@ -796,6 +815,21 @@ class AutoSubrank
             $has_award, $award_details,
             false // isPreEval
         );
+
+        // -- Preserve checker-verified award trigger ---------------------------
+        // computeMode() never sets award_mode='triggered' (requires human
+        // confirmation). If a checker has already verified the award in the DB,
+        // keep that decision rather than overwriting it back to 'insufficient_score'.
+        if ($has_award && $result['award_mode'] === 'insufficient_score' && $application_id > 0) {
+            try {
+                $asr_check = $pdo->prepare("SELECT award_verified FROM auto_sub_rank WHERE application_id = ?");
+                $asr_check->execute([$application_id]);
+                $asr_row = $asr_check->fetch(\PDO::FETCH_ASSOC);
+                if ($asr_row && $asr_row['award_verified'] === 'verified') {
+                    $result['award_mode'] = 'triggered';
+                }
+            } catch (\Exception $e) { /* table may not exist yet */ }
+        }
 
         $qualified_phd   = $has_doctorate && $result['doctorate_mode'] === 'triggered';
         $qualified_award = $has_award && $result['award_mode'] === 'triggered';

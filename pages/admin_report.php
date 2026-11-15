@@ -38,7 +38,7 @@ if ($status && in_array($status, ['submitted','under_review','approved','rejecte
 if ($campus) { $where .= ' AND u.campus_id = ?'; $params[] = $campus; }
 
 $apps = $pdo->prepare("
-    SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, u.employee_id, u.rank,
+    SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, u.employee_id, u.`rank`,
            COALESCE(camp.campus_name, '-') as campus_name,
            c.cycle_name,
            chk.checker_label as checker_name, chk.user_id as checker_uid

@@ -9,6 +9,7 @@ ob_start(); // Buffer output before includes to prevent HTML leaking into JSON
 if (session_status() === PHP_SESSION_NONE) session_start();
 require_once __DIR__ . '/../../config/db.php';
 require_once __DIR__ . '/../../includes/functions.php';
+KraRevisionWorkflow::ensureSchema($pdo);
 
 // -- Runtime migration: create kra_evidence_files if missing --
 try { $pdo->query("SELECT evidence_id FROM kra_evidence_files LIMIT 1"); }
@@ -34,53 +35,48 @@ const FILE_CAPS = [
     'Professional Development' => 10,
 ];
 
+function kraFindPreviousUnsuccessfulEvidence(\PDO $pdo, int $user_id, int $current_app_id, string $filename, int $size): array|false {
+    $stmt = $pdo->prepare("
+        SELECT a.application_id, c.cycle_name, a.reviewed_at
+        FROM kra_evidence_files ef
+        JOIN kra_submissions ks ON ks.submission_id = ef.submission_id
+        JOIN applications a ON a.application_id = ks.application_id
+        LEFT JOIN cycles c ON c.cycle_id = a.cycle_id
+        WHERE a.user_id = ?
+          AND a.application_id <> ?
+          AND a.status = 'admin_rejected'
+          AND LOWER(ef.original_filename) = LOWER(?)
+          AND ef.file_size_bytes = ?
+        ORDER BY a.reviewed_at DESC, a.application_id DESC
+        LIMIT 1
+    ");
+    $stmt->execute([$user_id, $current_app_id, $filename, $size]);
+    return $stmt->fetch(\PDO::FETCH_ASSOC) ?: false;
+}
+
 /**
  * Server-side KRA score computation from remarks string.
  * Routes through JC01 s.2026 KRA scorer modules.
  * Faculty cannot self-assign scores  -  all points are derived from structured data.
  */
 function computeKraScore(string $category, string $remarks): float {
-    // Load scorer modules if not already loaded
-    $scoring_dir = __DIR__ . '/../../includes/scoring/';
-    static $loaded = false;
-    if (!$loaded) {
-        foreach (['kra1_scorer.php','kra2_scorer.php','kra3_scorer.php','kra4_scorer.php'] as $f) {
-            if (file_exists($scoring_dir . $f)) require_once $scoring_dir . $f;
-        }
-        $loaded = true;
-    }
-
-    switch ($category) {
-        case 'Instruction':
-            return class_exists('\Scoring\KRA1Scorer')
-                ? \Scoring\KRA1Scorer::computeFromRemarks($remarks)
-                : _legacyKRA1Score($remarks);
-
-        case 'Research':
-            return class_exists('\Scoring\KRA2Scorer')
-                ? \Scoring\KRA2Scorer::computeFromRemarks($remarks)
-                : _legacyKRA2Score($remarks);
-
-        case 'Extension':
-            return class_exists('\Scoring\KRA3Scorer')
-                ? \Scoring\KRA3Scorer::computeFromRemarks($remarks)
-                : _legacyKRA3Score($remarks);
-
-        case 'Professional Development':
-            return class_exists('\Scoring\KRA4Scorer')
-                ? \Scoring\KRA4Scorer::computeFromRemarks($remarks)
-                : _legacyKRA4Score($remarks);
-
-        default:
-            return 0.0;
-    }
+    global $pdo, $kra_criteria_context;
+    require_once __DIR__ . '/../scoring/entry_scores.php';
+    return \Scoring\EntryScores::compute(
+        $pdo, $category, $remarks,
+        (int)($kra_criteria_context['cycle_id'] ?? 0),
+        $kra_criteria_context['position_rank'] ?? null
+    );
 }
-
 // -- Legacy fallback scorers (retained for safety) ----------------------------
 function kraRemarksAreMeaningful(string $category, string $remarks): bool {
     $parts = array_map('trim', explode('|||', $remarks));
     $type = $parts[0] ?? '';
     if ($type === '') return false;
+    if ($type === 'CUSTOM') {
+        return ($parts[1] ?? '') !== '' && ($parts[2] ?? '') !== ''
+            && ($parts[3] ?? '') !== '' && (float)($parts[4] ?? 0) > 0;
+    }
 
     if ($category === 'Instruction') {
         if ($type === 'A-set-sef') {
@@ -109,6 +105,8 @@ function kraRemarksAreMeaningful(string $category, string $remarks): bool {
             'csr-satisfaction', 'president', 'vice-president', 'chancellor', 'vice-chancellor',
             'campus director', 'office director', 'dean', 'associate dean', 'dept head',
             'program chair', 'committee chair', 'committee member', 'coordinator',
+            'faculty regent', 'university secretary', 'college secretary',
+            'project head inst', 'committee chair inst', 'committee member inst',
         ];
         return in_array($type, $allowed_extension, true);
     }
@@ -123,23 +121,24 @@ function kraRemarksAreMeaningful(string $category, string $remarks): bool {
 function _legacyKRA1Score(string $remarks): float {
     $p = array_map('trim', explode('|||', $remarks));
     $ct = $p[0] ?? '';
+    $caps = _legacyKRA1CriterionACaps();
     if ($ct === 'A-set-sef') {
         $set = min(100, max(0, (float)($p[1] ?? 0)));
         $sef = min(100, max(0, (float)($p[2] ?? 0)));
-        return round(($set / 100) * 36 + ($sef / 100) * 24, 2);
+        return round(($set / 100) * $caps['set'] + ($sef / 100) * $caps['sef'], 2);
     }
     if ($ct === 'A-set-sef-sem') {
         $set = min(100, max(0, (float)($p[3] ?? 0)));
         $sef = min(100, max(0, (float)($p[4] ?? 0)));
-        return round(($set / 100) * 36 + ($sef / 100) * 24, 2);
+        return round(($set / 100) * $caps['set'] + ($sef / 100) * $caps['sef'], 2);
     }
     if ($ct === 'A-set-sem') {
         $set = min(100, max(0, (float)($p[3] ?? 0)));
-        return round(($set / 100) * 36, 2);
+        return round(($set / 100) * $caps['set'], 2);
     }
     if ($ct === 'A-sef-sem') {
         $sef = min(100, max(0, (float)($p[3] ?? 0)));
-        return round(($sef / 100) * 24, 2);
+        return round(($sef / 100) * $caps['sef'], 2);
     }
     if (str_starts_with($ct, 'B|')) {
         $flat = explode('|', $ct);
@@ -183,7 +182,39 @@ function _legacyKRA1Score(string $remarks): float {
     }
     $set = min(100, max(0, (float)($p[0] ?? 0)));
     $sef = min(100, max(0, (float)($p[1] ?? 0)));
-    return round(($set / 100) * 36 + ($sef / 100) * 24, 2);
+    return round(($set / 100) * $caps['set'] + ($sef / 100) * $caps['sef'], 2);
+}
+
+function _legacyKRA1CriterionACaps(): array {
+    global $pdo;
+    static $caps = null;
+    if ($caps !== null) return $caps;
+
+    $caps = ['set' => 36.0, 'sef' => 24.0];
+    if (!isset($pdo) || !($pdo instanceof PDO)) return $caps;
+
+    try {
+        $stmt = $pdo->prepare("
+            SELECT criterion_key, max_points
+            FROM scoring_criteria
+            WHERE criterion_key IN ('kra1_a_set', 'kra1_a_sef')
+              AND is_active = 1
+            ORDER BY COALESCE(cycle_id, 0) DESC, COALESCE(position_rank, '') DESC
+        ");
+        $stmt->execute();
+        $seen = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $key = $row['criterion_key'] === 'kra1_a_set' ? 'set' : 'sef';
+            if (!isset($seen[$key]) && (float)$row['max_points'] > 0) {
+                $caps[$key] = (float)$row['max_points'];
+                $seen[$key] = true;
+            }
+        }
+    } catch (Exception $e) {
+        // Keep defaults if criteria cannot be read.
+    }
+
+    return $caps;
 }
 
 function _legacyKRA2Score(string $remarks): float {
@@ -206,7 +237,7 @@ function _legacyKRA4Score(string $remarks): float {
     $ct = $p[0] ?? ''; $sv = max(0,(float)($p[2]??0));
     $allowed = match($ct) {
         'A-org'=>[5.0],'B-training'=>[1.0,2.0],'B-paper'=>[3.0,5.0],
-        'B-degree'=>[0.0,10.0,20.0],'C-award'=>[2.0,3.0,4.0],default=>[]
+        'B-degree'=>[0.0,10.0,20.0],'C-award'=>[0.0,2.0,3.0,4.0,5.0],default=>[]
     };
     return ($ct==='A-org') ? 5.0 : (in_array($sv,$allowed) ? $sv : 0.0);
 }
@@ -227,7 +258,12 @@ $app_id = intval($_POST['app_id'] ?? $_GET['app_id'] ?? 0);
 
 // Verify this application belongs to the logged-in user
 if ($app_id) {
-    $check = $pdo->prepare("SELECT application_id, status FROM applications WHERE application_id = ? AND user_id = ?");
+    $check = $pdo->prepare("
+        SELECT a.application_id, a.status, a.cycle_id, COALESCE(a.position_title, u.`rank`) AS position_rank
+        FROM applications a
+        JOIN users u ON u.user_id = a.user_id
+        WHERE a.application_id = ? AND a.user_id = ?
+    ");
     $check->execute([$app_id, $uid]);
     $app_row = $check->fetch();
     if (!$app_row) {
@@ -235,6 +271,10 @@ if ($app_id) {
         exit;
     }
     $app_status          = $app_row['status'];
+    $kra_criteria_context = [
+        'cycle_id' => (int)($app_row['cycle_id'] ?? 0),
+        'position_rank' => $app_row['position_rank'] ?? null,
+    ];
     $locked              = in_array($app_status, ['approved', 'reclassified', 'admin_rejected']);
     $needs_revision_mode = ($app_status === 'needs_revision');
 } else {
@@ -244,6 +284,8 @@ if ($app_id) {
 
 // -- GET: fetch entries ----------------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+    require_once __DIR__ . '/../scoring/entry_scores.php';
+    \Scoring\EntryScores::refreshDraft($pdo, $app_id);
     $kra_action = $_GET['kra_action'] ?? '';
     if ($kra_action === 'get_entries') {
         $cat = $_GET['cat'] ?? '';
@@ -258,6 +300,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
 
         // Attach evidence files to each entry
         foreach ($entries as &$entry) {
+            $entry['editable'] = KraRevisionWorkflow::canEdit($app_status, $entry);
             $ef = $pdo->prepare("SELECT evidence_id, file_path, original_filename, file_size_bytes FROM kra_evidence_files WHERE submission_id = ? ORDER BY uploaded_at ASC");
             $ef->execute([$entry['submission_id']]);
             $entry['evidence_files'] = $ef->fetchAll(PDO::FETCH_ASSOC);
@@ -269,6 +312,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         echo json_encode(['ok' => true, 'entries' => $entries, 'file_cap' => $cap]);
         exit;
     }
+
+    if ($kra_action === 'get_all_kra_summary') {
+        // Verify ownership (app_id already resolved above)
+        if (!$app_id) { echo json_encode(['ok'=>false,'error'=>'Missing app_id']); exit; }
+        $app_check = $pdo->prepare("SELECT application_id, weighted_score FROM applications WHERE application_id=? AND user_id=?");
+        $app_check->execute([$app_id, $uid]);
+        $app_row = $app_check->fetch();
+        if (!$app_row) { echo json_encode(['ok'=>false,'error'=>'Not found']); exit; }
+
+        $stmt = $pdo->prepare("
+            SELECT ks.submission_id, ks.kra_category, ks.computed_points, ks.remarks,
+                   ks.document_path,
+                   (SELECT COUNT(*) FROM kra_evidence_files kef WHERE kef.submission_id = ks.submission_id) AS evidence_count
+            FROM kra_submissions ks
+            WHERE ks.application_id = ?
+            ORDER BY FIELD(ks.kra_category,'Instruction','Research','Extension','Professional Development'), ks.submission_id ASC
+        ");
+        $stmt->execute([$app_id]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $summary = array_map(fn($r) => [
+            'submission_id'   => (int)$r['submission_id'],
+            'kra_category'    => $r['kra_category'],
+            'computed_points' => (float)$r['computed_points'],
+            'remarks'         => $r['remarks'],
+            'has_evidence'    => ((int)$r['evidence_count'] > 0 || !empty($r['document_path'])),
+        ], $rows);
+        echo json_encode(['ok'=>true, 'summary'=>$summary, 'weighted_score'=>(float)$app_row['weighted_score']]);
+        exit;
+    }
+
     echo json_encode(['ok' => false, 'error' => 'Unknown action']);
     exit;
 }
@@ -288,6 +361,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $remarks  = trim($_POST['remarks'] ?? '');
         $edit_id  = intval($_POST['edit_submission_id'] ?? 0);
         $doc_path = '';
+
+        try {
+            KraRevisionWorkflow::requireEditable($pdo, $app_id, $edit_id, $category);
+        } catch (RuntimeException $e) {
+            echo json_encode(['ok' => false, 'error' => $e->getMessage()]);
+            exit;
+        }
 
         // In needs_revision mode, only allow saving entries that are flagged for revision
         if ($needs_revision_mode && $edit_id > 0) {
@@ -378,6 +458,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 echo json_encode(['ok' => false, 'error' => 'File too large. Max 50MB.']);
                 exit;
             }
+            $prior_reuse = kraFindPreviousUnsuccessfulEvidence($pdo, (int)$uid, $app_id, $uf['name'], (int)$uf['size']);
+            if ($prior_reuse) {
+                $cycle_name = $prior_reuse['cycle_name'] ?: 'a previous cycle';
+                echo json_encode([
+                    'ok' => false,
+                    'error' => 'This evidence file was already used in an unsuccessful previous application (' . $cycle_name . '). Please upload a different document for this cycle.',
+                ]);
+                exit;
+            }
             if (!is_dir($abs_folder)) mkdir($abs_folder, 0755, true);
             $fname = uniqid('kra_') . '.' . $ext;
             $moved = move_uploaded_file($uf['tmp_name'], $abs_folder . $fname);
@@ -414,9 +503,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     exit;
                 }
                 if ($entry_flagged) {
-                    // Fixing a flagged entry clears the flag immediately  -  no need to wait for resubmit
+                    // Keep the flag editable until the faculty explicitly resubmits.
                     $pdo->prepare("UPDATE kra_submissions SET computed_points=?, remarks=?, verified=0, submitted_at=NOW(),
-                            revision_status='ok', revision_note=NULL, revision_by=NULL, revision_at=NULL
+                            revision_saved_at=NOW(6)
                         WHERE submission_id=?")
                         ->execute([$points, $remarks, $edit_id]);
                 } else {
@@ -454,7 +543,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 if ($entry_flagged) {
                     $pdo->prepare("UPDATE kra_submissions SET computed_points=?, remarks=?, verified=0, submitted_at=NOW(),
-                            revision_status='ok', revision_note=NULL, revision_by=NULL, revision_at=NULL
+                            revision_saved_at=NOW(6)
                         WHERE submission_id=?")
                         ->execute([$points, $remarks, $existing['submission_id']]);
                 } else {
@@ -514,6 +603,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'ok'             => true,
             'message'        => 'Entry saved',
             'submission_id'  => $saved_sid ?? 0,
+            'computed_points'=> $points,
             'evidence_files' => $evidence_files,
             'file_cap'       => $cap,
         ]);
@@ -527,6 +617,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
         $del_id = intval($_POST['submission_id'] ?? 0);
+        try {
+            KraRevisionWorkflow::requireEditable($pdo, $app_id, $del_id);
+            if ($needs_revision_mode) throw new RuntimeException('Edit the flagged entry and its evidence, then resubmit it. The entry cannot be removed during revision.');
+        } catch (RuntimeException $e) {
+            echo json_encode(['ok' => false, 'error' => $e->getMessage()]);
+            exit;
+        }
         if ($del_id) {
             // Delete all evidence files for this submission
             $ef_rows = $pdo->prepare("SELECT file_path FROM kra_evidence_files WHERE submission_id=?");
@@ -562,6 +659,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         $ev_id  = intval($_POST['evidence_id'] ?? 0);
         $sub_id = intval($_POST['submission_id'] ?? 0);
+        try {
+            KraRevisionWorkflow::requireEditable($pdo, $app_id, $sub_id);
+        } catch (RuntimeException $e) {
+            echo json_encode(['ok' => false, 'error' => $e->getMessage()]);
+            exit;
+        }
         if ($ev_id && $sub_id) {
             // Verify the submission belongs to this application
             $check = $pdo->prepare("SELECT submission_id FROM kra_submissions WHERE submission_id=? AND application_id=?");
@@ -575,6 +678,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                            . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $ef['file_path']);
                     if (file_exists($abs)) @unlink($abs);
                     $pdo->prepare("DELETE FROM kra_evidence_files WHERE evidence_id=?")->execute([$ev_id]);
+                    KraRevisionWorkflow::markSaved($pdo, $app_id, $sub_id);
                     logAudit($pdo, $uid, 'Evidence File Deleted', "Deleted evidence #{$ev_id} from submission #{$sub_id}");
                 }
             }

@@ -1,5 +1,6 @@
 <?php
 $app_id = intval($_GET['id'] ?? 0);
+KraRevisionWorkflow::ensureSchema($pdo);
 if (!$app_id) { echo '<div class="alert alert-danger">Invalid application.</div>'; return; }
 
 // -- Runtime migrations ----------------------------------------
@@ -82,7 +83,7 @@ try {
 $return_page = isAdmin() ? 'view_application' : 'review_application';
 
 // -- Load application ------------------------------------------
-$app = $pdo->prepare("SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, u.email, u.employee_id, u.rank,
+$app = $pdo->prepare("SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, u.email, u.employee_id, u.`rank`,
     COALESCE(camp.campus_name, 'N/A') as campus_name, c.cycle_name
     FROM applications a
     JOIN users u ON a.user_id = u.user_id
@@ -94,7 +95,7 @@ $app = $app->fetch();
 if (!$app) { echo '<div class="alert alert-danger">Application not found.</div>'; return; }
 ensureKraAssignmentTable($pdo);
 $my_checker_id = (int)($_SESSION['user_id'] ?? 0);
-$assigned_kras = isChecker() ? getCheckerAssignedKras($pdo, $my_checker_id, (int)$app['cycle_id']) : array_keys(kraAssignmentCategories());
+$assigned_kras = isEvaluator() ? getCheckerAssignedKras($pdo, $my_checker_id, (int)$app['cycle_id']) : array_keys(kraAssignmentCategories());
 
 function reviewSubmissionCategory(PDO $pdo, int $submission_id, int $application_id): ?string {
     $stmt = $pdo->prepare("SELECT kra_category FROM kra_submissions WHERE submission_id=? AND application_id=?");
@@ -105,6 +106,11 @@ function reviewSubmissionCategory(PDO $pdo, int $submission_id, int $application
 
 function blockUnassignedKra(PDO $pdo, int $checker_id, int $cycle_id, ?string $kra_category, int $app_id, string $return_page): void {
     if (!$kra_category || !checkerCanReviewKra($pdo, $checker_id, $cycle_id, $kra_category)) {
+        if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && $_SERVER['HTTP_X_REQUESTED_WITH'] === 'XMLHttpRequest') {
+            header('Content-Type: application/json');
+            echo json_encode(['ok' => false, 'error' => 'You are not assigned to review that KRA for this cycle.']);
+            exit;
+        }
         flashMessage('danger', 'You are not assigned to review that KRA for this cycle.');
         echo "<script>window.location.href='index.php?page={$return_page}&id={$app_id}#kra-verification';</script>";
         exit;
@@ -148,15 +154,8 @@ function countRejectedCheckers($pdo, int $app_id): int {
 // -- Helper: total active checkers in the system ---------------
 function countActiveCheckers($pdo, int $cycle_id = 0): int {
     if ($cycle_id) return countAssignedCheckersForCycle($pdo, $cycle_id);
-    $stmt = $pdo->query("SELECT COUNT(*) FROM users WHERE role = 'checker' AND status = 'active'");
+    $stmt = $pdo->query("SELECT COUNT(*) FROM users WHERE role = 'evaluator' AND status = 'active'");
     return max(1, (int)$stmt->fetchColumn());
-}
-
-// -- Helper: total active talisay checkers ---------------------
-function countActiveTalisayCheckers($pdo): int {
-    $stmt = $pdo->query("SELECT COUNT(*) FROM users
-        WHERE role = 'talisay_checker' AND status = 'active'");
-    return (int)$stmt->fetchColumn();
 }
 
 // -- Helper: count checkers who have joined this application --
@@ -174,7 +173,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // Start review  -  first checker to act moves app to under_review
     if ($action === 'start_review' && $app['status'] === 'submitted') {
-        if (isChecker() && !$assigned_kras) {
+        if (isEvaluator() && !$assigned_kras) {
             flashMessage('danger', 'You do not have any KRA assignments for this cycle.');
             echo "<script>window.location.href='index.php?page={$return_page}&id={$app_id}';</script>"; exit;
         }
@@ -187,14 +186,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         echo "<script>window.location.href='index.php?page={$return_page}&id={$app_id}';</script>"; exit;
     }
 
-    // Join review action is no longer needed - kept for backward compat redirect only
-    if ($action === 'join_review') {
-        echo "<script>window.location.href='index.php?page={$return_page}&id={$app_id}';</script>"; exit;
-    }
+    // Join review action is no longer needed — no callers remain.
 
     // -- Checker alters a KRA score ---------------------------
     if ($action === 'alter_score' && in_array($app['status'], ['under_review','talisay_review','needs_revision'])
-        && (isChecker() || isTalisayChecker() || isAdmin())) {
+        && (isEvaluator() || isAdmin())) {
         $sub_id    = intval($_POST['submission_id'] ?? 0);
         $new_pts   = floatval($_POST['new_points'] ?? 0);
         $alter_note = trim($_POST['alter_note'] ?? '');
@@ -281,9 +277,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 WHERE application_id=? AND status='submitted'")
                 ->execute([$checker_id, $app_id]);
             $pdo->prepare("UPDATE kra_submissions SET revision_status='needs_revision',
-                revision_note=?, revision_by=?, revision_at=NOW(), verified=0
+                revision_note=?, revision_by=?, revision_at=NOW(), revision_saved_at=NULL,
+                verified=0, verified_by=NULL, verified_at=NULL
                 WHERE submission_id=? AND application_id=?")
                 ->execute([$rev_note, $checker_id, $sub_id, $app_id]);
+            $pdo->prepare('DELETE FROM kra_checker_verifications WHERE submission_id=?')->execute([$sub_id]);
+            $pdo->prepare("UPDATE application_checker_reviews r
+                JOIN checker_kra_assignments ka ON ka.checker_id=r.checker_id
+                SET r.decision='pending', r.decided_at=NULL
+                WHERE r.application_id=? AND ka.cycle_id=? AND ka.kra_category=?")
+                ->execute([$app_id, (int)$app['cycle_id'], $rev_cat]);
             $pdo->prepare("UPDATE applications SET status='needs_revision', checker_remarks=?
                 WHERE application_id=?")
                 ->execute(["One or more KRA entries need revision. Please check the highlighted entries and resubmit.", $app_id]);
@@ -305,10 +308,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($sub_id) {
             $clear_cat = reviewSubmissionCategory($pdo, $sub_id, $app_id);
             blockUnassignedKra($pdo, $checker_id, (int)$app['cycle_id'], $clear_cat, $app_id, $return_page);
-            $pdo->prepare("UPDATE kra_submissions SET revision_status='ok',
-                revision_note=NULL, revision_by=NULL, revision_at=NULL
-                WHERE submission_id=? AND application_id=?")
-                ->execute([$sub_id, $app_id]);
+            KraRevisionWorkflow::clearFlag($pdo, (int)$app_id, $sub_id);
             logAudit($pdo, $checker_id, 'Revision Cleared', "You cleared the revision flag on {$app['full_name']}'s KRA entry.");
             flashMessage('success', 'Revision cleared. Entry marked as OK.');
             echo "<script>window.location.href='index.php?page={$return_page}&id={$app_id}';</script>"; exit;
@@ -318,7 +318,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // -- Quick-verify a submission (per-checker) -----------
     if ($action === 'verify_submission'
         && in_array($app['status'], ['under_review','talisay_review','needs_revision'])
-        && (isChecker() || isTalisayChecker() || isAdmin())) {
+        && (isEvaluator() || isAdmin())) {
         $sub_id = intval($_POST['submission_id'] ?? 0);
         $verify_note = trim($_POST['note'] ?? '');
         if ($sub_id) {
@@ -351,7 +351,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && $_SERVER['HTTP_X_REQUESTED_WITH'] === 'XMLHttpRequest') {
             header('Content-Type: application/json');
-            echo json_encode(['ok' => true]);
+            $done_stmt2 = $pdo->prepare("SELECT COUNT(*) FROM kra_checker_verifications WHERE submission_id=?");
+            $done_stmt2->execute([$sub_id]);
+            $done_final  = (int)$done_stmt2->fetchColumn();
+            $total_final = countAssignedCheckersForKra($pdo, (int)$app['cycle_id'], $row['kra_category'] ?? '');
+            echo json_encode([
+                'ok'           => true,
+                'done_count'   => $done_final,
+                'total_count'  => $total_final,
+                'all_verified' => $total_final > 0 && $done_final >= $total_final,
+            ]);
             exit;
         }
         echo "<script>window.location.href='index.php?page={$return_page}&id={$app_id}#kra-verification';</script>"; exit;
@@ -359,7 +368,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // -- Checker completes evaluation --------------------------
     if ($action === 'checker_approve' && in_array($app['status'], ['submitted','under_review'])) {
-        if (isChecker() && !$assigned_kras) {
+        if (isEvaluator() && !$assigned_kras) {
             flashMessage('danger', 'You do not have any KRA assignments for this cycle.');
             echo "<script>window.location.href='index.php?page={$return_page}&id={$app_id}';</script>"; exit;
         }
@@ -414,9 +423,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     // -- ITC evaluator approves ------------------------------
-    if ($action === 'talisay_approve' && $app['status'] === 'talisay_review' && isTalisayChecker()) {
+    if ($action === 'talisay_approve' && $app['status'] === 'talisay_review' && isEvaluator()) {
 
-        // Block if weighted score is below 41
         $ws_tal = $pdo->prepare("SELECT weighted_score FROM applications WHERE application_id=?");
         $ws_tal->execute([$app_id]);
         $tal_weighted = (float)$ws_tal->fetchColumn();
@@ -430,16 +438,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ON DUPLICATE KEY UPDATE decision='approved', remarks=VALUES(remarks), decided_at=NOW()")
             ->execute([$app_id, $checker_id, $remarks]);
 
-        $total_talisay = countActiveTalisayCheckers($pdo);
+        $total_evaluators = countActiveCheckers($pdo, (int)$app['cycle_id']);
         $ta_stmt = $pdo->prepare("SELECT COUNT(*) FROM application_checker_reviews r
             JOIN users u ON r.checker_id=u.user_id
-            WHERE r.application_id=? AND r.decision='approved' AND u.role='talisay_checker'");
+            WHERE r.application_id=? AND r.decision='approved' AND u.role='evaluator'");
         $ta_stmt->execute([$app_id]);
-        $talisay_approved = (int)$ta_stmt->fetchColumn();
+        $evaluators_approved = (int)$ta_stmt->fetchColumn();
 
-        logAudit($pdo, $checker_id, 'Evaluation Completed by Evaluator', "You completed evaluation for {$app['full_name']}'s application. ({$talisay_approved}/{$total_talisay} evaluator completions)");
+        logAudit($pdo, $checker_id, 'Evaluation Completed by Evaluator', "You completed evaluation for {$app['full_name']}'s application. ({$evaluators_approved}/{$total_evaluators} evaluator completions)");
 
-        if ($talisay_approved >= $total_talisay) {
+        if ($evaluators_approved >= $total_evaluators) {
             $pdo->prepare("UPDATE applications SET status='approved', reviewed_at=NOW(),
                 checker_remarks=? WHERE application_id=?")
                 ->execute(["Evaluation completed by all evaluator(s). Result is for further committee review and is not a final decision.", $app_id]);
@@ -449,13 +457,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $app_id);
             flashMessage('success', "Evaluation complete. The score and recommended rank are ready for further committee review.");
         } else {
-            flashMessage('success', "Your evaluation has been recorded ({$talisay_approved}/{$total_talisay} evaluators). Waiting for remaining evaluators.");
+            flashMessage('success', "Your evaluation has been recorded ({$evaluators_approved}/{$total_evaluators} evaluators). Waiting for remaining evaluators.");
         }
         echo "<script>window.location.href='index.php?page={$return_page}&id={$app_id}';</script>"; exit;
     }
 
     // -- ITC evaluator rejects -------------------------------
-    if ($action === 'talisay_reject' && $app['status'] === 'talisay_review' && isTalisayChecker()) {
+    if ($action === 'talisay_reject' && $app['status'] === 'talisay_review' && isEvaluator()) {
         if (empty($remarks)) {
             flashMessage('danger', 'A reason is required when returning an application for revision.');
             echo "<script>window.location.href='index.php?page={$return_page}&id={$app_id}';</script>"; exit;
@@ -477,7 +485,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // -- Checker rejects ---------------------------------------
     if ($action === 'checker_reject' && in_array($app['status'], ['submitted','under_review'])) {
-        if (isChecker() && !$assigned_kras) {
+        if (isEvaluator() && !$assigned_kras) {
             flashMessage('danger', 'You do not have any KRA assignments for this cycle.');
             echo "<script>window.location.href='index.php?page={$return_page}&id={$app_id}';</script>"; exit;
         }
@@ -540,7 +548,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // -- Auto Sub-Rank: checker verifies or rejects evidence ---------------
     if ($action === 'verify_asr_evidence'
         && in_array($app['status'], ['under_review','talisay_review','needs_revision','submitted'])
-        && (isChecker() || isTalisayChecker() || isAdmin())) {
+        && (isEvaluator() || isAdmin())) {
 
         if (!class_exists('\Scoring\AutoSubRankCalculator')) {
             require_once __DIR__ . '/../../includes/scoring/autosubrank.php';
@@ -549,6 +557,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $criterion  = $_POST['criterion']         ?? '';   // 'doctorate' or 'award'
         $decision   = $_POST['verification']       ?? '';   // 'verified' or 'rejected'
         $notes      = trim($_POST['verify_notes'] ?? '');
+
+        if ($decision === 'rejected' && $notes === '') {
+            if (($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '') === 'XMLHttpRequest') {
+                if (ob_get_level()) ob_clean();
+                header('Content-Type: application/json');
+                http_response_code(422);
+                echo json_encode(['ok' => false, 'error' => 'A reason is required when marking evidence not acceptable.']);
+                exit;
+            }
+            flashMessage('danger', 'A reason is required when marking evidence not acceptable.');
+            echo "<script>window.location.href='index.php?page={$return_page}&id={$app_id}#asr-verification';</script>";
+            exit;
+        }
 
         if (in_array($criterion, ['doctorate','award']) && in_array($decision, ['verified','rejected'])) {
 
@@ -586,9 +607,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pdo->prepare("UPDATE auto_sub_rank SET {$col}='not_eligible' WHERE application_id=?")
                     ->execute([$app_id]);
 
-                // Recalculate application score (doctorate no longer contributes)
-                recalcApplicationScore($pdo, $app_id);
             }
+            // Recompute on acceptance too, including a reversal of a rejection.
+            recalcApplicationScore($pdo, $app_id);
 
             $crit_label = ucfirst($criterion);
             logAudit($pdo, $checker_id, "ASR Evidence {$decision}",
@@ -603,6 +624,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             createNotif($pdo, $app['user_id'], $notif_type, $notif_msg, $app_id);
 
             if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && $_SERVER['HTTP_X_REQUESTED_WITH'] === 'XMLHttpRequest') {
+                if (ob_get_level()) ob_clean();
                 header('Content-Type: application/json');
                 echo json_encode(['ok' => true, 'decision' => $decision, 'criterion' => $criterion]);
                 exit;
@@ -618,7 +640,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 // -- Reload app + fetch data -----------------------------------
-$app = $pdo->prepare("SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, u.email, u.employee_id, u.rank,
+$app = $pdo->prepare("SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, u.email, u.employee_id, u.`rank`, u.profile_pic,
     COALESCE(camp.campus_name, 'N/A') as campus_name, c.cycle_name
     FROM applications a JOIN users u ON a.user_id=u.user_id
     LEFT JOIN campuses camp ON u.campus_id=camp.campus_id
@@ -682,320 +704,238 @@ if ($visible_checker_remarks === $auto_revision_notice) {
 ?>
 <?php showFlash(); ?>
 
-<!-- -- Page header --------------------------------------------- -->
-<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.75rem;margin-bottom:1.25rem;padding-bottom:1.25rem;border-bottom:1px solid #f1f5f9;">
-
-    <!-- Left: back + title -->
-    <div style="display:flex;align-items:center;gap:0.75rem;min-width:0;">
-        <a href="?page=<?= isAdmin() ? 'all_applications' : 'review_queue' ?>"
-           style="display:inline-flex;align-items:center;gap:0.3rem;padding:0.35rem 0.75rem;border-radius:6px;border:1px solid #e2e8f0;background:#fff;color:#475569;font-size:0.75rem;font-weight:600;text-decoration:none;flex-shrink:0;"
-           onmouseover="this.style.borderColor='#1a3a6b';this.style.color='#1a3a6b'"
-           onmouseout="this.style.borderColor='#e2e8f0';this.style.color='#475569'">
-            <i class="bi bi-arrow-left"></i><?= isAdmin() ? 'All Applications' : 'Queue' ?>
-        </a>
-        <div style="min-width:0;">
-            <div style="font-size:0.72rem;color:#94a3b8;font-weight:500;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:1px;">Reviewing Application</div>
-            <div style="font-size:0.95rem;font-weight:700;color:#0f172a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"><?= htmlspecialchars(formatDisplayName($app)) ?></div>
-        </div>
-    </div>
-
-    <!-- Right: status + route + print -->
-    <div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap;flex-shrink:0;">
-
-        <?= statusBadge($app['status']) ?>
-
-        <?php
-        $committee = $app['committee_route'] ?? null;
-        if ($committee):
-            $cmtColors = ['IEC'=>'#475569','REC'=>'#1a3a6b','EAC'=>'#c2410c','CC'=>'#7c3aed'];
-            $cmtBg     = ['IEC'=>'#f8fafc','REC'=>'#f0f4fb','EAC'=>'#fff7ed','CC'=>'#f5f3ff'];
-            $cmtBorder = ['IEC'=>'#e2e8f0','REC'=>'#dbeafe','EAC'=>'#fed7aa','CC'=>'#ddd6fe'];
-            $cmtLabel  = ['IEC'=>'Campus Committee','REC'=>'Regional Committee','EAC'=>'Evaluation & Accreditation','CC'=>'Confirming Committee'];
-            $cmtColor  = $cmtColors[$committee] ?? '#475569';
-            $cmtBgCol  = $cmtBg[$committee]     ?? '#f8fafc';
-            $cmtBdCol  = $cmtBorder[$committee] ?? '#e2e8f0';
-            $cmtFull   = $cmtLabel[$committee]  ?? $committee;
-        ?>
-        <span style="display:inline-flex;align-items:center;gap:0.3rem;padding:3px 10px;border-radius:20px;
-                     background:<?= $cmtBgCol ?>;color:<?= $cmtColor ?>;border:1px solid <?= $cmtBdCol ?>;
-                     font-size:0.68rem;font-weight:700;white-space:nowrap;"
-              title="<?= htmlspecialchars($cmtFull) ?>  -  routing per JC01 s.2026">
-            <i class="bi bi-diagram-3" style="font-size:0.65rem;"></i><?= htmlspecialchars($committee) ?>
-        </span>
-        <?php endif; ?>
-
-        <a href="pages/kra_pdf.php?uid=<?= $app['user_id'] ?>&cycle_id=<?= $app['cycle_id'] ?>"
-           target="_blank"
-           style="display:inline-flex;align-items:center;gap:0.3rem;padding:0.35rem 0.85rem;border-radius:6px;border:1px solid #e2e8f0;background:#fff;color:#1a3a6b;font-size:0.75rem;font-weight:600;text-decoration:none;"
-           onmouseover="this.style.background='#f0f4fb';this.style.borderColor='#1a3a6b'"
-           onmouseout="this.style.background='#fff';this.style.borderColor='#e2e8f0'">
-            <i class="bi bi-printer"></i>Print ISS
-        </a>
-
-    </div>
+<!-- ── Page Header: back nav only, no name duplication ─────── -->
+<div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-bottom:1rem;">
+    <a href="?page=<?= isAdmin() ? 'all_applications' : 'review_queue' ?>"
+       style="display:inline-flex;align-items:center;gap:0.3rem;padding:0.3rem 0.7rem;
+              border:1px solid #e2e8f0;background:#fff;color:#475569;
+              font-size:0.75rem;font-weight:600;text-decoration:none;"
+       onmouseover="this.style.borderColor='#1a3a6b';this.style.color='#1a3a6b'"
+       onmouseout="this.style.borderColor='#e2e8f0';this.style.color='#475569'">
+        <i class="bi bi-arrow-left"></i> <?= isAdmin() ? 'All Applications' : 'Queue' ?>
+    </a>
+    <span style="font-size:0.65rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.07em;">Reviewing Application</span>
 </div>
 
 <?php
-// -- JC01 s.2026 flags panel ----------------------------------------------
 $double_flags  = json_decode($app['double_counting_flags'] ?? '[]', true) ?: [];
 $pending_docs  = json_decode($app['pending_documentation'] ?? '[]', true) ?: [];
 $config_incomp = json_decode($app['config_incomplete'] ?? '[]', true) ?: [];
 $orch_flags    = json_decode($app['orchestrator_flags'] ?? '[]', true) ?: [];
-
 $eval_ok       = isset($app['evaluation_period_ok']) ? (bool)$app['evaluation_period_ok'] : true;
-
-$has_flags = !$eval_ok || !empty($double_flags) || !empty($pending_docs) || !empty($config_incomp) || !empty($orch_flags);
+$has_flags     = !$eval_ok || !empty($double_flags) || !empty($pending_docs) || !empty($config_incomp) || !empty($orch_flags);
 if ($has_flags):
 ?>
-<div class="neon-card mb-3" style="padding:0;overflow:hidden;border-left:4px solid #c2410c;">
-    <div style="padding:0.7rem 1rem;background:#fff7ed;border-bottom:1px solid #fed7aa;display:flex;align-items:center;gap:0.5rem;">
-        <i class="bi bi-exclamation-triangle-fill" style="color:#c2410c;"></i>
-        <span style="font-weight:700;color:#c2410c;font-size:0.88rem;">JC01 s.2026 Scoring Flags  -  Require Evaluator Review</span>
-        <span style="margin-left:auto;font-size:0.72rem;color:#9a3412;">Human committee makes all binding decisions</span>
+<div style="border:1px solid #e2e8f0;border-left:3px solid #c2410c;background:#fff;margin-bottom:1rem;">
+    <div style="padding:0.6rem 1rem;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;gap:0.5rem;">
+        <i class="bi bi-exclamation-triangle-fill" style="color:#c2410c;font-size:0.85rem;"></i>
+        <span style="font-weight:700;color:#c2410c;font-size:0.8rem;">JC01 s.2026 Scoring Flags</span>
+        <span style="margin-left:auto;font-size:0.7rem;color:#94a3b8;">Human committee makes all binding decisions</span>
     </div>
-    <div style="padding:0.85rem 1rem;">
-        <?php if (!$eval_ok): ?>
-        <div style="margin-bottom:0.6rem;padding:0.5rem 0.75rem;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;font-size:0.8rem;color:#dc2626;">
-            <i class="bi bi-calendar-x me-1"></i><strong>Evaluation Period:</strong> Application is linked to an archived cycle.
-        </div>
-        <?php endif; ?>
+    <div style="padding:0.75rem 1rem;display:flex;flex-direction:column;gap:0.3rem;">
         <?php foreach ($orch_flags as $f): ?>
-        <div style="margin-bottom:0.4rem;padding:0.4rem 0.75rem;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;font-size:0.78rem;color:#b91c1c;">
+        <div style="font-size:0.78rem;color:#b91c1c;padding:0.3rem 0.6rem;background:#fef2f2;border-left:2px solid #dc2626;">
             <i class="bi bi-shield-x me-1"></i><?= htmlspecialchars($f) ?>
         </div>
         <?php endforeach; ?>
         <?php foreach ($double_flags as $f): ?>
-        <div style="margin-bottom:0.4rem;padding:0.4rem 0.75rem;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;font-size:0.78rem;color:#c2410c;">
-            <i class="bi bi-copy me-1"></i><strong>Double-Counting:</strong> "<?= htmlspecialchars($f['title'] ?? '') ?>" appears in <?= htmlspecialchars(implode(' + ', $f['categories'] ?? [])) ?>
+        <div style="font-size:0.78rem;color:#92400e;padding:0.3rem 0.6rem;background:#fff7ed;border-left:2px solid #d97706;">
+            <i class="bi bi-copy me-1"></i><strong>Double-Counting:</strong> "<?= htmlspecialchars($f['title'] ?? '') ?>" — <?= htmlspecialchars(implode(' + ', $f['categories'] ?? [])) ?>
         </div>
         <?php endforeach; ?>
-        <?php if (!empty($pending_docs)): ?>
-        <div style="margin-top:0.5rem;">
-            <div style="font-size:0.75rem;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.35rem;"><i class="bi bi-file-earmark-x me-1"></i>Pending Documentation (<?= count($pending_docs) ?>)</div>
-            <?php foreach (array_slice($pending_docs, 0, 8) as $pd): ?>
-            <div style="padding:0.3rem 0.6rem;font-size:0.76rem;color:#64748b;border-left:2px solid #fcd34d;margin-bottom:0.2rem;background:#fffbeb;">
-                <?= htmlspecialchars($pd) ?>
-            </div>
-            <?php endforeach; ?>
-            <?php if (count($pending_docs) > 8): ?>
-            <div style="font-size:0.72rem;color:#94a3b8;margin-top:0.2rem;">+ <?= count($pending_docs) - 8 ?> more pending items...</div>
-            <?php endif; ?>
+        <?php foreach (array_slice($pending_docs, 0, 5) as $pd): ?>
+        <div style="font-size:0.78rem;color:#475569;padding:0.3rem 0.6rem;background:#f8fafc;border-left:2px solid #94a3b8;">
+            <i class="bi bi-file-earmark-x me-1"></i><?= htmlspecialchars($pd) ?>
         </div>
-        <?php endif; ?>
-        <?php if (!empty($config_incomp)): ?>
-        <div style="margin-top:0.5rem;">
-            <div style="font-size:0.75rem;font-weight:700;color:#7c3aed;text-transform:uppercase;letter-spacing:0.04em;margin-bottom:0.35rem;"><i class="bi bi-wrench me-1"></i>Config Incomplete (<?= count($config_incomp) ?>)</div>
-            <?php foreach (array_slice($config_incomp, 0, 5) as $ci): ?>
-            <div style="padding:0.3rem 0.6rem;font-size:0.76rem;color:#6d28d9;border-left:2px solid #c4b5fd;margin-bottom:0.2rem;background:#f5f3ff;">
-                <?= htmlspecialchars($ci) ?>
-            </div>
-            <?php endforeach; ?>
-            <?php if (count($config_incomp) > 5): ?>
-            <div style="font-size:0.72rem;color:#94a3b8;margin-top:0.2rem;">+ <?= count($config_incomp) - 5 ?> more config items...</div>
-            <?php endif; ?>
-        </div>
+        <?php endforeach; ?>
+        <?php if (count($pending_docs) > 5): ?>
+        <div style="font-size:0.72rem;color:#94a3b8;">+ <?= count($pending_docs) - 5 ?> more pending items</div>
         <?php endif; ?>
     </div>
 </div>
 <?php endif; ?>
 
-<!-- -- Evaluator completion progress -------------------------- -->
-<?php if (!isAdmin()): ?>
-<div class="neon-card mb-3" style="padding:1.1rem 1.5rem;">
-    <div class="d-flex justify-content-between align-items-start mb-2 flex-wrap gap-2">
-        <div>
-            <span class="fw-bold" style="color:#1a3a6b;font-size:0.9rem;">
-                <i class="bi bi-people-fill me-2"></i>Evaluator Progress
-            </span>
-            <span class="text-muted small ms-2"><?= $total_checkers ?> evaluator(s) required to complete the evaluation</span>
+<!-- ── Faculty Profile + Info + Scores ─────────────────────── -->
+<?php
+$fac_pic      = $app['profile_pic'] ?? '';
+$fac_initials = strtoupper(substr($app['first_name'] ?? '', 0, 1) . substr($app['last_name'] ?? '', 0, 1)) ?: 'FA';
+$inc          = $score_result['sub_rank_increment'];
+$ws           = $score_result['weighted_score'];
+$ws_ok        = $ws >= 41;
+?>
+<div style="border:1px solid #e2e8f0;background:#fff;margin-bottom:1rem;overflow:hidden;">
+
+    <!-- ── Card header: avatar · name · status · actions ── -->
+    <div style="display:flex;align-items:center;gap:1rem;padding:1rem 1.25rem;border-bottom:1px solid #e2e8f0;">
+
+        <!-- Avatar -->
+        <?php if ($fac_pic): ?>
+        <img src="<?= sanitize($fac_pic) ?>" alt=""
+             style="width:54px;height:54px;border-radius:50%;object-fit:cover;border:2px solid #e2e8f0;flex-shrink:0;">
+        <?php else: ?>
+        <div style="width:54px;height:54px;border-radius:50%;background:#1a3a6b;display:flex;align-items:center;
+                    justify-content:center;font-size:1.05rem;font-weight:700;color:#fff;flex-shrink:0;">
+            <?= $fac_initials ?>
         </div>
-        <div class="d-flex gap-2 flex-wrap">
-            <?php if ($approved_count > 0): ?>
-            <span class="badge bg-secondary" style="font-size:0.78rem;white-space:nowrap;"><?= $approved_count ?>/<?= $total_checkers ?> complete</span>
-            <?php endif; ?>
-            <?php if ($rejected_count > 0): ?>
-            <span class="badge bg-secondary" style="font-size:0.78rem;white-space:nowrap;"><?= $rejected_count ?>/<?= $total_checkers ?> returned</span>
-            <?php endif; ?>
-            <?php if ($approved_count === 0 && $rejected_count === 0): ?>
-            <span class="badge bg-secondary" style="font-size:0.78rem;white-space:nowrap;">0/<?= $total_checkers ?> decided</span>
-            <?php endif; ?>
+        <?php endif; ?>
+
+        <!-- Name + sub-line -->
+        <div style="flex:1;min-width:0;">
+            <div style="font-size:1rem;font-weight:700;color:#0f172a;line-height:1.25;"><?= htmlspecialchars(formatDisplayName($app)) ?></div>
+            <div style="font-size:0.75rem;color:#64748b;margin-top:2px;">
+                <?= sanitize($app['rank'] ?? '') ?>
+                <?php if (!empty($app['campus_name']) && $app['campus_name'] !== 'N/A'): ?>
+                <span style="color:#cbd5e1;margin:0 3px;">·</span><?= sanitize($app['campus_name']) ?>
+                <?php endif; ?>
+            </div>
+        </div>
+
+        <!-- Status badge + Print ISS -->
+        <div style="display:flex;align-items:center;gap:0.5rem;flex-shrink:0;">
+            <?= statusBadge($app['status']) ?>
+            <a href="pages/kra_pdf.php?uid=<?= $app['user_id'] ?>&cycle_id=<?= $app['cycle_id'] ?>" target="_blank"
+               style="display:inline-flex;align-items:center;gap:0.35rem;padding:0.3rem 0.75rem;
+                      border:1px solid #e2e8f0;background:#f8fafc;color:#475569;
+                      font-size:0.74rem;font-weight:600;text-decoration:none;"
+               onmouseover="this.style.background='#1a3a6b';this.style.color='#fff';this.style.borderColor='#1a3a6b'"
+               onmouseout="this.style.background='#f8fafc';this.style.color='#475569';this.style.borderColor='#e2e8f0'">
+                <i class="bi bi-printer"></i> Print ISS
+            </a>
         </div>
     </div>
-    <!-- Progress bar - neutral completion/return progress -->
-    <div style="height:8px;background:#e2e8f0;border-radius:99px;margin-bottom:1rem;overflow:hidden;display:flex;">
-        <div style="height:100%;width:<?= $total_checkers > 0 ? min(100, round(($approved_count / $total_checkers) * 100)) : 0 ?>%;
-                    background:#1a3a6b;border-radius:99px 0 0 99px;transition:width 0.4s ease;"></div>
-        <div style="height:100%;width:<?= $total_checkers > 0 ? min(100, round(($rejected_count / $total_checkers) * 100)) : 0 ?>%;
-                    background:#334155;transition:width 0.4s ease;"></div>
-    </div>
-    <!-- All active checkers and their decisions -->
-    <?php
-    // Get all active checkers with their decision for this application
-    $all_checkers_stmt = $pdo->prepare("
-        SELECT DISTINCT u.user_id, u.checker_label,
-               r.decision, r.remarks, r.decided_at
-        FROM checker_kra_assignments ka
-        JOIN users u ON u.user_id = ka.checker_id
-        LEFT JOIN application_checker_reviews r
-            ON r.application_id = ? AND r.checker_id = u.user_id
-        WHERE ka.cycle_id = ? AND u.role = 'checker' AND u.status = 'active'
-        ORDER BY u.user_id ASC
-    ");
-    $all_checkers_stmt->execute([$app_id, (int)$app['cycle_id']]);
-    $all_checkers_list = $all_checkers_stmt->fetchAll();
-    $slot_colors = ['#1a3a6b','#1a3a6b','#1a3a6b','#1a3a6b','#475569','#334155'];
-    ?>
-    <div class="d-flex flex-wrap gap-2">
-        <?php foreach ($all_checkers_list as $idx => $chk):
-            $is_me        = (int)$chk['user_id'] === $my_checker_id;
-            $dec          = $chk['decision'] ?? null;
-            $border_color = $dec === 'approved' ? '#1a3a6b' : ($dec === 'rejected' ? '#334155' : '#e2e8f0');
-            $bg_color     = $dec === 'approved' ? '#eff6ff' : ($dec === 'rejected' ? '#f8fafc' : '#f8fafc');
-            $dec_color    = $dec === 'approved' ? '#1a3a6b' : ($dec === 'rejected' ? '#334155' : '#94a3b8');
-            $dec_icon     = $dec === 'approved' ? 'check-circle-fill' : ($dec === 'rejected' ? 'x-circle-fill' : 'hourglass');
-            $dec_label    = $dec === 'approved' ? 'Evaluation Complete' : ($dec === 'rejected' ? 'Returned for Revision' : 'Pending');
+
+    <!-- ── Faculty info table ── -->
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);border-bottom:1px solid #e2e8f0;">
+        <?php
+        $info_fields = [
+            ['Employee ID',  sanitize($app['employee_id'] ?? '—')],
+            ['Campus',       sanitize($app['campus_name'] ?? '—')],
+            ['Faculty Rank', sanitize($app['rank'] ?? '—')],
+            ['Email',        sanitize($app['email'] ?? '—')],
+        ];
+        foreach ($info_fields as $fi => [$lbl, $val]):
         ?>
-        <div style="flex:1;min-width:130px;max-width:200px;padding:0.65rem 0.85rem;border-radius:8px;
-                    border:2px solid <?= $border_color ?>;background:<?= $bg_color ?>;">
-            <div class="d-flex align-items-center gap-2 mb-1">
-                <div style="width:26px;height:26px;border-radius:50%;
-                            background:<?= $slot_colors[$idx % count($slot_colors)] ?>;
-                            display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-                    <span style="color:#fff;font-size:0.68rem;font-weight:700;">
-                        <i class="bi bi-person-fill"></i>
-                    </span>
+        <div style="padding:0.6rem 1.25rem;<?= $fi < 3 ? 'border-right:1px solid #f1f5f9;' : '' ?>">
+            <div style="font-size:0.6rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.07em;margin-bottom:3px;"><?= $lbl ?></div>
+            <div style="font-size:0.8rem;font-weight:600;color:#1e293b;"><?= $val ?></div>
+        </div>
+        <?php endforeach; ?>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);border-bottom:1px solid #e2e8f0;">
+        <?php
+        $info_fields2 = [
+            ['Cycle',        sanitize($app['cycle_name'] ?? '—')],
+            ['Submitted',    $app['submitted_at'] ? date('M d, Y H:i', strtotime($app['submitted_at'])) : '—'],
+            ['Weighted Score', '<span style="font-size:1rem;font-weight:800;color:'.($ws_ok?'#1a3a6b':'#dc2626').'">'.number_format($ws,2).'</span>'.(!$ws_ok?' <span style="font-size:0.65rem;color:#dc2626;">Below min</span>':'')],
+            ['Recommended Rank', '<span style="font-weight:700;color:#1a3a6b;">'.sanitize($potential_data['potential_rank'] ?: '—').'</span>'.($inc>0?' <span style="font-size:0.7rem;color:#16a34a;font-weight:600;">+'.sanitize((string)$inc).' sub-rank'.($inc>1?'s':'').'</span>':'')],
+        ];
+        foreach ($info_fields2 as $fi => [$lbl, $val]):
+        ?>
+        <div style="padding:0.6rem 1.25rem;<?= $fi < 3 ? 'border-right:1px solid #f1f5f9;' : '' ?>">
+            <div style="font-size:0.6rem;color:#94a3b8;text-transform:uppercase;letter-spacing:0.07em;margin-bottom:3px;"><?= $lbl ?></div>
+            <div style="font-size:0.8rem;color:#1e293b;"><?= $val ?></div>
+        </div>
+        <?php endforeach; ?>
+    </div>
+
+    <?php if ($visible_checker_remarks !== ''): ?>
+    <div style="padding:0.5rem 1.25rem;background:#f8fafc;border-bottom:1px solid #f1f5f9;font-size:0.78rem;color:#475569;display:flex;align-items:center;gap:0.5rem;">
+        <i class="bi bi-chat-left-text" style="color:#1a3a6b;flex-shrink:0;"></i>
+        <span><strong>Remarks:</strong> <?= sanitize($visible_checker_remarks) ?></span>
+    </div>
+    <?php endif; ?>
+
+    <!-- ── KRA score breakdown ── -->
+    <div class="table-responsive">
+    <table style="width:100%;border-collapse:collapse;font-size:0.82rem;">
+        <thead>
+        <tr style="background:#f8fafc;border-bottom:1px solid #e2e8f0;">
+            <th style="padding:0.5rem 1.25rem;text-align:left;font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;">KRA</th>
+            <th style="padding:0.5rem 0.75rem;text-align:right;font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;white-space:nowrap;">Raw</th>
+            <th style="padding:0.5rem 0.75rem;text-align:right;font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;white-space:nowrap;">Capped</th>
+            <th style="padding:0.5rem 0.75rem;text-align:center;font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;white-space:nowrap;">Weight</th>
+            <th style="padding:0.5rem 1.25rem;text-align:right;font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;white-space:nowrap;">Weighted</th>
+        </tr>
+        </thead>
+        <tbody>
+        <?php
+        $ck_labels  = ['Instruction'=>'KRA I · Instruction','Research'=>'KRA II · Research','Extension'=>'KRA III · Extension','Professional Development'=>'KRA IV · Prof. Development'];
+        $ck_capped  = ['Instruction'=>$score_result['kra1'],'Research'=>$score_result['kra2'],'Extension'=>$score_result['kra3'],'Professional Development'=>$score_result['kra4']];
+        $ck_weights = $score_result['weights'];
+        foreach ($ck_labels as $key => $label):
+            $raw  = $raw_kra[$key] ?? 0;
+            $cap  = $ck_capped[$key];
+            $w    = $ck_weights[$key];
+            $wval = round($cap * $w, 2);
+        ?>
+        <tr style="border-bottom:1px solid #f8fafc;" onmouseover="this.style.background='#fafafa'" onmouseout="this.style.background=''">
+            <td style="padding:0.55rem 1.25rem;color:#334155;font-weight:500;"><?= $label ?></td>
+            <td style="padding:0.55rem 0.75rem;text-align:right;color:#64748b;"><?= number_format($raw, 2) ?></td>
+            <td style="padding:0.55rem 0.75rem;text-align:right;color:#64748b;"><?= number_format($cap, 2) ?></td>
+            <td style="padding:0.55rem 0.75rem;text-align:center;color:#94a3b8;"><?= ($w * 100) ?>%</td>
+            <td style="padding:0.55rem 1.25rem;text-align:right;font-weight:700;color:#1a3a6b;"><?= number_format($wval, 2) ?></td>
+        </tr>
+        <?php endforeach; ?>
+        </tbody>
+        <tfoot>
+        <tr style="background:#f0f4fb;border-top:2px solid #1a3a6b;">
+            <td colspan="4" style="padding:0.6rem 1.25rem;font-weight:700;color:#1a3a6b;font-size:0.82rem;">Final Weighted Score</td>
+            <td style="padding:0.6rem 1.25rem;text-align:right;font-weight:800;color:#1a3a6b;font-size:1rem;"><?= number_format($ws, 2) ?></td>
+        </tr>
+        </tfoot>
+    </table>
+    </div>
+
+</div><!-- /faculty profile card -->
+
+<!-- ── Evaluator Progress ──────────────────────────────────── -->
+<?php if (!isAdmin()): ?>
+<?php
+$all_checkers_stmt = $pdo->prepare("
+    SELECT DISTINCT u.user_id, u.checker_label, r.decision, r.decided_at
+    FROM checker_kra_assignments ka
+    JOIN users u ON u.user_id = ka.checker_id
+    LEFT JOIN application_checker_reviews r ON r.application_id = ? AND r.checker_id = u.user_id
+    WHERE ka.cycle_id = ? AND u.role = 'evaluator' AND u.status = 'active'
+    ORDER BY u.user_id ASC
+");
+$all_checkers_stmt->execute([$app_id, (int)$app['cycle_id']]);
+$all_checkers_list = $all_checkers_stmt->fetchAll();
+?>
+<div style="border:1px solid #e2e8f0;background:#fff;margin-bottom:1rem;">
+    <div style="padding:0.6rem 1.25rem;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;justify-content:space-between;">
+        <span style="font-size:0.65rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.07em;">
+            Evaluator Progress
+        </span>
+        <span style="font-size:0.72rem;color:#94a3b8;"><?= $approved_count + $rejected_count ?>/<?= $total_checkers ?> decided</span>
+    </div>
+    <div style="padding:0.75rem 1.25rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
+        <?php foreach ($all_checkers_list as $chk):
+            $is_me  = (int)$chk['user_id'] === $my_checker_id;
+            $dec    = $chk['decision'] ?? null;
+            $bg     = $dec === 'approved' ? '#f0fdf4' : '#f8fafc';
+            $border = $dec === 'approved' ? '#16a34a' : ($dec === 'rejected' ? '#475569' : '#e2e8f0');
+            $color  = $dec === 'approved' ? '#16a34a' : ($dec === 'rejected' ? '#475569' : '#94a3b8');
+            $icon   = $dec === 'approved' ? 'bi-check-circle-fill' : ($dec === 'rejected' ? 'bi-x-circle' : 'bi-hourglass');
+            $dlabel = $dec === 'approved' ? 'Complete' : ($dec === 'rejected' ? 'Returned' : 'Pending');
+        ?>
+        <div style="display:flex;align-items:center;gap:0.5rem;padding:0.4rem 0.75rem;border:1px solid <?= $border ?>;background:<?= $bg ?>;">
+            <i class="bi <?= $icon ?>" style="color:<?= $color ?>;font-size:0.78rem;"></i>
+            <div>
+                <div style="font-size:0.73rem;font-weight:600;color:#1e293b;line-height:1.2;">
+                    <?= htmlspecialchars(checkerDisplayLabel($chk)) ?>
+                    <?php if ($is_me): ?><span style="color:#94a3b8;font-weight:400;font-size:0.68rem;"> (you)</span><?php endif; ?>
                 </div>
-                <div style="min-width:0;">
-                    <div style="font-size:0.75rem;font-weight:600;color:#1e293b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-                        <?= htmlspecialchars(checkerDisplayLabel($chk)) ?><?= $is_me ? ' <span style="color:#64748b;font-weight:400;font-size:0.65rem;">(you)</span>' : '' ?>
-                    </div>
+                <div style="font-size:0.65rem;color:<?= $color ?>;">
+                    <?= $dlabel ?>
+                    <?php if ($chk['decided_at']): ?> · <?= date('M d', strtotime($chk['decided_at'])) ?><?php endif; ?>
                 </div>
             </div>
-            <span style="font-size:0.67rem;font-weight:600;color:<?= $dec_color ?>;">
-                <i class="bi bi-<?= $dec_icon ?> me-1"></i><?= $dec_label ?>
-            </span>
-            <?php if ($chk['decided_at']): ?>
-            <div style="font-size:0.6rem;color:#94a3b8;margin-top:1px;"><?= date('M d, Y', strtotime($chk['decided_at'])) ?></div>
-            <?php endif; ?>
-            <?php if ($dec === 'rejected' && !empty($chk['remarks'])): ?>
-            <div style="font-size:0.63rem;color:#1a3a6b;margin-top:2px;font-style:italic;word-break:break-word;">
-                "<?= sanitize($chk['remarks']) ?>"
-            </div>
-            <?php endif; ?>
         </div>
         <?php endforeach; ?>
     </div>
 </div>
 <?php endif; ?>
-
-<!-- -- Faculty Info ------------------------------------------ -->
-<div class="neon-card mb-3">
-    <div class="row g-3">
-        <div class="col-md-3"><span class="text-muted small d-block">Full Name</span><strong><?= htmlspecialchars(formatDisplayName($app)) ?></strong></div>
-        <div class="col-md-3"><span class="text-muted small d-block">Employee ID</span><strong><?= sanitize($app['employee_id'] ?? 'N/A') ?></strong></div>
-        <div class="col-md-3"><span class="text-muted small d-block">Campus</span><strong><?= sanitize($app['campus_name'] ?? 'N/A') ?></strong></div>
-        <div class="col-md-3"><span class="text-muted small d-block">Faculty Rank</span><strong><?= sanitize($app['rank'] ?? 'N/A') ?></strong></div>
-        <div class="col-md-3"><span class="text-muted small d-block">Cycle</span><strong class="text-primary"><?= sanitize($app['cycle_name'] ?? 'N/A') ?></strong></div>
-        <div class="col-md-3"><span class="text-muted small d-block">Weighted Score</span><strong style="color:#1a3a6b;font-size:1.3rem;"><?= number_format($score_result['weighted_score'], 2) ?></strong></div>
-        <div class="col-md-3">
-            <span class="text-muted small d-block">Sub-rank Increment</span>
-            <?php $inc = $score_result['sub_rank_increment']; ?>
-            <span class="badge <?= $inc > 0 ? 'bg-success' : 'bg-secondary' ?> fs-6">
-                <?= $inc > 0 ? "+{$inc} sub-rank" . ($inc > 1 ? 's' : '') : 'No sub-rank increment' ?>
-            </span>
-        </div>
-        <div class="col-md-3"><span class="text-muted small d-block">Submitted</span><strong><?= $app['submitted_at'] ? date('M d, Y H:i', strtotime($app['submitted_at'])) : 'N/A' ?></strong></div>
-        <?php if ($visible_checker_remarks !== ''): ?>
-        <div class="col-12"><span class="text-muted small d-block">Remarks</span><span class="text-warning"><?= sanitize($visible_checker_remarks) ?></span></div>
-        <?php endif; ?>
-        <div class="col-12">
-            <div class="p-3 rounded" style="background:#eff6ff;border:1px solid #a5d6a7;">
-                <div class="d-flex align-items-center gap-3 flex-wrap">
-                    <div>
-                        <span class="text-muted small d-block">Recommended Rank / Sub-rank</span>
-                        <strong style="font-size:1.1rem;color:#1a3a6b;"><?= sanitize($potential_data['potential_rank']) ?></strong>
-                        <?php if ($potential_data['crossed_category']): ?>
-                        <span class="badge bg-warning text-dark ms-2" style="font-size:0.7rem;">Category crossed</span>
-                        <?php endif; ?>
-                    </div>
-                    <?php if (!empty($potential_data['flags'])): ?>
-                    <div class="d-flex flex-wrap gap-1">
-                        <?php foreach ($potential_data['flags'] as $flag):
-                            $fc = 'secondary';
-                            if (str_contains($flag, 'CC'))      $fc = 'warning text-dark';
-                            if (str_contains($flag, 'crossed')) $fc = 'info';
-                            if (str_contains($flag, 'EAC'))     continue;
-                        ?>
-                        <span class="badge bg-<?= $fc ?>" style="font-size:0.72rem;">
-                            <i class="bi bi-info-circle me-1"></i><?= sanitize($flag) ?>
-                        </span>
-                        <?php endforeach; ?>
-                    </div>
-                    <?php endif; ?>
-                </div>
-                <div class="mt-1" style="font-size:0.72rem;color:#64748b;">
-                    <i class="bi bi-lock-fill me-1"></i>System-computed per DBM-CHED JC No. 3, s. 2022
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-
-<!-- -- Weighted Score Breakdown -------------------------------- -->
-<?php if ($score_result['weighted_score'] < 41): ?>
-<div class="alert mb-3 d-flex align-items-center gap-3"
-     style="background:#f8fafc;border:2px solid #334155;border-radius:10px;padding:1rem 1.25rem;">
-    <i class="bi bi-exclamation-triangle-fill" style="color:#334155;font-size:1.4rem;flex-shrink:0;"></i>
-    <div>
-        <div style="font-weight:700;color:#1e293b;font-size:0.95rem;">Below Minimum Weighted Score</div>
-        <div style="color:#1e293b;font-size:0.85rem;margin-top:2px;">
-            This application's weighted score is <strong><?= number_format($score_result['weighted_score'], 2) ?></strong>,
-            which is below the minimum of <strong>41</strong> required for reclassification.
-            It cannot be completed as-is. Please return it to the faculty for revision or adjust the scores accordingly.
-        </div>
-    </div>
-</div>
-<?php endif; ?>
-<div class="neon-card mb-3">
-    <h6 class="mb-3" style="color:var(--blue-dark);"><i class="bi bi-calculator me-2"></i>Weighted Score - <?= htmlspecialchars($faculty_rank ?: 'No rank set') ?></h6>
-    <div class="table-responsive">
-        <table style="width:100%;border-collapse:collapse;font-size:0.85rem;">
-            <thead><tr style="background:#f1f5f9;">
-                <th style="color:#1a3a6b;">KRA</th>
-                <th class="text-center" style="color:#1a3a6b;">Raw Score</th>
-                <th class="text-center" style="color:#1a3a6b;">Capped</th>
-                <th class="text-center" style="color:#1a3a6b;">Weight</th>
-                <th class="text-center" style="color:#1a3a6b;">Weighted</th>
-            </tr></thead>
-            <tbody>
-            <?php
-            $ck_labels  = ['Instruction'=>'KRA I - Instruction','Research'=>'KRA II - Research','Extension'=>'KRA III - Extension','Professional Development'=>'KRA IV - Prof. Development'];
-            $ck_capped  = ['Instruction'=>$score_result['kra1'],'Research'=>$score_result['kra2'],'Extension'=>$score_result['kra3'],'Professional Development'=>$score_result['kra4']];
-            $ck_weights = $score_result['weights'];
-            foreach ($ck_labels as $key => $label):
-                $raw  = $raw_kra[$key] ?? 0;
-                $cap  = $ck_capped[$key];
-                $w    = $ck_weights[$key];
-                $wval = round($cap * $w, 2);
-            ?>
-            <tr>
-                <td><?= $label ?></td>
-                <td class="text-center"><?= number_format($raw, 2) ?></td>
-                <td class="text-center"><?= number_format($cap, 2) ?></td>
-                <td class="text-center"><?= ($w * 100) ?>%</td>
-                <td class="text-center fw-bold"><?= number_format($wval, 2) ?></td>
-            </tr>
-            <?php endforeach; ?>
-            </tbody>
-            <tfoot>
-                <tr style="background:#eff6ff;font-weight:700;">
-                    <td colspan="4" style="color:#1a3a6b;">Final Weighted Score</td>
-                    <td class="text-center" style="color:#1a3a6b;font-size:1rem;"><?= number_format($score_result['weighted_score'], 2) ?></td>
-                </tr>
-            </tfoot>
-        </table>
-    </div>
-</div>
 
 <!-- -- Auto Sub-Rank Verification -------------------------- -->
 <div id="asr-verification" style="scroll-margin-top:80px;"></div>
@@ -1117,13 +1057,13 @@ $ck_can_verify = !isAdmin()
                         <button type="button"
                                 onclick="submitAsrVerify('asr-doc-form','verified','asr-doc-status-badge','#16a34a','Acceptable')"
                                 style="flex:1;min-width:100px;padding:0.45rem 0.7rem;border-radius:6px;border:1.5px solid #16a34a;background:#f0fdf4;color:#16a34a;font-size:0.78rem;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:0.3rem;"
-                                <?= $ck_d_verified === 'verified' ? 'style="opacity:0.5;" disabled' : '' ?>>
+                                >
                             <i class="bi bi-check-circle-fill"></i>Acceptable - Evidence is Authentic
                         </button>
                         <button type="button"
                                 onclick="submitAsrVerify('asr-doc-form','rejected','asr-doc-status-badge','#dc2626','Not Acceptable')"
                                 style="flex:1;min-width:100px;padding:0.45rem 0.7rem;border-radius:6px;border:1.5px solid #dc2626;background:#fef2f2;color:#dc2626;font-size:0.78rem;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:0.3rem;"
-                                <?= $ck_d_verified === 'rejected' ? 'style="opacity:0.5;" disabled' : '' ?>>
+                                >
                             <i class="bi bi-x-circle-fill"></i>Not Acceptable - Evidence Invalid
                         </button>
                     </div>
@@ -1207,13 +1147,13 @@ $ck_can_verify = !isAdmin()
                         <button type="button"
                                 onclick="submitAsrVerify('asr-awd-form','verified','asr-awd-status-badge','#16a34a','Acceptable')"
                                 style="flex:1;min-width:100px;padding:0.45rem 0.7rem;border-radius:6px;border:1.5px solid #16a34a;background:#f0fdf4;color:#16a34a;font-size:0.78rem;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:0.3rem;"
-                                <?= $ck_a_verified === 'verified' ? 'disabled' : '' ?>>
+                                >
                             <i class="bi bi-check-circle-fill"></i>Acceptable - Evidence is Authentic
                         </button>
                         <button type="button"
                                 onclick="submitAsrVerify('asr-awd-form','rejected','asr-awd-status-badge','#dc2626','Not Acceptable')"
                                 style="flex:1;min-width:100px;padding:0.45rem 0.7rem;border-radius:6px;border:1.5px solid #dc2626;background:#fef2f2;color:#dc2626;font-size:0.78rem;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:0.3rem;"
-                                <?= $ck_a_verified === 'rejected' ? 'disabled' : '' ?>>
+                                >
                             <i class="bi bi-x-circle-fill"></i>Not Acceptable - Evidence Invalid
                         </button>
                     </div>
@@ -1246,10 +1186,10 @@ $ck_can_verify = !isAdmin()
  * submitAsrVerify  -  submit an accept/reject form via AJAX,
  * then update the status badge inline without full page reload.
  */
-function submitAsrVerify(formId, decision, badgeId, color, label) {
+async function submitAsrVerify(formId, decision, badgeId, color, label) {
     const form  = document.getElementById(formId);
     const badge = document.getElementById(badgeId);
-    if (!form) return;
+    if (!form || form.dataset.saving === '1') return;
 
     // Inject the decision into the hidden input
     const decInput = form.querySelector('input[name="verification"]');
@@ -1263,23 +1203,40 @@ function submitAsrVerify(formId, decision, badgeId, color, label) {
         notesEl.placeholder = 'Reason is required.';
         return;
     }
-    if (notesEl) notesEl.style.borderColor = '#e2e8f0';
+    if (notesEl) {
+        notesEl.style.borderColor = '#e2e8f0';
+        notesEl.placeholder = 'Optional: note your reason (required when marking not acceptable)';
+    }
 
     const fd = new FormData(form);
-    fetch(window.location.href, { method: 'POST', body: fd,
-        headers: { 'X-Requested-With': 'XMLHttpRequest' } })
-    .then(r => r.json())
-    .then(data => {
-        if (data.ok && badge) {
+    const buttons = Array.from(form.querySelectorAll('button[type="button"]'));
+    form.dataset.saving = '1';
+    buttons.forEach(b => { b.disabled = true; b.style.opacity = '0.55'; });
+    let errorEl = form.querySelector('.asr-save-error');
+    if (errorEl) errorEl.remove();
+    try {
+        const response = await fetch(window.location.href, { method: 'POST', body: fd,
+            headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.error || 'Could not save your review. Please try again.');
+        if (badge) {
             badge.style.background  = color + '12';
             badge.style.color       = color;
             badge.style.borderColor = color + '40';
             badge.innerHTML = '<i class="bi bi-shield me-1"></i>' + label;
         }
-        // Disable both buttons in this form
-        form.querySelectorAll('button[type="button"]').forEach(b => { b.disabled = true; b.style.opacity = '0.55'; });
-    })
-    .catch(() => { form.submit(); });
+        buttons.forEach(b => b.setAttribute('aria-pressed', String(b.getAttribute('onclick')?.includes("'" + decision + "'"))));
+    } catch (error) {
+        errorEl = document.createElement('div');
+        errorEl.className = 'asr-save-error';
+        errorEl.setAttribute('role', 'alert');
+        errorEl.style.cssText = 'color:#dc2626;font-size:0.78rem;margin-top:0.5rem;';
+        errorEl.textContent = error.message || 'Could not save your review. Please try again.';
+        form.appendChild(errorEl);
+    } finally {
+        delete form.dataset.saving;
+        buttons.forEach(b => { b.disabled = false; b.style.opacity = ''; });
+    }
 }
 </script>
 
@@ -1288,10 +1245,8 @@ function submitAsrVerify(formId, decision, badgeId, color, label) {
 <?php if (!empty($_GET['score_saved'])): ?>
 <?php showFlash(); ?>
 <?php endif; ?>
-<div class="neon-card mb-3">
-    <h6 style="color:#0f172a;font-weight:700;font-size:0.88rem;margin-bottom:1rem;">
-        <i class="bi bi-list-check me-2" style="color:#1a3a6b;"></i>KRA Score Review
-    </h6>
+<div class="neon-card mb-3" style="padding:0;overflow:hidden;">
+
     <?php if ($subs): ?>
     <?php
     // Per-checker verification state
@@ -1310,228 +1265,599 @@ function submitAsrVerify(formId, decision, badgeId, color, label) {
         $vc->execute($sub_ids_v);
         foreach ($vc->fetchAll() as $vrow) $verify_counts[$vrow['submission_id']] = (int)$vrow['cnt'];
     }
-    // Pre-compute KRA caps and weights for weighted column
     $kra_caps_rev    = ['Instruction'=>100,'Research'=>100,'Extension'=>100,'Professional Development'=>100];
     $kra_weights_rev = $score_result['weights'];
-    // Sum raw per category for proportional distribution
-    $kra_raw_totals = [];
+    $kra_raw_totals  = [];
     foreach ($subs as $s) {
         $kra_raw_totals[$s['kra_category']] = ($kra_raw_totals[$s['kra_category']] ?? 0) + (float)$s['computed_points'];
     }
+
+    // Group subs by category and collect per-tab stats
+    $kra_order  = ['Instruction', 'Research', 'Extension', 'Professional Development'];
+    $kra_short  = ['Instruction'=>'Instruction','Research'=>'Research','Extension'=>'Extension','Professional Development'=>'Prof. Development'];
+    $subs_by_kra = [];
+    foreach ($subs as $s) $subs_by_kra[$s['kra_category']][] = $s;
+
+    // Per-tab badge counts (flagged entries highlight the tab)
+    $kra_tab_stats = [];
+    foreach ($kra_order as $kra) {
+        $entries  = $subs_by_kra[$kra] ?? [];
+        $flagged  = 0; $accepted = 0;
+        foreach ($entries as $e) {
+            if (($e['revision_status'] ?? 'ok') === 'needs_revision') $flagged++;
+            $sid = (int)$e['submission_id'];
+            $assigned = max(1, countAssignedCheckersForKra($pdo, (int)$app['cycle_id'], $kra));
+            if (($verify_counts[$sid] ?? 0) >= $assigned) $accepted++;
+        }
+        $kra_tab_stats[$kra] = [
+            'count'    => count($entries),
+            'flagged'  => $flagged,
+            'accepted' => $accepted,
+        ];
+    }
+    // Default active tab = first KRA that has entries
+    $default_kra = 'Instruction';
+    foreach ($kra_order as $k) { if (!empty($subs_by_kra[$k])) { $default_kra = $k; break; } }
+    $kra_tab_ids = ['Instruction'=>'kra-tab-inst','Research'=>'kra-tab-res','Extension'=>'kra-tab-ext','Professional Development'=>'kra-tab-pd'];
     ?>
-    <div class="table-responsive">
-        <table style="width:100%;border-collapse:collapse;font-size:0.82rem;">
-            <thead>
-            <tr style="background:#f8fafc;border-bottom:2px solid #e2e8f0;">
-                <th style="padding:0.6rem 0.85rem;text-align:left;font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#64748b;white-space:nowrap;">KRA Category</th>
-                <th style="padding:0.6rem 0.75rem;text-align:right;font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#64748b;white-space:nowrap;">Raw Score</th>
-                <th style="padding:0.6rem 0.75rem;text-align:right;font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#64748b;white-space:nowrap;">Weighted</th>
-                <th style="padding:0.6rem 0.75rem;text-align:left;font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#64748b;">Remarks</th>
-                <th style="padding:0.6rem 0.75rem;text-align:left;font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#64748b;">Evidence</th>
-                <?php if ($can_act_revision): ?>
-                <th style="padding:0.6rem 0.75rem;text-align:center;font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#64748b;min-width:120px;">Action</th>
+
+    <!-- KRA Tab bar -->
+    <div style="display:flex;align-items:stretch;border-bottom:2px solid #e2e8f0;background:#f8fafc;overflow-x:auto;scrollbar-width:none;-ms-overflow-style:none;">
+    <style>#kra-verification .neon-card > div:first-child::-webkit-scrollbar{display:none}</style>
+        <div style="padding:0.55rem 1rem;display:flex;align-items:center;gap:0.4rem;border-right:1px solid #e2e8f0;flex-shrink:0;">
+            <span style="font-size:0.65rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.07em;white-space:nowrap;">KRA Score Review</span>
+        </div>
+        <?php foreach ($kra_order as $kra):
+            $stats   = $kra_tab_stats[$kra];
+            $tab_id  = $kra_tab_ids[$kra];
+            $short   = $kra_short[$kra];
+            $is_def  = ($kra === $default_kra);
+            $has_flag = $stats['flagged'] > 0;
+            $all_done = $stats['count'] > 0 && $stats['accepted'] === $stats['count'];
+            $is_empty = $stats['count'] === 0;
+            $badge_bg = $has_flag ? '#fef3c7' : ($all_done ? '#f0fdf4' : ($is_empty ? '#f8fafc' : '#f1f5f9'));
+            $badge_col= $has_flag ? '#92400e'  : ($all_done ? '#16a34a'  : ($is_empty ? '#cbd5e1' : '#64748b'));
+        ?>
+        <button type="button"
+                id="btn-<?= $tab_id ?>"
+                onclick="switchKraTab('<?= $tab_id ?>','<?= addslashes($kra) ?>')"
+                style="display:inline-flex;align-items:center;gap:0.45rem;padding:0.65rem 1rem;
+                       border:none;background:none;cursor:pointer;white-space:nowrap;
+                       font-size:0.78rem;font-weight:600;
+                       color:<?= $is_def ? '#1a3a6b' : ($is_empty ? '#94a3b8' : '#64748b') ?>;
+                       border-bottom:2px solid <?= $is_def ? '#1a3a6b' : 'transparent' ?>;
+                       margin-bottom:-2px;transition:color 0.12s;">
+            <?= htmlspecialchars($short) ?>
+            <span style="background:<?= $badge_bg ?>;color:<?= $badge_col ?>;font-size:0.6rem;font-weight:800;
+                         padding:1px 6px;min-width:18px;text-align:center;
+                         <?= $has_flag ? 'animation:badgePulse 1.8s ease-in-out infinite;' : '' ?>">
+                <?php if ($is_empty): ?>
+                —
+                <?php elseif ($has_flag): ?>
+                <i class="bi bi-exclamation-triangle-fill" style="font-size:0.55rem;margin-right:2px;"></i><?= $stats['flagged'] ?> flagged
+                <?php elseif ($all_done): ?>
+                <i class="bi bi-check-lg" style="font-size:0.6rem;margin-right:1px;"></i><?= $stats['count'] ?>
+                <?php else: ?>
+                <?= $stats['count'] ?>
                 <?php endif; ?>
+            </span>
+        </button>
+        <?php endforeach; ?>
+    </div>
+    <style>
+    @keyframes badgePulse {
+        0%,100%{opacity:1} 50%{opacity:0.5}
+    }
+    </style>
+
+    <!-- KRA Tab panels -->
+    <?php foreach ($kra_order as $kra):
+        $tab_id = $kra_tab_ids[$kra];
+        $entries = $subs_by_kra[$kra] ?? [];
+        $is_def  = ($kra === $default_kra);
+        $can_review_this_kra   = checkerCanReviewKra($pdo, (int)$my_checker_id, (int)$app['cycle_id'], $kra);
+        $assigned_for_this_kra = max(1, countAssignedCheckersForKra($pdo, (int)$app['cycle_id'], $kra));
+        $kra_weight = $kra_weights_rev[$kra] ?? 0;
+        $cat_raw    = $kra_raw_totals[$kra] ?? 0;
+        $cat_cap    = $kra_caps_rev[$kra] ?? 100;
+        $cat_capped = min($cat_cap, $cat_raw);
+    ?>
+    <div id="<?= $tab_id ?>" style="display:<?= $is_def ? 'block' : 'none' ?>;">
+
+        <?php if (!$entries): ?>
+        <!-- Empty state -->
+        <div style="padding:2.5rem 1rem;text-align:center;color:#94a3b8;border-top:1px solid #f1f5f9;">
+            <i class="bi bi-folder2-open" style="font-size:1.75rem;display:block;margin-bottom:0.5rem;color:#e2e8f0;"></i>
+            <div style="font-size:0.82rem;font-weight:600;color:#64748b;margin-bottom:0.25rem;">No submissions for <?= htmlspecialchars($kra) ?></div>
+            <div style="font-size:0.72rem;color:#94a3b8;">The faculty has not submitted any entries under this KRA.</div>
+        </div>
+
+        <?php else: ?>
+        <div class="table-responsive">
+        <table style="width:100%;border-collapse:collapse;font-size:0.82rem;table-layout:fixed;">
+            <colgroup>
+                <col style="width:auto;">
+                <col style="width:90px;">
+                <col style="width:90px;">
+                <col style="width:130px;">
+            </colgroup>
+            <thead>
+            <tr style="background:#f8fafc;border-bottom:1px solid #e2e8f0;">
+                <th style="padding:0.55rem 1rem;text-align:left;font-size:0.63rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;">
+                    Entry
+                </th>
+                <th style="padding:0.55rem 0.75rem;text-align:right;font-size:0.63rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;">Raw</th>
+                <th style="padding:0.55rem 0.75rem;text-align:right;font-size:0.63rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;">
+                    Weighted
+                    <span style="font-weight:400;color:#cbd5e1;">(<?= ($kra_weight*100) ?>%)</span>
+                </th>
+                <th style="padding:0.55rem 0.75rem;text-align:center;font-size:0.63rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;">Action</th>
             </tr>
             </thead>
             <tbody>
-            <?php foreach ($subs as $s):
-                $cat         = $s['kra_category'];
-                $raw_pts     = (float)$s['computed_points'];
-                $cap         = $kra_caps_rev[$cat] ?? 100;
-                $weight      = $kra_weights_rev[$cat] ?? 0;
-                $cat_raw     = $kra_raw_totals[$cat] ?? 0;
-                $cat_capped  = min($cap, $cat_raw);
-                $entry_share = $cat_raw > 0 ? ($raw_pts / $cat_raw) : 0;
-                $weighted_val = round($entry_share * $cat_capped * $weight, 2);
-                $needs_rev   = ($s['revision_status'] ?? 'ok') === 'needs_revision';
-                $can_review_this_kra = checkerCanReviewKra($pdo, (int)$my_checker_id, (int)$app['cycle_id'], $cat);
-                $assigned_for_this_kra = max(1, countAssignedCheckersForKra($pdo, (int)$app['cycle_id'], $cat));
+            <?php foreach ($entries as $idx => $s):
+                $raw_pts      = (float)$s['computed_points'];
+                $entry_share  = $cat_raw > 0 ? ($raw_pts / $cat_raw) : 0;
+                $weighted_val = round($entry_share * $cat_capped * $kra_weight, 2);
+                $needs_rev    = ($s['revision_status'] ?? 'ok') === 'needs_revision';
+                $was_flagged  = KraRevisionWorkflow::wasFlagged($s);
+                $i_flagged_this = $was_flagged && (int)($s['revision_by'] ?? 0) === $my_checker_id;
                 $i_verified_this = in_array((int)$s['submission_id'], array_map('intval', $my_verified_sids));
                 $all_verified    = ($verify_counts[$s['submission_id']] ?? 0) >= $assigned_for_this_kra;
+
+                // EA modal JSON
+                $ev_data = [];
+                foreach ($s['evidence_files'] as $fi) {
+                    $ev_data[] = ['path' => $fi['file_path'], 'name' => $fi['original_filename']];
+                }
+                $show_not_started = !isAdmin() && !$i_decided && !$i_started_review
+                                    && in_array($app['status'], ['submitted','under_review']);
+                $ea_json = htmlspecialchars(json_encode([
+                    'sid'       => (int)$s['submission_id'],
+                    'category'  => $s['kra_category'],
+                    'faculty'   => formatDisplayName($app),
+                    'all_ok'    => $all_verified,
+                    'i_ok'      => $i_verified_this,
+                    'v_count'   => $verify_counts[$s['submission_id']] ?? 0,
+                    'v_total'   => $assigned_for_this_kra,
+                    'can_rev'   => $can_act_revision && $can_review_this_kra,
+                    'can_lock'  => !$can_review_this_kra,
+                    'needs_rev' => $needs_rev,
+                    'was_flagged' => $was_flagged,
+                    'i_flagged' => $i_flagged_this,
+                    'rev_at' => !empty($s['revision_at']) ? date('M d, Y h:i A', strtotime($s['revision_at'])) : '',
+                    'rev_note'  => $s['revision_note'] ?? '',
+                    'files'     => $ev_data,
+                    'i_decided' => $i_decided,
+                    'not_start' => $show_not_started,
+                    'is_under'  => ($app['status'] === 'under_review'),
+                ]), ENT_QUOTES);
+
+                if ($all_verified) {
+                    $btn_border='#16a34a';$btn_bg='#f0fdf4';$btn_color='#16a34a';$btn_label='Acceptable';
+                } elseif ($needs_rev) {
+                    $btn_border='#d97706';$btn_bg='#fffbeb';$btn_color='#d97706';$btn_label='Flagged';
+                } elseif ($i_verified_this) {
+                    $btn_border='#1e4d8c';$btn_bg='#eff6ff';$btn_color='#1e4d8c';$btn_label='Marked';
+                } else {
+                    $btn_border='#e2e8f0';$btn_bg='#f8fafc';$btn_color='#475569';$btn_label='Review';
+                }
             ?>
-            <tr style="border-bottom:1px solid #f1f5f9;<?= $needs_rev ? 'background:#fffbf0;border-left:3px solid #d97706;' : '' ?>"
-                onmouseover="this.style.background='<?= $needs_rev ? '#fff8e6' : '#fafafa' ?>'"
+            <tr style="border-bottom:1px solid #f1f5f9;<?= $needs_rev ? 'border-left:3px solid #d97706;background:#fffbf0;' : '' ?>"
+                onmouseover="this.style.background='<?= $needs_rev ? '#fff8e6' : '#f8fafc' ?>'"
                 onmouseout="this.style.background='<?= $needs_rev ? '#fffbf0' : '' ?>'">
 
-                <!-- KRA Category -->
-                <td style="padding:0.7rem 0.85rem;font-weight:600;color:#1e293b;white-space:nowrap;">
-                    <?= sanitize($s['kra_category']) ?>
-                    <?php if (!$can_review_this_kra): ?>
-                    <div style="margin-top:0.25rem;">
-                        <span style="background:#f8fafc;color:#94a3b8;border:1px solid #e2e8f0;border-radius:20px;padding:1px 7px;font-size:0.65rem;font-weight:700;">
-                            <i class="bi bi-lock-fill me-1"></i>Locked
+                <!-- Entry -->
+                <td style="padding:0.7rem 1rem;vertical-align:middle;">
+                    <div style="display:flex;align-items:baseline;gap:0.5rem;flex-wrap:wrap;">
+                        <span style="font-size:0.65rem;font-weight:700;color:#cbd5e1;flex-shrink:0;"><?= $idx+1 ?>.</span>
+                        <div style="min-width:0;"><?= formatKraRemarks($s['kra_category'], $s['remarks'] ?? '') ?></div>
+                        <?php if ($was_flagged): ?>
+                        <span class="revision-history-marker"
+                              title="<?= htmlspecialchars(($i_flagged_this ? 'You requested this revision' : 'Revision previously requested') . (!empty($s['revision_at']) ? ' on ' . date('M d, Y h:i A', strtotime($s['revision_at'])) : ''), ENT_QUOTES) ?>"
+                              style="display:inline-flex;align-items:center;gap:4px;font-size:0.67rem;font-weight:600;color:<?= $needs_rev ? '#b45309' : '#64748b' ?>;white-space:nowrap;">
+                            <i class="bi bi-flag-fill" aria-hidden="true"></i>
+                            <?= $needs_rev ? 'Flagged for revision' : ($i_flagged_this ? 'Previously flagged by you' : 'Previously flagged') ?>
                         </span>
+                        <?php endif; ?>
                     </div>
-                    <?php endif; ?>
                 </td>
 
-                <!-- Raw Score -->
-                <td style="padding:0.7rem 0.75rem;text-align:right;white-space:nowrap;">
+                <!-- Raw -->
+                <td style="padding:0.7rem 0.75rem;text-align:right;vertical-align:middle;white-space:nowrap;">
                     <span style="font-size:0.88rem;font-weight:700;color:#0f172a;"><?= number_format($raw_pts, 2) ?></span>
                     <?php if (($can_act_revision || isAdmin()) && $can_review_this_kra && $app['status'] !== 'submitted'): ?>
                     <button type="button"
                             onclick="openScoreModal(<?= $s['submission_id'] ?>,'<?= addslashes(sanitize($s['kra_category'])) ?>',<?= $raw_pts ?>)"
                             title="Edit score"
-                            style="background:none;border:none;padding:2px 4px;cursor:pointer;color:#94a3b8;margin-left:2px;"
-                            onmouseover="this.style.color='#1a3a6b'" onmouseout="this.style.color='#94a3b8'">
-                        <i class="bi bi-pencil" style="font-size:0.7rem;"></i>
+                            style="background:none;border:none;padding:1px 3px;cursor:pointer;color:#cbd5e1;margin-left:3px;vertical-align:middle;"
+                            onmouseover="this.style.color='#1a3a6b'" onmouseout="this.style.color='#cbd5e1'">
+                        <i class="bi bi-pencil-fill" style="font-size:0.65rem;"></i>
                     </button>
                     <?php endif; ?>
                 </td>
 
-                <!-- Weighted Score -->
-                <td style="padding:0.7rem 0.75rem;text-align:right;white-space:nowrap;">
+                <!-- Weighted -->
+                <td style="padding:0.7rem 0.75rem;text-align:right;vertical-align:middle;white-space:nowrap;">
                     <span style="font-size:0.88rem;font-weight:700;color:#1a3a6b;"><?= number_format($weighted_val, 2) ?></span>
-                    <div style="font-size:0.62rem;color:#94a3b8;margin-top:1px;"><?= ($weight * 100) ?>% wt</div>
                 </td>
 
-                <!-- Remarks -->
-                <td style="padding:0.7rem 0.75rem;color:#475569;max-width:260px;">
-                    <?= formatKraRemarks($s['kra_category'], $s['remarks'] ?? '') ?>
-                    <?php if ($needs_rev): ?>
-                    <div style="margin-top:0.35rem;padding:0.35rem 0.6rem;background:#fef3c7;border:1px solid #fde68a;border-radius:5px;display:flex;align-items:flex-start;gap:0.4rem;">
-                        <i class="bi bi-exclamation-triangle-fill" style="color:#d97706;font-size:0.75rem;margin-top:1px;flex-shrink:0;"></i>
-                        <span style="font-size:0.72rem;font-weight:600;color:#92400e;"><?= sanitize($s['revision_note'] ?? '') ?></span>
-                    </div>
-                    <?php endif; ?>
-                </td>
-
-                <!-- Evidence -->
-                <td style="padding:0.7rem 0.75rem;">
-                    <!-- Acceptable badge  -  per-checker -->
-                    <?php if ($all_verified): ?>
-                    <div data-verification-badge="<?= (int)$s['submission_id'] ?>"
-                         style="display:inline-flex;align-items:center;gap:3px;margin-bottom:0.3rem;
-                                font-size:0.65rem;font-weight:700;color:#16a34a;
-                                background:#f0fdf4;border:1px solid #bbf7d0;
-                                border-radius:20px;padding:1px 7px;">
-                        <i class="bi bi-patch-check-fill" style="font-size:0.62rem;"></i>Acceptable
-                    </div>
-                    <?php elseif ($i_verified_this): ?>
-                    <div data-verification-badge="<?= (int)$s['submission_id'] ?>"
-                         style="display:inline-flex;align-items:center;gap:3px;margin-bottom:0.3rem;
-                                font-size:0.65rem;font-weight:700;color:#1e4d8c;
-                                background:#eff6ff;border:1px solid #bfdbfe;
-                                border-radius:20px;padding:1px 7px;"
-                         title="You marked this acceptable. Waiting for other evaluators.">
-                        <i class="bi bi-patch-check-fill" style="font-size:0.62rem;"></i>You marked acceptable
-                        <span style="font-size:0.6rem;color:#64748b;">(<?= $verify_counts[$s['submission_id']] ?? 0 ?>/<?= $assigned_for_this_kra ?>)</span>
-                    </div>
-                    <?php elseif ($can_act_revision && $can_review_this_kra): ?>
-                    <div data-verification-badge="<?= (int)$s['submission_id'] ?>"
-                         style="display:inline-flex;align-items:center;gap:3px;margin-bottom:0.3rem;
-                                font-size:0.65rem;font-weight:600;color:#94a3b8;
-                                background:#f8fafc;border:1px solid #e2e8f0;
-                                border-radius:20px;padding:1px 7px;">
-                        <i class="bi bi-circle" style="font-size:0.55rem;"></i>Not Acceptable
-                        <?php if (($verify_counts[$s['submission_id']] ?? 0) > 0): ?>
-                        <span style="font-size:0.6rem;color:#64748b;">(<?= $verify_counts[$s['submission_id']] ?>/<?= $assigned_for_this_kra ?>)</span>
-                        <?php endif; ?>
-                    </div>
-                    <?php endif; ?>
-                    <?php if (!empty($s['evidence_files'])): ?>
-                    <div style="display:flex;flex-wrap:wrap;gap:0.3rem;">
-                        <?php foreach ($s['evidence_files'] as $fi): ?>
-                        <a href="pages/view_file.php?file=<?= urlencode($fi['file_path']) ?>" target="_blank" rel="noopener noreferrer"
-                           title="<?= htmlspecialchars($fi['original_filename']) ?>"
-                           style="display:inline-flex;align-items:center;gap:0.25rem;padding:2px 8px;
-                                  border-radius:4px;border:1px solid #e2e8f0;background:#f8fafc;
-                                  font-size:0.68rem;color:#475569;text-decoration:none;white-space:nowrap;max-width:110px;overflow:hidden;text-overflow:ellipsis;"
-                           onmouseover="this.style.borderColor='#1a3a6b';this.style.color='#1a3a6b'"
-                           onmouseout="this.style.borderColor='#e2e8f0';this.style.color='#475569'">
-                            <i class="bi bi-file-earmark" style="flex-shrink:0;"></i>
-                            <?= htmlspecialchars(substr($fi['original_filename'], 0, 12) . (strlen($fi['original_filename']) > 12 ? '...' : '')) ?>
-                        </a>
-                        <?php endforeach; ?>
-                    </div>
-                    <?php elseif ($s['document_path']): ?>
-                    <a href="pages/view_file.php?file=<?= urlencode($s['document_path']) ?>" target="_blank"
-                       style="display:inline-flex;align-items:center;gap:0.25rem;padding:2px 8px;border-radius:4px;border:1px solid #e2e8f0;background:#f8fafc;font-size:0.68rem;color:#475569;text-decoration:none;">
-                        <i class="bi bi-file-earmark"></i>View
-                    </a>
-                    <?php else: ?>
-                    <span style="font-size:0.72rem;color:#cbd5e1;"> - </span>
-                    <?php endif; ?>
-                </td>
-
-                <!-- Action -->
-                <?php
-                $show_not_started = !isAdmin() && !$i_decided && !$i_started_review
-                                    && in_array($app['status'], ['submitted','under_review']);
-                ?>
-                <?php if ($can_act_revision): ?>
+                <!-- Evidence & Action -->
                 <td style="padding:0.7rem 0.75rem;text-align:center;vertical-align:middle;">
-                    <?php if (!$can_review_this_kra): ?>
-                    <span style="font-size:0.65rem;color:#94a3b8;display:inline-flex;align-items:center;gap:3px;" title="This KRA is assigned to another evaluator.">
-                        <i class="bi bi-lock" style="font-size:0.6rem;"></i>Read-only
-                    </span>
-                    <?php else: ?>
-                    <div style="display:flex;flex-direction:column;gap:0.3rem;align-items:center;">
-                    <?php if ($needs_rev): ?>
-                        <?php if ($app['status'] === 'under_review'): ?>
-                        <form method="POST" action="index.php?page=<?= $return_page ?>&id=<?= $app_id ?>" id="clearRevForm_<?= $s['submission_id'] ?>">
-                            <input type="hidden" name="action" value="clear_revision">
-                            <input type="hidden" name="submission_id" value="<?= $s['submission_id'] ?>">
-                            <button type="button"
-                                    onclick="confirmDelete('Mark this entry as OK and clear the revision flag?','clearRevForm_<?= $s['submission_id'] ?>','Clear Flag','bi-check-circle')"
-                                    style="display:inline-flex;align-items:center;gap:0.3rem;padding:0.28rem 0.7rem;border-radius:5px;border:1px solid #16a34a;background:#f0fdf4;color:#16a34a;font-size:0.71rem;font-weight:600;cursor:pointer;white-space:nowrap;">
-                                <i class="bi bi-check-circle"></i>Clear Flag
-                            </button>
-                        </form>
-                        <?php else: ?>
-                        <span style="font-size:0.65rem;color:#cbd5e1;display:inline-flex;align-items:center;gap:3px;"
-                              title="Waiting for faculty to resubmit">
-                            <i class="bi bi-hourglass-split" style="font-size:0.6rem;"></i>Awaiting resubmit
-                        </span>
-                        <?php endif; ?>
-                    <?php else: ?>
-                        <?php if (!$i_verified_this): ?>
-                        <textarea id="verifyNote_<?= $s['submission_id'] ?>"
-                                  placeholder="Optional note..."
-                                  rows="1"
-                                  style="width:120px;resize:vertical;border:1px solid #e2e8f0;border-radius:5px;padding:0.25rem 0.4rem;font-size:0.68rem;color:#334155;font-family:inherit;"></textarea>
-                        <button type="button"
-                                onclick="quickVerify(<?= $s['submission_id'] ?>, this)"
-                                id="verifyBtn_<?= $s['submission_id'] ?>"
-                                title="Mark as acceptable by you"
-                                style="display:inline-flex;align-items:center;gap:0.3rem;padding:0.28rem 0.7rem;border-radius:5px;border:1px solid #1e4d8c;background:#eff6ff;color:#1e4d8c;font-size:0.71rem;font-weight:600;cursor:pointer;white-space:nowrap;"
-                                onmouseover="this.style.background='#1e4d8c';this.style.color='#fff'"
-                                onmouseout="this.style.background='#eff6ff';this.style.color='#1e4d8c'">
-                            <i class="bi bi-patch-check"></i>Mark as Acceptable
-                        </button>
-                        <?php else: ?>
-                        <span style="font-size:0.68rem;color:#1e4d8c;font-weight:600;display:inline-flex;align-items:center;gap:3px;">
-                            <i class="bi bi-patch-check-fill"></i>You marked acceptable
-                        </span>
-                        <?php endif; ?>
-                        <button type="button"
-                                onclick="openRevisionModal(<?= $s['submission_id'] ?>,'<?= addslashes(sanitize($s['kra_category'])) ?>')"
-                                style="display:inline-flex;align-items:center;gap:0.3rem;padding:0.28rem 0.7rem;border-radius:5px;border:1px solid #e2e8f0;background:#f8fafc;color:#475569;font-size:0.71rem;font-weight:600;cursor:pointer;white-space:nowrap;"
-                                onmouseover="this.style.borderColor='#d97706';this.style.color='#d97706';this.style.background='#fffbeb'"
-                                onmouseout="this.style.borderColor='#e2e8f0';this.style.color='#475569';this.style.background='#f8fafc'">
-                            <i class="bi bi-flag"></i>Flag
-                        </button>
-                    <?php endif; ?>
-                    </div>
-                    <?php endif; ?>
+                    <button type="button"
+                            onclick="openEAModal(this)"
+                            data-ea='<?= $ea_json ?>'
+                            title="View evidence &amp; actions"
+                            style="display:inline-flex;align-items:center;justify-content:center;gap:4px;
+                                   width:100%;padding:0.38rem 0.5rem;
+                                   border:1px solid <?= $btn_border ?>;
+                                   background:<?= $btn_bg ?>;color:<?= $btn_color ?>;
+                                   font-size:0.72rem;font-weight:600;cursor:pointer;white-space:nowrap;">
+                        <i class="bi bi-eye" style="font-size:0.75rem;"></i><?= $btn_label ?>
+                    </button>
                 </td>
-                <?php elseif ($show_not_started): ?>
-                <td style="padding:0.7rem 0.75rem;text-align:center;vertical-align:middle;">
-                    <div>
-                    <span style="font-size:0.65rem;color:#cbd5e1;display:inline-flex;align-items:center;gap:3px;" title="Start the review to enable accept and flag actions">
-                        <i class="bi bi-lock" style="font-size:0.6rem;"></i>Start review first
-                    </span>
-                    </div>
-                </td>
-                <?php endif; ?>
             </tr>
             <?php endforeach; ?>
             </tbody>
         </table>
-    </div>
+        </div>
+        <?php endif; // end else (entries exist) ?>
+    </div><!-- /tab panel -->
+
+    <!-- Hidden clear-revision forms for this KRA -->
+    <?php foreach ($entries as $s): if (($s['revision_status'] ?? 'ok') === 'needs_revision'): ?>
+    <form method="POST" action="index.php?page=<?= $return_page ?>&id=<?= $app_id ?>" id="clearRevForm_<?= (int)$s['submission_id'] ?>" style="display:none;">
+        <input type="hidden" name="action" value="clear_revision">
+        <input type="hidden" name="submission_id" value="<?= (int)$s['submission_id'] ?>">
+    </form>
+    <?php endif; endforeach; ?>
+
+    <?php endforeach; // end KRA tab panels ?>
+
     <?php else: ?>
-    <p class="text-muted small">No KRA submissions found.</p>
+    <div style="padding:2.5rem 1rem;text-align:center;color:#94a3b8;">
+        <i class="bi bi-inbox" style="font-size:1.75rem;display:block;margin-bottom:0.5rem;"></i>
+        <div style="font-size:0.82rem;">No KRA submissions found.</div>
+    </div>
     <?php endif; ?>
+
+</div><!-- /neon-card kra-verification -->
+
+<script>
+function switchKraTab(tabId, kraName) {
+    // Hide all panels
+    document.querySelectorAll('[id^="kra-tab-"]').forEach(function(p) {
+        p.style.display = 'none';
+    });
+    // Reset all tab buttons
+    document.querySelectorAll('[id^="btn-kra-tab-"]').forEach(function(b) {
+        b.style.color = '#64748b';
+        b.style.borderBottomColor = 'transparent';
+    });
+    // Show selected panel
+    var panel = document.getElementById(tabId);
+    if (panel) panel.style.display = 'block';
+    // Activate selected button
+    var btn = document.getElementById('btn-' + tabId);
+    if (btn) {
+        btn.style.color = '#1a3a6b';
+        btn.style.borderBottomColor = '#1a3a6b';
+    }
+}
+</script>
+
+<!-- Evidence & Action Modal -->
+<div id="eaModal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,0.55);z-index:99990;align-items:center;justify-content:center;padding:1rem;">
+    <div style="background:#fff;width:100%;max-width:640px;max-height:88vh;overflow-y:auto;border:1px solid #e2e8f0;box-shadow:0 20px 60px rgba(0,0,0,0.2);display:flex;flex-direction:column;">
+        <!-- Header -->
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:0.85rem 1.25rem;border-bottom:1px solid #e2e8f0;background:#1a3a6b;flex-shrink:0;">
+            <div style="display:flex;align-items:center;gap:0.5rem;">
+                <i class="bi bi-file-earmark-check" style="color:#fff;font-size:1rem;"></i>
+                <div>
+                    <span id="eaModalTitle" style="font-weight:700;font-size:0.88rem;color:#fff;display:block;line-height:1.25;"></span>
+                    <span id="eaModalFaculty" style="font-size:0.7rem;color:rgba(255,255,255,0.6);display:block;margin-top:1px;"></span>
+                </div>
+            </div>
+            <button onclick="closeEAModal()" style="background:none;border:none;cursor:pointer;color:rgba(255,255,255,0.7);font-size:1.3rem;line-height:1;padding:0;" onmouseover="this.style.color='#fff'" onmouseout="this.style.color='rgba(255,255,255,0.7)'">&times;</button>
+        </div>
+        <div id="eaModalBody" style="padding:1.25rem;flex:1;"></div>
+    </div>
+</div>
+
+<script>
+var _eaModalData = null;
+
+function openEAModal(btn) {
+    var d = JSON.parse(btn.getAttribute('data-ea'));
+    _eaModalData = d;
+    document.getElementById('eaModalTitle').textContent = d.category + ' — Evidence & Action';
+    document.getElementById('eaModalFaculty').textContent = d.faculty || '';
+
+    var html = '';
+
+    /* ── Status badge ── */
+    var badgeHtml = '';
+    if (d.all_ok) {
+        badgeHtml = '<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;background:#f0fdf4;border:1px solid #bbf7d0;color:#16a34a;font-size:0.72rem;font-weight:700;"><i class="bi bi-patch-check-fill"></i>Acceptable</span>';
+    } else if (d.i_ok) {
+        badgeHtml = '<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;background:#eff6ff;border:1px solid #bfdbfe;color:#1e4d8c;font-size:0.72rem;font-weight:700;"><i class="bi bi-patch-check-fill"></i>You marked acceptable ('+d.v_count+'/'+d.v_total+')</span>';
+    } else if (d.can_rev) {
+        badgeHtml = '<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;background:#f8fafc;border:1px solid #e2e8f0;color:#94a3b8;font-size:0.72rem;font-weight:700;"><i class="bi bi-circle"></i>Not yet acceptable'+(d.v_count > 0 ? ' ('+d.v_count+'/'+d.v_total+')' : '')+'</span>';
+    }
+    if (badgeHtml) html += '<div style="margin-bottom:1rem;">'+badgeHtml+'</div>';
+
+    /* ── Revision notice ── */
+    if (d.needs_rev && d.rev_note) {
+        html += '<div style="padding:0.6rem 0.9rem;background:#fef3c7;border:1px solid #fde68a;border-left:3px solid #d97706;margin-bottom:1rem;">'
+            + '<div style="font-size:0.68rem;font-weight:700;color:#92400e;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px;"><i class="bi bi-exclamation-triangle-fill" style="margin-right:4px;"></i>Revision Note</div>'
+            + '<div style="font-size:0.82rem;color:#78350f;">' + escEA(d.rev_note) + '</div>'
+            + '</div>';
+    }
+    if (d.was_flagged && !d.needs_rev) {
+        html += '<div class="revision-history-notice" style="padding:0.6rem 0.9rem;background:#f8fafc;border:1px solid #e2e8f0;margin-bottom:1rem;">'
+            + '<div style="font-size:0.72rem;font-weight:700;color:#475569;margin-bottom:3px;"><i class="bi bi-flag-fill" style="margin-right:4px;"></i>'
+            + (d.i_flagged ? 'Previously flagged by you' : 'Previously flagged') + ' — revision cleared</div>'
+            + (d.rev_at ? '<div style="font-size:0.7rem;color:#64748b;margin-bottom:3px;">Requested on ' + escEA(d.rev_at) + '</div>' : '')
+            + (d.rev_note ? '<div style="font-size:0.8rem;color:#475569;">' + escEA(d.rev_note) + '</div>' : '')
+            + '</div>';
+    }
+
+    /* ── Evidence files ── */
+    html += '<div style="margin-bottom:1.25rem;">'
+        + '<div style="font-size:0.68rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.5rem;padding-bottom:0.4rem;border-bottom:1px solid #f1f5f9;">Evidence Files</div>';
+    if (d.files && d.files.length > 0) {
+        d.files.forEach(function(f, idx) {
+            var url = 'pages/view_file.php?file=' + encodeURIComponent(f.path);
+            var ext = f.path.split('.').pop().toLowerCase();
+            var isImg = ['jpg','jpeg','png','gif','webp'].indexOf(ext) >= 0;
+            var isPdf = ext === 'pdf';
+            var btnId = 'eaFileBtn_' + idx;
+            var previewId = 'eaPreview_' + idx;
+
+            html += '<div style="border:1px solid #e2e8f0;margin-bottom:0.5rem;">';
+            // File row button
+            html += '<div style="display:flex;align-items:center;background:#f8fafc;border-bottom:0;">'
+                + '<button type="button" id="' + btnId + '" onclick="toggleEAPreview(' + idx + ',\'' + url + '\',\'' + (isImg?'img':isPdf?'pdf':'other') + '\')" '
+                + 'style="display:flex;align-items:center;gap:0.6rem;padding:0.55rem 0.75rem;flex:1;background:transparent;border:none;cursor:pointer;color:#334155;font-size:0.8rem;text-align:left;min-width:0;"'
+                + ' onmouseover="this.style.color=\'#1a3a6b\'" onmouseout="this.style.color=\'#334155\'">'
+                + '<i class="bi bi-' + (isImg ? 'file-earmark-image' : isPdf ? 'file-earmark-pdf' : 'file-earmark-text') + '" style="font-size:1rem;color:#1a3a6b;flex-shrink:0;"></i>'
+                + '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escEA(f.name) + '</span>'
+                + '<i class="bi bi-chevron-down" id="eaChevron_' + idx + '" style="font-size:0.7rem;color:#94a3b8;flex-shrink:0;transition:transform 0.2s;margin-right:0.5rem;"></i>'
+                + '</button>'
+                // Open in new tab icon
+                + '<a href="' + url + '" target="_blank" rel="noopener noreferrer" title="Open in new tab"'
+                + ' style="display:flex;align-items:center;justify-content:center;padding:0 0.75rem;border-left:1px solid #e2e8f0;color:#94a3b8;text-decoration:none;height:100%;min-height:36px;flex-shrink:0;"'
+                + ' onmouseover="this.style.color=\'#1a3a6b\';this.style.background=\'#eff6ff\'" onmouseout="this.style.color=\'#94a3b8\';this.style.background=\'transparent\'">'
+                + '<i class="bi bi-box-arrow-up-right" style="font-size:0.8rem;"></i>'
+                + '</a>'
+                + '</div>';
+            // Inline preview area (hidden by default)
+            html += '<div id="' + previewId + '" style="display:none;border-top:1px solid #e2e8f0;background:#f0f0f0;min-height:200px;max-height:520px;overflow:auto;"></div>';
+            html += '</div>';
+        });
+    } else {
+        html += '<div style="font-size:0.8rem;color:#94a3b8;font-style:italic;padding:0.5rem 0;">No evidence files uploaded.</div>';
+    }
+    html += '</div>';
+
+    /* ── Actions ── */
+    if (d.can_rev || d.not_start || d.can_lock) {
+        html += '<div style="font-size:0.68rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.75rem;padding-bottom:0.4rem;border-bottom:1px solid #f1f5f9;">Actions</div>';
+
+        if (d.can_lock) {
+            html += '<div style="font-size:0.78rem;color:#94a3b8;display:flex;align-items:center;gap:0.4rem;"><i class="bi bi-lock"></i>Read-only — assigned to another evaluator.</div>';
+        } else if (d.not_start) {
+            html += '<div style="font-size:0.78rem;color:#94a3b8;display:flex;align-items:center;gap:0.4rem;"><i class="bi bi-lock"></i>Start the review first to unlock actions.</div>';
+        } else if (d.needs_rev) {
+            if (d.is_under) {
+                html += '<button type="button" onclick="eaClearFlag('+d.sid+')" '
+                    + 'style="display:inline-flex;align-items:center;gap:0.4rem;padding:0.45rem 1rem;border:1px solid #16a34a;background:#f0fdf4;color:#16a34a;font-size:0.8rem;font-weight:600;cursor:pointer;width:100%;justify-content:center;">'
+                    + '<i class="bi bi-check-circle"></i>Clear Revision Flag</button>';
+            } else {
+                html += '<div style="font-size:0.78rem;color:#94a3b8;display:flex;align-items:center;gap:0.4rem;"><i class="bi bi-hourglass-split"></i>Awaiting faculty resubmission.</div>';
+            }
+        } else {
+            if (!d.i_ok) {
+                html += '<div style="margin-bottom:0.6rem;">'
+                    + '<label style="display:block;font-size:0.72rem;font-weight:600;color:#475569;margin-bottom:0.3rem;">Optional note</label>'
+                    + '<textarea id="eaNoteField" rows="2" placeholder="Add a note (optional)..." '
+                    + 'style="width:100%;border:1px solid #e2e8f0;padding:0.4rem 0.6rem;font-size:0.8rem;font-family:inherit;resize:vertical;box-sizing:border-box;"></textarea>'
+                    + '</div>'
+                    + '<button type="button" id="eaAcceptBtn" onclick="eaMarkAcceptable('+d.sid+')" '
+                    + 'style="display:flex;align-items:center;justify-content:center;gap:0.4rem;padding:0.5rem 1rem;border:1px solid #1e4d8c;background:#1e4d8c;color:#fff;font-size:0.8rem;font-weight:600;cursor:pointer;width:100%;margin-bottom:0.5rem;">'
+                    + '<i class="bi bi-patch-check"></i>&nbsp;Mark as Acceptable</button>';
+            }
+            var catEscaped = d.category.replace(/'/g, "\\'");
+            html += '<button type="button" id="eaFlagBtn" onclick="eaFlag('+d.sid+',\''+catEscaped+'\')" '
+                + 'style="display:flex;align-items:center;justify-content:center;gap:0.4rem;padding:0.5rem 1rem;border:1px solid #e2e8f0;background:#f8fafc;color:#475569;font-size:0.8rem;font-weight:600;cursor:pointer;width:100%;margin-top:0.4rem;">'
+                + '<i class="bi bi-flag"></i>&nbsp;Flag for Revision</button>'
+                + '<div id="eaFlagArea" style="display:none;margin-top:0.5rem;border:1px solid #fde68a;background:#fffbeb;padding:0.75rem;">'
+                + '<div style="font-size:0.72rem;font-weight:700;color:#92400e;margin-bottom:0.4rem;"><i class="bi bi-exclamation-triangle-fill" style="margin-right:4px;"></i>A reason is required to flag for revision.</div>'
+                + '<textarea id="eaFlagNote" rows="3" placeholder="Describe what needs to be corrected..." '
+                + 'style="width:100%;border:1px solid #fde68a;padding:0.4rem 0.6rem;font-size:0.8rem;font-family:inherit;resize:vertical;box-sizing:border-box;background:#fff;"></textarea>'
+                + '<div id="eaFlagError" style="display:none;font-size:0.72rem;color:#dc2626;margin-top:0.3rem;"><i class="bi bi-x-circle" style="margin-right:3px;"></i>Please enter a reason before submitting.</div>'
+                + '<div style="display:flex;gap:0.5rem;margin-top:0.5rem;">'
+                + '<button type="button" onclick="eaFlagSubmit('+d.sid+',\''+catEscaped+'\')" '
+                + 'style="flex:1;display:flex;align-items:center;justify-content:center;gap:0.4rem;padding:0.45rem 1rem;border:none;background:#d97706;color:#fff;font-size:0.8rem;font-weight:600;cursor:pointer;">'
+                + '<i class="bi bi-flag-fill"></i>&nbsp;Submit Flag</button>'
+                + '<button type="button" onclick="eaFlagCancel()" '
+                + 'style="padding:0.45rem 0.85rem;border:1px solid #e2e8f0;background:#fff;color:#475569;font-size:0.8rem;font-weight:600;cursor:pointer;">'
+                + 'Cancel</button>'
+                + '</div>'
+                + '</div>';
+        }
+    }
+
+    document.getElementById('eaModalBody').innerHTML = html;
+    document.getElementById('eaModal').style.display = 'flex';
+}
+
+function closeEAModal() {
+    document.getElementById('eaModal').style.display = 'none';
+    _eaModalData = null;
+}
+
+function escEA(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function toggleEAPreview(idx, url, type) {
+    var preview = document.getElementById('eaPreview_' + idx);
+    var chevron = document.getElementById('eaChevron_' + idx);
+    if (!preview) return;
+
+    var isOpen = preview.style.display !== 'none';
+    if (isOpen) {
+        preview.style.display = 'none';
+        preview.innerHTML = '';
+        if (chevron) chevron.style.transform = '';
+        return;
+    }
+
+    preview.style.display = 'block';
+    if (chevron) chevron.style.transform = 'rotate(180deg)';
+
+    if (type === 'img') {
+        preview.style.background = '#f0f0f0';
+        preview.style.textAlign = 'center';
+        preview.innerHTML = '<img src="' + url + '" '
+            + 'style="max-width:100%;max-height:480px;object-fit:contain;display:block;margin:0 auto;padding:8px;" '
+            + 'onerror="this.parentNode.innerHTML=\'<p style=\\\"color:#94a3b8;padding:1rem;font-size:0.8rem;\\\">Could not load image.</p>\'">';
+    } else if (type === 'pdf') {
+        preview.style.background = '#525659';
+        preview.style.minHeight = '480px';
+        preview.innerHTML = '<iframe src="' + url + '" style="width:100%;height:480px;border:none;display:block;"></iframe>';
+    } else {
+        preview.style.background = '#f8fafc';
+        preview.innerHTML = '<div style="padding:1.5rem;text-align:center;">'
+            + '<i class="bi bi-file-earmark" style="font-size:2rem;display:block;margin-bottom:0.5rem;color:#1a3a6b;"></i>'
+            + '<div style="font-size:0.8rem;color:#475569;margin-bottom:0.75rem;">Preview not available for this file type.</div>'
+            + '<a href="' + url + '" target="_blank" rel="noopener noreferrer" '
+            + 'style="display:inline-flex;align-items:center;gap:0.4rem;padding:0.4rem 1rem;background:#1a3a6b;color:#fff;font-size:0.8rem;font-weight:600;text-decoration:none;">'
+            + '<i class="bi bi-box-arrow-up-right"></i>Open file</a>'
+            + '</div>';
+    }
+}
+
+function eaMarkAcceptable(sid) {
+    var note = (document.getElementById('eaNoteField') || {value:''}).value || '';
+    var btn  = document.getElementById('eaAcceptBtn');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="bi bi-hourglass-split"></i>&nbsp;Saving...'; }
+
+    var fd = new FormData();
+    fd.append('action',        'verify_submission');
+    fd.append('submission_id', sid);
+    fd.append('note',          note);
+
+    fetch('index.php?page=<?= $return_page ?>&id=<?= $app_id ?>', {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        body: fd
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(data) {
+        if (data.ok) {
+            closeEAModal();
+            // Update the eye button in the table immediately
+            var allDone = !!data.all_verified;
+            var tableBtn = document.querySelector('button[data-ea*=\'"sid":'+sid+'\']');
+            if (tableBtn) {
+                if (allDone) {
+                    tableBtn.style.borderColor = '#16a34a';
+                    tableBtn.style.background  = '#f0fdf4';
+                    tableBtn.style.color       = '#16a34a';
+                    tableBtn.innerHTML         = '<i class="bi bi-eye" style="font-size:0.8rem;"></i> Acceptable';
+                } else {
+                    tableBtn.style.borderColor = '#1e4d8c';
+                    tableBtn.style.background  = '#eff6ff';
+                    tableBtn.style.color       = '#1e4d8c';
+                    tableBtn.innerHTML         = '<i class="bi bi-eye" style="font-size:0.8rem;"></i> Marked';
+                }
+                // Update the JSON data on the button so reopening the modal reflects the new state
+                try {
+                    var d = JSON.parse(tableBtn.getAttribute('data-ea'));
+                    d.i_ok   = true;
+                    d.all_ok = allDone;
+                    d.v_count = data.done_count || 1;
+                    tableBtn.setAttribute('data-ea', JSON.stringify(d));
+                } catch(e){}
+            }
+            showToast('Entry marked as acceptable.', 'success');
+        } else {
+            if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-patch-check"></i>&nbsp;Mark as Acceptable'; }
+            showToast(data.error || 'Could not mark as acceptable. Please try again.', 'error');
+        }
+    })
+    .catch(function() {
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="bi bi-patch-check"></i>&nbsp;Mark as Acceptable'; }
+        showToast('Network error. Please try again.', 'error');
+    });
+}
+
+function eaFlag(sid, category) {
+    var flagBtn  = document.getElementById('eaFlagBtn');
+    var flagArea = document.getElementById('eaFlagArea');
+    if (!flagArea) { return; }
+    if (flagBtn)  flagBtn.style.display  = 'none';
+    flagArea.style.display = 'block';
+    flagArea.style.visibility = 'visible';
+    var ta = document.getElementById('eaFlagNote');
+    if (ta) setTimeout(function(){ ta.focus(); }, 50);
+}
+
+function eaFlagCancel() {
+    var flagBtn  = document.getElementById('eaFlagBtn');
+    var flagArea = document.getElementById('eaFlagArea');
+    var err      = document.getElementById('eaFlagError');
+    if (flagArea) flagArea.style.display = 'none';
+    if (flagBtn)  flagBtn.style.display = 'flex';
+    if (err)      err.style.display = 'none';
+    var ta = document.getElementById('eaFlagNote');
+    if (ta) ta.value = '';
+}
+
+function eaFlagSubmit(sid, category) {
+    var ta  = document.getElementById('eaFlagNote');
+    var err = document.getElementById('eaFlagError');
+    var note = ta ? ta.value.trim() : '';
+    if (!note) {
+        if (err) err.style.display = 'block';
+        if (ta)  { ta.style.borderColor = '#dc2626'; ta.focus(); }
+        showToast('Please enter a reason before flagging for revision.', 'warning');
+        return;
+    }
+    if (err) err.style.display = 'none';
+    var subIdField = document.getElementById('revModalSubId');
+    var noteField  = document.getElementById('revModalNote');
+    if (subIdField) subIdField.value = sid;
+    if (noteField)  noteField.value  = note;
+    var form = document.getElementById('revisionForm');
+    if (form) {
+        closeEAModal();
+        form.submit();
+    } else {
+        closeEAModal();
+        openRevisionModal(sid, category);
+        setTimeout(function() {
+            var nf = document.getElementById('revModalNote');
+            if (nf) nf.value = note;
+        }, 100);
+    }
+}
+
+function eaClearFlag(sid) {
+    if (!confirm('Mark this entry as OK and clear the revision flag?')) return;
+    document.getElementById('clearRevForm_' + sid) && document.getElementById('clearRevForm_' + sid).submit();
+    closeEAModal();
+}
+
+document.getElementById('eaModal').addEventListener('click', function(e) {
+    if (e.target === this) closeEAModal();
+});
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && document.getElementById('eaModal').style.display !== 'none') closeEAModal();
+});
+</script>
 
 <!-- -- Checker Decision Panel ------------------------------- -->
 <?php if (!isAdmin()): ?>
@@ -1649,7 +1975,7 @@ function submitCheckerDecision(action, msg, btnLabel, btnIcon) {
     if (action === 'checker_reject' && !remarks) {
         document.getElementById('checkerRemarksField').style.borderColor = '#334155';
         document.getElementById('checkerRemarksField').focus();
-        alert('A reason is required when returning for revision.');
+        showToast('A reason is required when returning for revision.', 'warning');
         return;
     }
     document.getElementById('checkerRemarksField').style.borderColor = '';
@@ -1658,7 +1984,7 @@ function submitCheckerDecision(action, msg, btnLabel, btnIcon) {
 }
 </script>
 
-<?php elseif ($app['status'] === 'talisay_review' && isTalisayChecker()): ?>
+<?php elseif ($app['status'] === 'talisay_review' && isEvaluator()): ?>
 <!-- ITC evaluator decision panel -->
 <?php
 $my_talisay_review = null;
@@ -1956,7 +2282,7 @@ function quickVerify(subId, btn) {
         } else {
             btn.disabled = false;
             btn.innerHTML = '<i class="bi bi-patch-check"></i>Mark as Acceptable';
-            alert(data.error || 'Mark as acceptable failed. Please try again.');
+            showToast(data.error || 'Mark as acceptable failed. Please try again.', 'error');
         }
     })
     .catch(() => {
@@ -2043,5 +2369,4 @@ document.addEventListener('DOMContentLoaded', function () {
         if (el) setTimeout(() => el.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
     }
 });
-</script>
 </script>

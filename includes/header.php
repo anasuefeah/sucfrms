@@ -8,8 +8,66 @@
     <title>SUCFRMS - SUC Faculty Reclassification Management System</title>
     <link href="assets/vendor/bootstrap-icons/bootstrap-icons.min.css" rel="stylesheet">
     <link rel="stylesheet" href="assets/css/app.css?v=<?= filemtime(__DIR__ . '/../assets/css/app.css') ?>">
+    <style>
+    #page-loader {
+        position: fixed;
+        inset: 0;
+        z-index: 99999;
+        background: #f0f3f8;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1.25rem;
+        transition: opacity 0.3s ease;
+    }
+    #page-loader.fade-out {
+        opacity: 0;
+        pointer-events: none;
+    }
+    .loader-logo {
+        width: 56px;
+        height: 56px;
+        border-radius: 50%;
+        object-fit: cover;
+        border: 3px solid #1a3a6b;
+        box-shadow: 0 4px 16px rgba(26,58,107,0.2);
+    }
+    .loader-spinner {
+        width: 38px;
+        height: 38px;
+        border: 3px solid #dbeafe;
+        border-top-color: #1a3a6b;
+        border-radius: 50%;
+        animation: spin 0.7s linear infinite;
+    }
+    .loader-text {
+        font-family: 'Segoe UI', Arial, sans-serif;
+        font-size: 0.75rem;
+        font-weight: 600;
+        color: #94a3b8;
+        letter-spacing: 0.04em;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
 </head>
 <body>
+
+<!-- Page loader — shown immediately, hidden once DOM is ready -->
+<div id="page-loader">
+    <img src="assets/images/logo.jpg" class="loader-logo" alt="SUCFRMS">
+    <div class="loader-spinner"></div>
+    <div class="loader-text">Loading&hellip;</div>
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const loader = document.getElementById('page-loader');
+    if (loader) {
+        loader.classList.add('fade-out');
+        setTimeout(function() { loader.style.display = 'none'; }, 320);
+    }
+});
+</script>
 
 <script>
 // If this page is restored from browser cache after logout, redirect to login
@@ -28,104 +86,107 @@ window.addEventListener('pageshow', function(e) {
 
 <nav class="navbar navbar-expand-lg navbar-dark sticky-top" style="z-index:1030;">
     <div class="container-fluid px-4">
-        <!-- Hamburger  -  mobile only, opens slide-out sidebar -->
+        <!-- Hamburger — mobile only -->
         <button class="d-md-none me-2" id="mobileMenuBtn" onclick="toggleMobileSidebar()"
                 style="background:none;border:none;color:#fff;padding:0.3rem 0.4rem;cursor:pointer;
-                       display:flex;align-items:center;justify-content:center;border-radius:6px;
-                       transition:background 0.15s;"
-                onmouseover="this.style.background='rgba(255,255,255,0.15)'"
-                onmouseout="this.style.background='none'"
+                       display:flex;align-items:center;justify-content:center;transition:opacity 0.15s;"
+                onmouseover="this.style.opacity='0.75'" onmouseout="this.style.opacity='1'"
                 aria-label="Open menu">
             <i class="bi bi-list" style="font-size:1.4rem;line-height:1;"></i>
         </button>
-        <a class="navbar-brand d-flex align-items-center gap-2" href="index.php">
-            <img src="assets/images/logo.jpg?v=2" alt="Institution Logo"
-                 style="width:38px;height:38px;border-radius:50%;object-fit:cover;border:2px solid #475569;clip-path:circle(50%);flex-shrink:0;">
-            <span class="fw-bold" style="color:#ffffff;font-size:1rem;">SUC Faculty Reclassification Management System</span>
+
+        <!-- Brand -->
+        <a class="navbar-brand d-flex align-items-center gap-2" href="index.php" style="gap:0.65rem!important;">
+            <img src="assets/images/logo.jpg?v=2" alt="Logo"
+                 style="width:32px;height:32px;border-radius:50%;object-fit:cover;
+                        border:1.5px solid rgba(255,255,255,0.3);flex-shrink:0;">
+            <div style="display:flex;flex-direction:column;line-height:1.1;">
+                <span style="color:#fff;font-size:0.82rem;font-weight:700;letter-spacing:0.01em;white-space:nowrap;">SUCFRMS</span>
+                <span style="color:rgba(255,255,255,0.45);font-size:0.62rem;font-weight:400;letter-spacing:0.02em;white-space:nowrap;" class="d-none d-lg-block">SUC Faculty Reclassification Management System</span>
+            </div>
         </a>
+
         <?php if (isset($_SESSION['user_id']) && isset($pdo)): ?>
         <?php $_notif_count = getUnreadNotifCount($pdo, (int)$_SESSION['user_id']); ?>
-        <!-- Notification bell  -  always visible on ALL screen sizes, outside the collapsible nav -->
-        <div style="position:relative;margin-left:auto;margin-right:0.35rem;flex-shrink:0;">
-            <button id="notifBellBtn" onclick="toggleNotifDropdown()"
-                    style="background:none;border:none;color:#fff;cursor:pointer;padding:0.4rem 0.55rem;
-                           position:relative;font-size:1.3rem;line-height:1;border-radius:8px;
-                           transition:background 0.2s;display:flex;align-items:center;"
-                    title="Notifications"
-                    onmouseover="this.style.background='rgba(255,255,255,0.15)'"
-                    onmouseout="this.style.background='none'">
-                <i class="bi bi-bell-fill" id="notifBellIcon"
-                   style="<?= $_notif_count > 0 ? 'animation:bellRing 1.2s ease infinite;' : '' ?>"></i>
-                <?php if ($_notif_count > 0): ?>
-                <span id="notifBadge"
-                      style="position:absolute;top:-2px;right:-2px;background:#334155;color:#fff;
-                             font-size:0.58rem;font-weight:700;border-radius:50%;min-width:18px;height:18px;
-                             display:flex;align-items:center;justify-content:center;line-height:1;padding:0 3px;
-                             box-shadow:0 0 0 2px #1a3a6b;animation:badgePop 0.3s cubic-bezier(0.34,1.56,0.64,1);">
-                    <?= $_notif_count > 9 ? '9+' : $_notif_count ?>
-                </span>
-                <?php else: ?>
-                <span id="notifBadge"
-                      style="display:none;position:absolute;top:-2px;right:-2px;background:#334155;color:#fff;
-                             font-size:0.58rem;font-weight:700;border-radius:50%;min-width:18px;height:18px;
-                             align-items:center;justify-content:center;line-height:1;padding:0 3px;
-                             box-shadow:0 0 0 2px #1a3a6b;"></span>
-                <?php endif; ?>
-            </button>
 
-            <style>
-            @keyframes bellRing {
-                0%,100%{transform:rotate(0)}
-                10%{transform:rotate(14deg)}
-                20%{transform:rotate(-12deg)}
-                30%{transform:rotate(10deg)}
-                40%{transform:rotate(-8deg)}
-                50%{transform:rotate(5deg)}
-                60%{transform:rotate(0)}
-            }
-            @keyframes badgePop {
-                from{transform:scale(0)}
-                to{transform:scale(1)}
-            }
-            </style>
+        <!-- Right controls -->
+        <div style="display:flex;align-items:center;gap:0.25rem;margin-left:auto;flex-shrink:0;">
 
-            <!-- Notification dropdown  -  fixed position so it escapes any overflow clipping -->
-            <div id="notifDropdown"
-                 style="display:none;position:fixed;top:62px;right:12px;
-                        width:360px;max-width:calc(100vw - 24px);
-                        background:#fff;border-radius:12px;
-                        box-shadow:0 12px 40px rgba(0,0,0,0.22);
-                        z-index:99999;overflow:hidden;border:1px solid #e2e8f0;">
-                <div style="padding:0.85rem 1.1rem;background:linear-gradient(135deg,#1e4d8c,#1a3a6b);
-                            display:flex;justify-content:space-between;align-items:center;">
-                    <div style="display:flex;align-items:center;gap:0.6rem;">
-                        <i class="bi bi-bell-fill" style="color:#475569;font-size:0.95rem;"></i>
-                        <span style="color:#fff;font-weight:700;font-size:0.9rem;">Notifications</span>
-                        <span id="notifHeaderCount"
-                              style="background:rgba(255,255,255,0.2);color:#fff;font-size:0.68rem;
-                                     font-weight:700;border-radius:20px;padding:1px 7px;">
-                            <?= $_notif_count > 0 ? $_notif_count . ' unread' : 'all read' ?>
+            <!-- Notification bell -->
+            <div style="position:relative;">
+                <button id="notifBellBtn" onclick="toggleNotifDropdown()"
+                        style="background:none;border:none;color:rgba(255,255,255,0.75);cursor:pointer;
+                               padding:0.45rem 0.55rem;position:relative;font-size:1.1rem;line-height:1;
+                               display:flex;align-items:center;transition:color 0.15s;"
+                        title="Notifications"
+                        onmouseover="this.style.color='#fff'" onmouseout="this.style.color='rgba(255,255,255,0.75)'">
+                    <i class="bi bi-bell<?= $_notif_count > 0 ? '-fill' : '' ?>" id="notifBellIcon"
+                       style="<?= $_notif_count > 0 ? 'animation:bellRing 1.2s ease infinite;' : '' ?>"></i>
+                    <?php if ($_notif_count > 0): ?>
+                    <span id="notifBadge"
+                          style="position:absolute;top:2px;right:2px;background:#dc2626;color:#fff;
+                                 font-size:0.52rem;font-weight:800;border-radius:50%;min-width:15px;height:15px;
+                                 display:flex;align-items:center;justify-content:center;padding:0 2px;
+                                 box-shadow:0 0 0 1.5px #1a3a6b;animation:badgePop 0.3s cubic-bezier(0.34,1.56,0.64,1);">
+                        <?= $_notif_count > 9 ? '9+' : $_notif_count ?>
+                    </span>
+                    <?php else: ?>
+                    <span id="notifBadge"
+                          style="display:none;position:absolute;top:2px;right:2px;background:#dc2626;color:#fff;
+                                 font-size:0.52rem;font-weight:800;border-radius:50%;min-width:15px;height:15px;
+                                 align-items:center;justify-content:center;padding:0 2px;"></span>
+                    <?php endif; ?>
+                </button>
+                <style>
+                @keyframes bellRing {
+                    0%,100%{transform:rotate(0)}
+                    10%{transform:rotate(14deg)} 20%{transform:rotate(-12deg)}
+                    30%{transform:rotate(10deg)} 40%{transform:rotate(-8deg)}
+                    50%{transform:rotate(5deg)}  60%{transform:rotate(0)}
+                }
+                @keyframes badgePop { from{transform:scale(0)} to{transform:scale(1)} }
+                </style>
+
+                <!-- Notification dropdown -->
+                <div id="notifDropdown"
+                     style="display:none;position:fixed;top:54px;right:12px;
+                            width:360px;max-width:calc(100vw - 24px);
+                            background:#fff;border:1px solid #e2e8f0;
+                            box-shadow:0 8px 32px rgba(0,0,0,0.16);
+                            z-index:99999;overflow:hidden;">
+                    <!-- Dropdown header -->
+                    <div style="padding:0.7rem 1rem;background:#1a3a6b;
+                                display:flex;justify-content:space-between;align-items:center;">
+                        <div style="display:flex;align-items:center;gap:0.5rem;">
+                            <i class="bi bi-bell-fill" style="color:rgba(255,255,255,0.6);font-size:0.82rem;"></i>
+                            <span style="color:#fff;font-weight:700;font-size:0.82rem;">Notifications</span>
+                            <span id="notifHeaderCount"
+                                  style="background:rgba(255,255,255,0.15);color:#fff;font-size:0.62rem;
+                                         font-weight:700;padding:1px 6px;">
+                                <?= $_notif_count > 0 ? $_notif_count . ' unread' : 'all read' ?>
+                            </span>
+                        </div>
+                        <button onclick="markAllRead()"
+                                style="background:rgba(255,255,255,0.12);border:none;color:#fff;font-size:0.68rem;
+                                       cursor:pointer;padding:2px 8px;transition:background 0.15s;"
+                                onmouseover="this.style.background='rgba(255,255,255,0.25)'"
+                                onmouseout="this.style.background='rgba(255,255,255,0.12)'">
+                            Mark all read
+                        </button>
+                    </div>
+                    <div id="notifList" style="max-height:360px;overflow-y:auto;">
+                        <div class="text-center text-muted py-4" style="font-size:0.8rem;">
+                            <i class="bi bi-bell-slash d-block mb-2" style="font-size:1.4rem;"></i>Loading...
+                        </div>
+                    </div>
+                    <div style="padding:0.4rem 0.85rem;background:#f8fafc;border-top:1px solid #f1f5f9;text-align:center;">
+                        <span style="font-size:0.62rem;color:#94a3b8;">
+                            <i class="bi bi-arrow-clockwise me-1"></i>Updates every 30 s
                         </span>
                     </div>
-                    <button onclick="markAllRead()"
-                            style="background:rgba(255,255,255,0.15);border:none;color:#fff;font-size:0.72rem;
-                                   cursor:pointer;padding:3px 10px;border-radius:6px;"
-                            onmouseover="this.style.background='rgba(255,255,255,0.28)'"
-                            onmouseout="this.style.background='rgba(255,255,255,0.15)'">
-                        Mark all read
-                    </button>
-                </div>
-                <div id="notifList" style="max-height:380px;overflow-y:auto;">
-                    <div class="text-center text-muted py-4" style="font-size:0.82rem;">
-                        <i class="bi bi-bell-slash d-block mb-2" style="font-size:1.5rem;"></i>Loading...
-                    </div>
-                </div>
-                <div style="padding:0.5rem 1rem;background:#f8fafc;border-top:1px solid #f1f5f9;text-align:center;">
-                    <span style="font-size:0.68rem;color:#94a3b8;">
-                        <i class="bi bi-arrow-clockwise me-1"></i>Updates every 30 seconds
-                    </span>
                 </div>
             </div>
+
         </div>
         <?php endif; ?>
 
@@ -135,50 +196,53 @@ window.addEventListener('pageshow', function(e) {
         <div id="feedbackModal"
              style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);
                     z-index:100003;align-items:center;justify-content:center;">
-            <div style="background:#fff;border-radius:14px;width:100%;max-width:460px;
-                        margin:1rem;box-shadow:0 20px 60px rgba(0,0,0,0.25);overflow:hidden;">
-                <div style="padding:1rem 1.25rem;background:linear-gradient(135deg,#1e4d8c,#1a3a6b);
+            <div style="background:#fff;width:100%;max-width:440px;margin:1rem;
+                        border:1px solid #e2e8f0;box-shadow:0 16px 48px rgba(0,0,0,0.18);overflow:hidden;">
+                <div style="padding:0.8rem 1.1rem;background:#1a3a6b;
                             display:flex;justify-content:space-between;align-items:center;">
-                    <span style="color:#fff;font-weight:700;font-size:0.95rem;">
+                    <span style="color:#fff;font-weight:600;font-size:0.85rem;letter-spacing:0.01em;">
                         <i class="bi bi-chat-square-text me-2"></i>Send Feedback
                     </span>
                     <button onclick="document.getElementById('feedbackModal').style.display='none'"
-                            style="background:none;border:none;color:#fff;font-size:1.2rem;cursor:pointer;line-height:1;">
-                        <i class="bi bi-x-lg"></i>
+                            style="background:none;border:none;color:#fff;cursor:pointer;padding:0;line-height:1;opacity:0.7;transition:opacity 0.15s;"
+                            onmouseover="this.style.opacity='1'"
+                            onmouseout="this.style.opacity='0.7'">
+                        <i class="bi bi-x-lg" style="font-size:0.9rem;"></i>
                     </button>
                 </div>
-                <form id="feedbackForm" style="padding:1.25rem;">
-                    <div style="margin-bottom:1rem;">
-                        <label style="font-size:0.8rem;font-weight:600;color:#475569;display:block;margin-bottom:4px;">
-                            Subject <span style="color:#334155;">*</span>
+                <form id="feedbackForm" style="padding:1.1rem;">
+                    <div style="margin-bottom:0.85rem;">
+                        <label style="font-size:0.68rem;font-weight:600;color:#475569;display:block;margin-bottom:5px;letter-spacing:0.04em;text-transform:uppercase;">
+                            Subject
                         </label>
                         <input type="text" id="fbSubject" maxlength="255" required
-                               placeholder="e.g. Issue with KRA upload"
-                               style="width:100%;padding:0.5rem 0.75rem;border:1px solid #cbd5e1;
-                                      border-radius:7px;font-size:0.85rem;outline:none;box-sizing:border-box;"
-                               onfocus="this.style.borderColor='#1e4d8c'"
-                               onblur="this.style.borderColor='#cbd5e1'">
+                               placeholder="Brief title for your feedback"
+                               style="width:100%;padding:0.5rem 0.65rem;border:1px solid #e2e8f0;
+                                      font-size:0.83rem;outline:none;box-sizing:border-box;
+                                      font-family:inherit;background:#f8fafc;transition:border-color 0.15s,background 0.15s;"
+                               onfocus="this.style.borderColor='#1a3a6b';this.style.background='#fff'"
+                               onblur="this.style.borderColor='#e2e8f0';this.style.background='#f8fafc'">
                     </div>
-                    <div style="margin-bottom:1rem;">
-                        <label style="font-size:0.8rem;font-weight:600;color:#475569;display:block;margin-bottom:4px;">
-                            Message <span style="color:#334155;">*</span>
+                    <div style="margin-bottom:0.85rem;">
+                        <label style="font-size:0.68rem;font-weight:600;color:#475569;display:block;margin-bottom:5px;letter-spacing:0.04em;text-transform:uppercase;">
+                            Message
                         </label>
                         <textarea id="fbMessage" rows="4" required
                                   placeholder="Describe your feedback, suggestion, or issue..."
-                                  style="width:100%;padding:0.5rem 0.75rem;border:1px solid #cbd5e1;
-                                         border-radius:7px;font-size:0.85rem;resize:vertical;
-                                         outline:none;box-sizing:border-box;"
-                                  onfocus="this.style.borderColor='#1e4d8c'"
-                                  onblur="this.style.borderColor='#cbd5e1'"></textarea>
+                                  style="width:100%;padding:0.5rem 0.65rem;border:1px solid #e2e8f0;
+                                         font-size:0.83rem;resize:vertical;outline:none;box-sizing:border-box;
+                                         font-family:inherit;background:#f8fafc;transition:border-color 0.15s,background 0.15s;"
+                                  onfocus="this.style.borderColor='#1a3a6b';this.style.background='#fff'"
+                                  onblur="this.style.borderColor='#e2e8f0';this.style.background='#f8fafc'"></textarea>
                     </div>
-                    <div style="margin-bottom:1.25rem;">
-                        <label style="font-size:0.8rem;font-weight:600;color:#475569;display:block;margin-bottom:6px;">
+                    <div style="margin-bottom:0.9rem;">
+                        <label style="font-size:0.68rem;font-weight:600;color:#475569;display:block;margin-bottom:5px;letter-spacing:0.04em;text-transform:uppercase;">
                             Rating (optional)
                         </label>
-                        <div id="starRating" style="display:flex;gap:6px;">
+                        <div id="starRating" style="display:flex;gap:4px;">
                             <?php for ($s = 1; $s <= 5; $s++): ?>
                             <i class="bi bi-star" data-star="<?= $s ?>"
-                               style="font-size:1.4rem;cursor:pointer;color:#cbd5e1;transition:color 0.15s;"
+                               style="font-size:1.2rem;cursor:pointer;color:#cbd5e1;transition:color 0.1s;"
                                onclick="setRating(<?= $s ?>)"
                                onmouseover="hoverRating(<?= $s ?>)"
                                onmouseout="resetRatingHover()"></i>
@@ -186,19 +250,24 @@ window.addEventListener('pageshow', function(e) {
                         </div>
                         <input type="hidden" id="fbRating" value="">
                     </div>
-                    <div id="fbAlert" style="display:none;margin-bottom:0.75rem;padding:0.6rem 0.9rem;
-                         border-radius:7px;font-size:0.8rem;"></div>
-                    <div style="display:flex;gap:0.75rem;justify-content:flex-end;">
+                    <div id="fbAlert" style="display:none;margin-bottom:0.75rem;padding:0.6rem 0.8rem;
+                         font-size:0.78rem;border-left:3px solid;"></div>
+                    <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
                         <button type="button"
                                 onclick="document.getElementById('feedbackModal').style.display='none'"
-                                style="padding:0.45rem 1.1rem;border:1px solid #cbd5e1;border-radius:7px;
-                                       background:#fff;font-size:0.85rem;cursor:pointer;">
+                                style="padding:0.5rem 1.1rem;border:1px solid #e2e8f0;
+                                       background:#fff;font-size:0.8rem;cursor:pointer;color:#475569;
+                                       transition:background 0.15s;"
+                                onmouseover="this.style.background='#f8fafc'"
+                                onmouseout="this.style.background='#fff'">
                             Cancel
                         </button>
                         <button type="submit"
-                                style="padding:0.45rem 1.3rem;border:none;border-radius:7px;
-                                       background:#1e4d8c;color:#fff;font-size:0.85rem;
-                                       font-weight:600;cursor:pointer;">
+                                style="padding:0.5rem 1.3rem;border:none;
+                                       background:#1a3a6b;color:#fff;font-size:0.8rem;
+                                       font-weight:600;cursor:pointer;transition:background 0.15s;"
+                                onmouseover="this.style.background='#152d54'"
+                                onmouseout="this.style.background='#1a3a6b'">
                             <i class="bi bi-send me-1"></i>Submit
                         </button>
                     </div>
@@ -322,9 +391,8 @@ function renderNotifs(notifs) {
         // Map notification type -> correct page + anchor
         function notifLink(type, appId, submissionId, kraCategory) {
             if (!appId) return '#';
-            const isFaculty  = role === 'faculty';
-            const isChecker  = role === 'checker';
-            const isTalisay  = role === 'talisay_checker';
+            const isFaculty   = role === 'faculty';
+            const isEvaluator = role === 'evaluator';
 
             switch (type) {
                 // Faculty: score was adjusted -> go to comparison area
@@ -366,7 +434,7 @@ function renderNotifs(notifs) {
                     return `index.php?page=appeals`;
 
                 default:
-                    return isChecker || isTalisay
+                    return isEvaluator
                         ? `index.php?page=review_application&id=${appId}`
                         : `index.php?page=my_application&id=${appId}`;
             }
@@ -620,7 +688,7 @@ function paintStars(upto, solid) {
     document.querySelectorAll('#starRating .bi').forEach(el => {
         const s = parseInt(el.dataset.star);
         el.className = s <= upto ? 'bi bi-star-fill' : 'bi bi-star';
-        el.style.color = s <= upto ? '#475569' : '#cbd5e1';
+        el.style.color = s <= upto ? '#1a3a6b' : '#cbd5e1';
     });
 }
 
@@ -643,14 +711,14 @@ document.getElementById('feedbackForm').addEventListener('submit', function(e) {
             alert.style.display = 'block';
             if (d.ok) {
                 alert.style.background = '#f0f4fb';
-                alert.style.color      = '#1e4d8c';
-                alert.style.border     = '1px solid #bfdbfe';
+                alert.style.color      = '#1a3a6b';
+                alert.style.borderLeftColor = '#1a3a6b';
                 alert.innerHTML = '<i class="bi bi-check-circle me-1"></i>Thank you! Your feedback has been submitted.';
                 setTimeout(() => document.getElementById('feedbackModal').style.display = 'none', 2000);
             } else {
                 alert.style.background = '#f8fafc';
-                alert.style.color      = '#334155';
-                alert.style.border     = '1px solid #e2e8f0';
+                alert.style.color      = '#475569';
+                alert.style.borderLeftColor = '#94a3b8';
                 alert.innerHTML = '<i class="bi bi-exclamation-circle me-1"></i>' + (d.error || 'Something went wrong.');
                 btn.disabled = false;
                 btn.innerHTML = '<i class="bi bi-send me-1"></i>Submit';
@@ -659,8 +727,8 @@ document.getElementById('feedbackForm').addEventListener('submit', function(e) {
         .catch(() => {
             alert.style.display    = 'block';
             alert.style.background = '#f8fafc';
-            alert.style.color      = '#334155';
-            alert.style.border     = '1px solid #e2e8f0';
+            alert.style.color      = '#475569';
+            alert.style.borderLeftColor = '#94a3b8';
             alert.innerHTML = '<i class="bi bi-exclamation-circle me-1"></i>Network error. Please try again.';
             btn.disabled = false;
             btn.innerHTML = '<i class="bi bi-send me-1"></i>Submit';

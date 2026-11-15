@@ -35,8 +35,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $_SESSION['profile_pic'] = $user['profile_pic'] ?? '';
                 logAudit($pdo, $user['user_id'], 'Login', 'User logged in successfully.');
 
-                // Check if they still have an unredeemed temp password  -  force change immediately
-                header('Location: ../index.php');
+                // Redirect faculty to the portal, everyone else to the dashboard
+                $redirect = ($user['role'] === 'faculty') ? '../pages/portal.php' : '../index.php';
+                header('Location: ' . $redirect);
                 exit;
             }
         } else {
@@ -64,22 +65,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             align-items: center;
             justify-content: center;
             font-family: 'Segoe UI', sans-serif;
-            background: #f0f3f8;
+            background: linear-gradient(rgba(0,0,0,0.55), rgba(0,0,0,0.55)),
+                        url('../assets/images/login_bg.jpg') center center / cover no-repeat fixed;
+            padding-top: 0 !important;
         }
 
-        body::before { display: none; }
-        body::after  { display: none; }
+        body::before {
+            display: none !important;
+            content: none !important;
+        }
+
+        body::after {
+            display: none !important;
+            content: none !important;
+        }
 
         .login-wrap {
             width: 100%;
-            max-width: 420px;
-            padding: 1rem;
+            max-width: 340px;
+            padding: 0.75rem;
         }
 
         .login-box {
             background: #ffffff;
             border-radius: 0;
-            padding: 2.25rem 2rem 1.75rem;
+            padding: 1.5rem 1.5rem 1.25rem;
             box-shadow: 0 2px 16px rgba(0,0,0,0.08);
             border: 1px solid #e2e8f0;
             text-align: center;
@@ -89,11 +99,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         .login-box::before { display: none; }
 
         .login-box img.logo {
-            width: 80px;
-            height: 80px;
+            width: 58px;
+            height: 58px;
             object-fit: contain;
             border-radius: 50%;
-            margin-bottom: 0.75rem;
+            margin-bottom: 0.5rem;
             display: block;
             margin-left: auto;
             margin-right: auto;
@@ -101,27 +111,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         .login-box h5 {
             color: #1a3a6b;
-            font-size: 1.15rem;
+            font-size: 0.95rem;
             font-weight: 700;
             line-height: 1.3;
-            margin-bottom: 0.25rem;
+            margin-bottom: 0.2rem;
         }
 
         .login-box .subtitle {
             color: #94a3b8;
-            font-size: 0.72rem;
+            font-size: 0.65rem;
             letter-spacing: 0.1em;
             text-transform: uppercase;
-            margin-bottom: 1.25rem;
+            margin-bottom: 1rem;
         }
 
         .field-label {
             display: block;
             text-align: left;
-            font-size: 0.82rem;
+            font-size: 0.76rem;
             font-weight: 600;
             color: #1a3a6b;
-            margin-bottom: 0.35rem;
+            margin-bottom: 0.25rem;
         }
 
         .field-wrap {
@@ -131,7 +141,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             border-radius: 0;
             overflow: hidden;
             background: #ffffff;
-            margin-bottom: 1rem;
+            margin-bottom: 0.75rem;
         }
 
         .field-wrap:focus-within {
@@ -143,11 +153,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             display: flex;
             align-items: center;
             justify-content: center;
-            padding: 0 0.75rem;
+            padding: 0 0.6rem;
             background: #ffffff;
             border-right: 1.5px solid #e2e8f0;
             color: #1e4d8c;
-            font-size: 1rem;
+            font-size: 0.9rem;
             flex-shrink: 0;
         }
 
@@ -158,8 +168,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             outline: none;
             background: #ffffff;
             color: #1e293b;
-            font-size: 0.95rem;
-            padding: 0.6rem 0.75rem;
+            font-size: 0.85rem;
+            padding: 0.5rem 0.6rem;
             -webkit-appearance: none;
             appearance: none;
         }
@@ -182,13 +192,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             display: flex;
             align-items: center;
             justify-content: center;
-            padding: 0 0.75rem;
+            padding: 0 0.6rem;
             background: #ffffff;
             border: none;
             border-left: 1.5px solid #e2e8f0;
             color: #1a3a6b;
             cursor: pointer;
-            font-size: 1rem;
+            font-size: 0.9rem;
             flex-shrink: 0;
         }
 
@@ -199,21 +209,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             background: #1e4d8c;
             color: #ffffff;
             border: none;
-            padding: 0.7rem;
+            padding: 0.55rem;
             border-radius: 0;
-            font-size: 0.95rem;
+            font-size: 0.875rem;
             font-weight: 600;
             letter-spacing: 0.01em;
             cursor: pointer;
-            margin-top: 0.5rem;
+            margin-top: 0.4rem;
             transition: background 0.2s;
         }
 
         .btn-signin:hover { background: #1a5276; }
 
         .login-links {
-            margin-top: 1.25rem;
-            font-size: 0.82rem;
+            margin-top: 0.9rem;
+            font-size: 0.78rem;
             color: #64748b;
         }
 
@@ -258,9 +268,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             border: 1px solid #94a3b8;
             color: #1a3a6b;
             border-radius: 8px;
-            padding: 0.5rem 0.75rem;
-            font-size: 0.85rem;
-            margin-bottom: 1rem;
+            padding: 0.4rem 0.65rem;
+            font-size: 0.78rem;
+            margin-bottom: 0.75rem;
             text-align: left;
         }
     </style>
@@ -293,7 +303,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <div>
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.35rem;">
                     <label class="field-label" style="margin-bottom:0;">Password</label>
-                    <a href="forgot_password.php" style="font-size:0.78rem;color:#1e4d8c;text-decoration:none;">Forgot password?</a>
+                    <a href="forgot_password.php" style="font-size:0.72rem;color:#1e4d8c;text-decoration:none;">Forgot password?</a>
                 </div>
                 <div class="field-wrap">
                     <span class="field-icon"><i class="bi bi-lock"></i></span>

@@ -21,14 +21,15 @@ $role = $_SESSION['role'] ?? '';
 $data = ['ok' => true, 'role' => $role, 'counts' => []];
 
 try {
-    if ($role === 'checker') {
+    if ($role === 'evaluator') {
         // Awaiting Decision
         $s = $pdo->prepare("SELECT COUNT(*) FROM applications a WHERE a.status IN ('submitted','under_review') AND a.user_id != ? AND NOT EXISTS (SELECT 1 FROM application_checker_reviews r WHERE r.application_id=a.application_id AND r.checker_id=? AND r.decision IN ('approved','rejected'))");
         $s->execute([$uid, $uid]);
         $data['counts']['checker_pending'] = (int)$s->fetchColumn();
 
-        // Active Reviews
-        $s = $pdo->prepare("SELECT COUNT(*) FROM applications a WHERE a.status IN ('under_review','needs_revision') AND a.checker_id=? AND a.user_id != ?");
+        // Active Reviews (under_review only — "In Progress" on dashboard)
+        $s = $pdo->prepare("SELECT COUNT(*) FROM applications a
+            WHERE a.status = 'under_review' AND a.checker_id=? AND a.user_id != ?");
         $s->execute([$uid, $uid]);
         $data['counts']['checker_active'] = (int)$s->fetchColumn();
 
@@ -36,25 +37,6 @@ try {
         $s = $pdo->prepare("SELECT COUNT(*) FROM applications WHERE checker_id=? AND status='needs_revision'");
         $s->execute([$uid]);
         $data['counts']['checker_revision'] = (int)$s->fetchColumn();
-
-    } elseif ($role === 'talisay_checker') {
-        // Awaiting My Review
-        $s = $pdo->prepare("SELECT COUNT(*) FROM applications a WHERE a.status = 'talisay_review' AND a.user_id != ? AND NOT EXISTS (SELECT 1 FROM application_checker_reviews r WHERE r.application_id = a.application_id AND r.checker_id = ? AND r.decision IN ('approved','rejected'))");
-        $s->execute([$uid, $uid]);
-        $data['counts']['talisay_pending'] = (int)$s->fetchColumn();
-
-        // In ITC Review
-        $data['counts']['talisay_total'] = (int)$pdo->query("SELECT COUNT(*) FROM applications WHERE status='talisay_review'")->fetchColumn();
-
-        // I Approved
-        $s = $pdo->prepare("SELECT COUNT(*) FROM application_checker_reviews r JOIN applications a ON r.application_id = a.application_id WHERE r.checker_id = ? AND r.decision = 'approved'");
-        $s->execute([$uid]);
-        $data['counts']['talisay_approved'] = (int)$s->fetchColumn();
-
-        // Total Reviewed
-        $s = $pdo->prepare("SELECT COUNT(*) FROM application_checker_reviews WHERE checker_id = ? AND decision IN ('approved','rejected')");
-        $s->execute([$uid]);
-        $data['counts']['talisay_reviewed'] = (int)$s->fetchColumn();
 
     } elseif ($role === 'admin') {
         $data['counts']['admin_faculty']   = (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role = 'faculty'")->fetchColumn();

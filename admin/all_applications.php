@@ -56,7 +56,7 @@ $apps = [];
 try {
     $pdo->query("SELECT review_id FROM application_checker_reviews LIMIT 1");
     $stmt = $pdo->prepare("
-        SELECT a.*, u.full_name, u.employee_id, u.rank, camp.campus_name, c.cycle_name,
+        SELECT a.*, u.full_name, u.employee_id, u.`rank`, camp.campus_name, c.cycle_name,
                (SELECT COUNT(*) FROM application_checker_reviews r
                 WHERE r.application_id = a.application_id AND r.decision = 'approved') AS approvals_count
         FROM applications a
@@ -67,7 +67,7 @@ try {
     ");
 } catch (\Exception $e) {
     $stmt = $pdo->prepare("
-        SELECT a.*, u.full_name, u.employee_id, u.rank, camp.campus_name, c.cycle_name, 0 AS approvals_count
+        SELECT a.*, u.full_name, u.employee_id, u.`rank`, camp.campus_name, c.cycle_name, 0 AS approvals_count
         FROM applications a
         JOIN users u ON a.user_id = u.user_id AND u.role = 'faculty'
         LEFT JOIN campuses camp ON u.campus_id = camp.campus_id
@@ -83,16 +83,15 @@ $total  = array_sum($counts);
 
 // Status tab config
 $tabs = [
-    ''               => ['label'=>'All',           'icon'=>'bi-grid-3x3-gap', 'color'=>'#1a3a6b'],
-    'draft'          => ['label'=>'Draft',          'icon'=>'bi-file-earmark', 'color'=>'#94a3b8'],
-    'submitted'      => ['label'=>'Submitted',      'icon'=>'bi-send',                  'color'=>'#1a3a6b'],
-    'under_review'   => ['label'=>'Under Review',   'icon'=>'bi-hourglass-split',         'color'=>'#1a3a6b'],
-    // Display name for stored status value 'talisay_review' is "ITC Review".
-    'talisay_review' => ['label'=>'ITC Review', 'icon'=>'bi-building-up',              'color'=>'#1a3a6b'],
-    'approved'       => ['label'=>'Evaluation Complete', 'icon'=>'bi-clipboard-check',    'color'=>'#1a3a6b'],
-    'rejected'       => ['label'=>'Returned for Revision','icon'=>'bi-arrow-counterclockwise','color'=>'#1a3a6b'],
-    'needs_revision' => ['label'=>'Needs Revision', 'icon'=>'bi-pencil-square',            'color'=>'#1a3a6b'],
-    'admin_rejected' => ['label'=>'Evaluation Complete','icon'=>'bi-clipboard-check',     'color'=>'#1a3a6b'],
+    ''               => ['label'=>'All',                  'icon'=>'bi-grid-3x3-gap',          'color'=>'#1a3a6b'],
+    'draft'          => ['label'=>'Draft',                'icon'=>'bi-file-earmark',           'color'=>'#94a3b8'],
+    'submitted'      => ['label'=>'Submitted',            'icon'=>'bi-send',                   'color'=>'#1a3a6b'],
+    'under_review'   => ['label'=>'Under Review',         'icon'=>'bi-hourglass-split',        'color'=>'#1a3a6b'],
+    'talisay_review' => ['label'=>'ITC Review',           'icon'=>'bi-building-up',            'color'=>'#1a3a6b'],
+    'approved'       => ['label'=>'Evaluation Complete',  'icon'=>'bi-clipboard-check',        'color'=>'#1a3a6b'],
+    'rejected'       => ['label'=>'Returned for Revision','icon'=>'bi-arrow-counterclockwise', 'color'=>'#1a3a6b'],
+    'needs_revision' => ['label'=>'Needs Revision',       'icon'=>'bi-pencil-square',          'color'=>'#1a3a6b'],
+    'admin_rejected' => ['label'=>'Returned by Admin',    'icon'=>'bi-x-circle',               'color'=>'#dc2626'],
 ];
 
 // Score color helper
@@ -106,21 +105,20 @@ function scoreColor(float $s): string {
 <?php showFlash(); ?>
 
 <!-- -- Page header -- -->
-<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;margin-bottom:1.5rem;">
-    <div>
-        <div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.2rem;">
-            <div style="width:36px;height:36px;border-radius:8px;background:#1e4d8c;
-                        display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-                <i class="bi bi-ui-checks-grid" style="color:#fff;font-size:1rem;"></i>
-            </div>
-            <h5 style="margin:0;font-weight:700;color:#1a3a6b;font-size:1.1rem;">All Applications</h5>
+<div style="background:#fff;border:1px solid #e2e8f0;padding:0.85rem 1.25rem;margin-bottom:1.25rem;
+            display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;">
+    <div style="display:flex;align-items:center;gap:0.75rem;">
+        <div style="width:36px;height:36px;background:#1a3a6b;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+            <i class="bi bi-ui-checks-grid" style="color:#fff;font-size:0.9rem;"></i>
         </div>
-        <div style="font-size:0.78rem;color:#64748b;padding-left:44px;">
-            <strong style="color:#1a3a6b;"><?= $total ?></strong> total across all faculty
+        <div>
+            <div style="font-size:0.92rem;font-weight:700;color:#0f172a;line-height:1.2;">All Applications</div>
+            <div style="font-size:0.72rem;color:#94a3b8;margin-top:2px;">
+                <strong style="color:#1a3a6b;"><?= $total ?></strong> total across all faculty
+            </div>
         </div>
     </div>
-    <!-- Quick stat pills -->
-    <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+    <div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
         <?php
         $highlights = [
             'submitted'    => ['#1e4d8c','#eff6ff','Submitted'],
@@ -130,8 +128,7 @@ function scoreColor(float $s): string {
         foreach ($highlights as $st => [$tc,$bg,$lbl]):
             $c = $counts[$st] ?? 0; if (!$c) continue;
         ?>
-        <div style="background:<?= $bg ?>;border:1px solid <?= $tc ?>33;border-radius:20px;
-                    padding:0.3rem 0.9rem;font-size:0.75rem;font-weight:700;color:<?= $tc ?>;">
+        <div style="background:<?= $bg ?>;border:1px solid <?= $tc ?>33;padding:2px 10px;font-size:0.72rem;font-weight:700;color:<?= $tc ?>;">
             <?= $c ?> <?= $lbl ?>
         </div>
         <?php endforeach; ?>
@@ -148,9 +145,9 @@ function scoreColor(float $s): string {
             <div style="flex:1;min-width:200px;">
                 <label style="font-size:0.72rem;font-weight:600;color:#64748b;text-transform:uppercase;
                                letter-spacing:0.05em;display:block;margin-bottom:5px;">Search</label>
-                <div style="display:flex;align-items:center;border:1.5px solid #e2e8f0;border-radius:8px;
-                            overflow:hidden;background:#f8fafc;transition:border-color 0.2s;"
-                     onfocusin="this.style.borderColor='#1e4d8c'" onfocusout="this.style.borderColor='#e2e8f0'">
+                <div style="display:flex;align-items:center;border:1px solid #e2e8f0;
+                            overflow:hidden;background:#f8fafc;"
+                     onfocusin="this.style.borderColor='#1a3a6b'" onfocusout="this.style.borderColor='#e2e8f0'">
                     <span style="padding:0 0.65rem;color:#94a3b8;font-size:0.85rem;">
                         <i class="bi bi-search"></i>
                     </span>
@@ -171,8 +168,8 @@ function scoreColor(float $s): string {
                 <label style="font-size:0.72rem;font-weight:600;color:#64748b;text-transform:uppercase;
                                letter-spacing:0.05em;display:block;margin-bottom:5px;">Campus</label>
                 <select name="campus_id"
-                        style="width:100%;border:1.5px solid #e2e8f0;border-radius:8px;padding:0.5rem 0.75rem;
-                               font-size:0.85rem;color:#1e293b;background:#f8fafc;outline:none;cursor:pointer;"
+                        style="width:100%;border:1px solid #e2e8f0;padding:0.42rem 0.75rem;
+                               font-size:0.82rem;color:#1e293b;background:#f8fafc;outline:none;cursor:pointer;"
                         onchange="this.form.submit()">
                     <option value="">All Campuses</option>
                     <?php foreach ($campuses as $c): ?>
@@ -184,16 +181,18 @@ function scoreColor(float $s): string {
             </div>
             <!-- Submit -->
             <button type="submit"
-                    style="background:#1a3a6b;color:#fff;border:none;border-radius:8px;
-                           padding:0.5rem 1.25rem;font-size:0.85rem;font-weight:600;cursor:pointer;
-                           display:flex;align-items:center;gap:0.4rem;white-space:nowrap;">
+                    style="background:#1a3a6b;color:#fff;border:none;
+                           padding:0.42rem 1.1rem;font-size:0.82rem;font-weight:600;cursor:pointer;
+                           display:flex;align-items:center;gap:0.4rem;white-space:nowrap;"
+                    onmouseover="this.style.background='#152d54'" onmouseout="this.style.background='#1a3a6b'">
                 <i class="bi bi-search"></i> Search
             </button>
             <?php if ($search || $filter_campus): ?>
             <a href="?page=all_applications&filter=<?= urlencode($filter) ?>"
-               style="background:#f1f5f9;color:#64748b;border:1.5px solid #e2e8f0;border-radius:8px;
-                      padding:0.5rem 1rem;font-size:0.82rem;font-weight:600;text-decoration:none;
-                      display:flex;align-items:center;gap:0.4rem;white-space:nowrap;">
+               style="background:#fff;color:#475569;border:1px solid #e2e8f0;
+                      padding:0.42rem 0.9rem;font-size:0.8rem;font-weight:600;text-decoration:none;
+                      display:flex;align-items:center;gap:0.4rem;white-space:nowrap;"
+               onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='#fff'">
                 <i class="bi bi-x-circle"></i> Clear
             </a>
             <?php endif; ?>
@@ -230,7 +229,7 @@ function scoreColor(float $s): string {
 
 <!-- -- Applications table / empty state -- -->
 <?php if ($apps): ?>
-<div class="neon-card" style="padding:0;overflow:hidden;">
+<div style="background:#fff;border:1px solid #e2e8f0;padding:0;overflow:hidden;">
     <div class="table-responsive">
         <table style="width:100%;border-collapse:collapse;font-size:0.84rem;">
             <thead>
@@ -324,12 +323,11 @@ function scoreColor(float $s): string {
                 <td style="padding:0.85rem 0.75rem;text-align:center;vertical-align:middle;">
                     <div style="display:inline-flex;flex-direction:column;align-items:center;gap:2px;">
                         <span style="background:<?= $sc ?>;color:#fff;padding:0.22rem 0.65rem;
-                                     border-radius:6px;font-weight:700;font-size:0.82rem;">
+                                     font-weight:700;font-size:0.82rem;">
                             <?= number_format($score, 2) ?>
                         </span>
-                        <div style="width:52px;height:4px;background:#f1f5f9;border-radius:99px;overflow:hidden;">
-                            <div style="height:100%;width:<?= min(100,round($score))?>%;
-                                        background:<?= $sc ?>;border-radius:99px;"></div>
+                        <div style="width:52px;height:4px;background:#f1f5f9;overflow:hidden;">
+                            <div style="height:100%;width:<?= min(100,round($score))?>%;background:<?= $sc ?>;"></div>
                         </div>
                     </div>
                 </td>
@@ -358,11 +356,11 @@ function scoreColor(float $s): string {
                 <td style="padding:0.85rem 0.75rem;text-align:center;vertical-align:middle;">
                     <a href="?page=view_application&id=<?= $a['application_id'] ?>"
                        style="display:inline-flex;align-items:center;gap:0.3rem;
-                              padding:0.35rem 0.85rem;border-radius:6px;font-size:0.76rem;font-weight:600;
+                              padding:0.35rem 0.85rem;font-size:0.76rem;font-weight:600;
                               background:#f0f4fb;color:#1a3a6b;text-decoration:none;border:1px solid #dbeafe;
-                              transition:all 0.15s;white-space:nowrap;"
-                       onmouseover="this.style.background='#1a3a6b';this.style.color='#fff'"
-                       onmouseout="this.style.background='#f0f4fb';this.style.color='#1a3a6b'">
+                              white-space:nowrap;"
+                       onmouseover="this.style.background='#1a3a6b';this.style.color='#fff';this.style.borderColor='#1a3a6b'"
+                       onmouseout="this.style.background='#f0f4fb';this.style.color='#1a3a6b';this.style.borderColor='#dbeafe'">
                         <i class="bi bi-eye" style="font-size:0.75rem;"></i> View
                     </a>
                 </td>
@@ -391,22 +389,23 @@ function scoreColor(float $s): string {
 
 <?php else: ?>
 <!-- Empty state -->
-<div class="neon-card" style="padding:3.5rem 1.5rem;text-align:center;">
-    <div style="width:64px;height:64px;border-radius:16px;background:#f0f4fb;
+<div style="background:#fff;border:1px solid #e2e8f0;padding:3.5rem 1.5rem;text-align:center;">
+    <div style="width:52px;height:52px;background:#f0f4fb;border:1px solid #dbeafe;
                 display:flex;align-items:center;justify-content:center;margin:0 auto 1rem;">
-        <i class="bi bi-inbox" style="font-size:1.75rem;color:#94a3b8;"></i>
+        <i class="bi bi-inbox" style="font-size:1.6rem;color:#94a3b8;"></i>
     </div>
-    <div style="font-size:1rem;font-weight:600;color:#475569;margin-bottom:0.35rem;">
+    <div style="font-size:0.95rem;font-weight:600;color:#475569;margin-bottom:0.35rem;">
         No applications found
     </div>
-    <div style="font-size:0.82rem;color:#94a3b8;margin-bottom:1.25rem;">
+    <div style="font-size:0.8rem;color:#94a3b8;margin-bottom:1.25rem;">
         <?= ($search || $filter || $filter_campus) ? 'Try adjusting your filters or search term.' : 'No faculty applications have been submitted yet.' ?>
     </div>
     <?php if ($search || $filter || $filter_campus): ?>
     <a href="?page=all_applications"
-       style="display:inline-flex;align-items:center;gap:0.4rem;padding:0.5rem 1.25rem;
-              border-radius:8px;background:#1a3a6b;color:#fff;text-decoration:none;
-              font-size:0.82rem;font-weight:600;">
+       style="display:inline-flex;align-items:center;gap:0.4rem;padding:0.45rem 1.1rem;
+              background:#1a3a6b;color:#fff;text-decoration:none;
+              font-size:0.8rem;font-weight:600;"
+       onmouseover="this.style.background='#152d54'" onmouseout="this.style.background='#1a3a6b'">
         <i class="bi bi-arrow-left"></i> View all applications
     </a>
     <?php endif; ?>

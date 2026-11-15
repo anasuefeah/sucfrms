@@ -7,7 +7,7 @@ if (session_status() === PHP_SESSION_NONE) session_start();
 header('Content-Type: text/html; charset=UTF-8');
 require_once __DIR__ . '/../includes/functions.php';
 requireLogin();
-if (!isAdmin() && !isChecker()) { http_response_code(403); die('Access denied.'); }
+if (!isAdmin() && !isEvaluator()) { http_response_code(403); die('Access denied.'); }
 require_once __DIR__ . '/../config/db.php';
 
 // Filters
@@ -39,7 +39,7 @@ if ($status && in_array($status, ['submitted','under_review','approved','rejecte
 }
 
 $rows = $pdo->prepare("
-    SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, u.employee_id, u.rank,
+    SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, u.employee_id, u.`rank`,
            COALESCE(camp.campus_name,'-') as campus_name,
            chk.user_id as checker_uid,
            chk.checker_label as checker_label

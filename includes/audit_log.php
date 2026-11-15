@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 $uid    = $_SESSION['user_id'];
 $role   = $_SESSION['role'] ?? 'faculty';
 
@@ -16,6 +16,16 @@ if ($role === 'admin') {
     $campuses = $pdo->query("SELECT campus_id, campus_name FROM campuses ORDER BY campus_name ASC")->fetchAll();
 }
 
+$filter_date_from = trim($_GET['date_from'] ?? '');
+$filter_date_to   = $filter_date_from; // single date — filter exact day
+
+$filter_user = intval($_GET['filter_user'] ?? 0);
+
+$users_list = [];
+if ($role === 'admin') {
+    $users_list = $pdo->query("SELECT user_id, full_name, role FROM users ORDER BY full_name ASC")->fetchAll();
+}
+
 $where = []; $params = [];
 if ($role !== 'admin') { $where[] = 'al.user_id = ?'; $params[] = $uid; }
 if ($search) {
@@ -25,6 +35,8 @@ if ($search) {
 if ($filter_role && $role === 'admin') { $where[] = 'al.role_at_time = ?'; $params[] = $filter_role; }
 if ($filter_action) { $where[] = 'al.action_performed LIKE ?'; $params[] = "%$filter_action%"; }
 if ($filter_campus && $role === 'admin') { $where[] = 'u.campus_id = ?'; $params[] = $filter_campus; }
+if ($filter_date_from) { $where[] = 'DATE(al.timestamp) = ?'; $params[] = $filter_date_from; }
+if ($filter_user && $role === 'admin') { $where[] = 'al.user_id = ?'; $params[] = $filter_user; }
 $where_sql = $where ? 'WHERE ' . implode(' AND ', $where) : '';
 
 $count_stmt = $pdo->prepare("SELECT COUNT(*) FROM audit_logs al LEFT JOIN users u ON al.user_id = u.user_id $where_sql");
@@ -48,8 +60,10 @@ function auditUrl(array $overrides = []): string {
         'filter_role'   => $_GET['filter_role'] ?? '',
         'filter_action' => $_GET['filter_action'] ?? '',
         'campus_id'     => $_GET['campus_id'] ?? '',
+        'filter_user'   => $_GET['filter_user'] ?? '',
         'per_page'      => $_GET['per_page'] ?? 25,
         'p'             => $_GET['p'] ?? 1,
+        'date_from'     => $_GET['date_from'] ?? '',
     ], $overrides);
     return 'index.php?' . http_build_query(array_filter($base, fn($v) => $v !== ''));
 }
@@ -104,28 +118,23 @@ function auditDisplayText(?string $text): string {
 ?>
 
 <!-- Page header -->
-<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;margin-bottom:1.25rem;">
-    <div style="display:flex;align-items:center;gap:0.6rem;">
-        <div style="width:36px;height:36px;border-radius:8px;background:#1e4d8c;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-            <i class="bi bi-shield-check" style="color:#fff;font-size:0.95rem;"></i>
+<div style="background:#fff;border:1px solid #e2e8f0;padding:0.85rem 1.25rem;margin-bottom:1rem;
+            display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.75rem;">
+    <div>
+        <div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#94a3b8;">
+            <?= $role === 'admin' ? 'System Audit Logs' : 'My Activity Log' ?>
         </div>
-        <div>
-            <div style="font-weight:700;color:#1a3a6b;font-size:0.95rem;">
-                <?= $role === 'admin' ? 'System Audit Logs' : 'My Activity Log' ?>
-            </div>
-            <div style="font-size:0.72rem;color:#94a3b8;margin-top:1px;">
-                <?= number_format($total_rows) ?> record<?= $total_rows !== 1 ? 's' : '' ?>
-                <?php if ($search || $filter_role || $filter_action || $filter_campus): ?>
-                <span style="background:#f0f4fb;color:#1e4d8c;border:1px solid #dbeafe;font-size:0.65rem;font-weight:700;border-radius:4px;padding:1px 6px;margin-left:4px;">filtered</span>
-                <?php endif; ?>
-            </div>
-        </div>
+        <div style="font-size:0.75rem;color:#1e293b;font-weight:600;margin-top:1px;">
+            <?= number_format($total_rows) ?> record<?= $total_rows !== 1 ? 's' : '' ?>
+            <?php if ($search || $filter_role || $filter_action || $filter_campus || $filter_date_from || $filter_user): ?>
+            <span style="font-size:0.62rem;font-weight:700;color:#64748b;background:#f1f5f9;border:1px solid #e2e8f0;padding:1px 6px;margin-left:4px;">filtered</span>
+            <?php endif; ?>        </div>
     </div>
-    <a href="pages/audit_log_pdf.php?search=<?= urlencode($search) ?>&filter_role=<?= urlencode($filter_role) ?>&filter_action=<?= urlencode($filter_action) ?>&campus_id=<?= $filter_campus ?>"
+    <a href="pages/audit_log_pdf.php?search=<?= urlencode($search) ?>&filter_role=<?= urlencode($filter_role) ?>&filter_action=<?= urlencode($filter_action) ?>&campus_id=<?= $filter_campus ?>&date_from=<?= urlencode($filter_date_from) ?>&date_to=<?= urlencode($filter_date_to) ?>"
        target="_blank"
-       style="display:inline-flex;align-items:center;gap:0.4rem;padding:0.45rem 1rem;border-radius:8px;
-              border:1.5px solid #e2e8f0;background:#fff;color:#475569;font-size:0.78rem;font-weight:600;
-              text-decoration:none;transition:all 0.15s;"
+       style="display:inline-flex;align-items:center;gap:0.4rem;padding:0.42rem 0.9rem;
+              border:1px solid #e2e8f0;background:#fff;color:#475569;font-size:0.78rem;font-weight:600;
+              text-decoration:none;border-radius:0;"
        onmouseover="this.style.borderColor='#1a3a6b';this.style.color='#1a3a6b'"
        onmouseout="this.style.borderColor='#e2e8f0';this.style.color='#475569'">
         <i class="bi bi-printer"></i> Print
@@ -133,61 +142,62 @@ function auditDisplayText(?string $text): string {
 </div>
 
 <!-- Filter bar -->
-<div class="neon-card mb-3" style="padding:0.9rem 1.1rem;">
+<div class="neon-card mb-3" style="padding:0.85rem 1.1rem;border-radius:0;box-shadow:none;">
     <form method="GET" action="index.php">
         <input type="hidden" name="page" value="<?= $role === 'admin' ? 'audit' : 'my_audit' ?>">
-        <div style="display:flex;flex-wrap:wrap;gap:0.65rem;align-items:flex-end;">
+        <div style="display:flex;flex-wrap:wrap;gap:0.6rem;align-items:flex-end;">
             <!-- Search -->
             <div style="flex:1;min-width:180px;">
-                <label style="font-size:0.68rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;display:block;margin-bottom:4px;">Search</label>
-                <div style="display:flex;align-items:center;border:1.5px solid #e2e8f0;border-radius:8px;overflow:hidden;background:#f8fafc;"
-                     onfocusin="this.style.borderColor='#1e4d8c'" onfocusout="this.style.borderColor='#e2e8f0'">
-                    <span style="padding:0 0.6rem;color:#94a3b8;font-size:0.82rem;"><i class="bi bi-search"></i></span>
+                <label style="font-size:0.6rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.07em;display:block;margin-bottom:3px;">Search</label>
+                <div style="display:flex;align-items:center;border:1px solid #e2e8f0;background:#f8fafc;">
+                    <span style="padding:0 0.6rem;color:#94a3b8;font-size:0.8rem;"><i class="bi bi-search"></i></span>
                     <input type="text" name="search" value="<?= sanitize($search) ?>"
                            placeholder="Action or details..."
-                           list="auditSearchSuggestions" autocomplete="off"
-                           style="flex:1;border:none;outline:none;background:transparent;padding:0.45rem 0.4rem 0.45rem 0;font-size:0.83rem;color:#1e293b;">
-                    <datalist id="auditSearchSuggestions">
-                        <option value="Login"><option value="Logout"><option value="KRA Saved">
-                        <option value="Application Submitted"><option value="Evaluation Complete">
-                        <option value="Returned for Revision"><option value="Evaluator Completed">
-                        <option value="Revision Requested"><option value="Score Altered">
-                        <option value="Cycle Created"><option value="Register">
-                        <option value="Password Reset Released"><option value="Role Changed">
-                        <?php foreach ($action_types as $at): ?>
-                        <option value="<?= sanitize(auditDisplayText($at)) ?>">
-                        <?php endforeach; ?>
-                    </datalist>
+                           style="flex:1;border:none;outline:none;background:transparent;padding:0.45rem 0.4rem 0.45rem 0;font-size:0.82rem;color:#1e293b;">
                 </div>
             </div>
             <?php
-            $sel_style = "border:1.5px solid #e2e8f0;border-radius:8px;padding:0.45rem 0.7rem;font-size:0.83rem;color:#1e293b;background:#f8fafc;outline:none;cursor:pointer;width:100%;";
-            if ($role === 'admin'): ?>
-            <!-- Role -->
-            <div style="min-width:120px;">
-                <label style="font-size:0.68rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;display:block;margin-bottom:4px;">Role</label>
-                <select name="filter_role" style="<?= $sel_style ?>" onchange="this.form.submit()">
-                    <option value="">All Roles</option>
-                    <option value="admin"   <?= $filter_role==='admin'   ?'selected':'' ?>>Admin</option>
-                    <option value="checker" <?= $filter_role==='checker' ?'selected':'' ?>>Evaluator</option>
-                    <option value="faculty" <?= $filter_role==='faculty' ?'selected':'' ?>>Faculty</option>
-                </select>
+            $sel_style = "border:1px solid #e2e8f0;padding:0.45rem 0.6rem;font-size:0.8rem;color:#1e293b;background:#f8fafc;outline:none;cursor:pointer;width:100%;border-radius:0;";
+            $inp_style = "border:1px solid #e2e8f0;padding:0.45rem 0.6rem;font-size:0.8rem;color:#1e293b;background:#f8fafc;outline:none;width:100%;border-radius:0;";
+            ?>
+            <!-- Date (single) -->
+            <div style="min-width:130px;">
+                <label style="font-size:0.6rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.07em;display:block;margin-bottom:3px;">Date</label>
+                <input type="date" name="date_from" value="<?= sanitize($filter_date_from) ?>"
+                       style="<?= $inp_style ?>" onchange="this.form.submit()">
             </div>
-            <!-- Campus -->
-            <div style="min-width:150px;">
-                <label style="font-size:0.68rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;display:block;margin-bottom:4px;">Campus</label>
-                <select name="campus_id" style="<?= $sel_style ?>" onchange="this.form.submit()">
-                    <option value="">All Campuses</option>
-                    <?php foreach ($campuses as $c): ?>
-                    <option value="<?= $c['campus_id'] ?>" <?= $filter_campus===(int)$c['campus_id']?'selected':'' ?>>
-                        <?= sanitize($c['campus_name']) ?>
+            <?php if ($role === 'admin'): ?>
+            <!-- User -->
+            <div style="min-width:180px;">
+                <label style="font-size:0.6rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.07em;display:block;margin-bottom:3px;">User</label>
+                <select name="filter_user" style="<?= $sel_style ?>" onchange="this.form.submit()">
+                    <option value="">All Users</option>
+                    <?php foreach ($users_list as $u): ?>
+                    <option value="<?= $u['user_id'] ?>" <?= $filter_user===(int)$u['user_id']?'selected':'' ?>>
+                        <?= sanitize($u['full_name']) ?>
                     </option>
                     <?php endforeach; ?>
                 </select>
+            </div>            <div style="min-width:110px;">
+                <label style="font-size:0.6rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.07em;display:block;margin-bottom:3px;">Role</label>
+                <select name="filter_role" style="<?= $sel_style ?>" onchange="this.form.submit()">
+                    <option value="">All Roles</option>
+                    <option value="admin"   <?= $filter_role==='admin'   ?'selected':'' ?>>Admin</option>
+                    <option value="evaluator" <?= $filter_role==='evaluator' ?'selected':'' ?>>Evaluator</option>
+                    <option value="faculty" <?= $filter_role==='faculty' ?'selected':'' ?>>Faculty</option>
+                </select>
             </div>
-            <!-- Action type -->
-            <div style="min-width:160px;">
-                <label style="font-size:0.68rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;display:block;margin-bottom:4px;">Action Type</label>
+            <div style="min-width:140px;">
+                <label style="font-size:0.6rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.07em;display:block;margin-bottom:3px;">Campus</label>
+                <select name="campus_id" style="<?= $sel_style ?>" onchange="this.form.submit()">
+                    <option value="">All Campuses</option>
+                    <?php foreach ($campuses as $c): ?>
+                    <option value="<?= $c['campus_id'] ?>" <?= $filter_campus===(int)$c['campus_id']?'selected':'' ?>><?= sanitize($c['campus_name']) ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div style="min-width:150px;">
+                <label style="font-size:0.6rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.07em;display:block;margin-bottom:3px;">Action Type</label>
                 <select name="filter_action" style="<?= $sel_style ?>" onchange="this.form.submit()">
                     <option value="">All Actions</option>
                     <?php foreach ($action_types as $at): ?>
@@ -196,25 +206,23 @@ function auditDisplayText(?string $text): string {
                 </select>
             </div>
             <?php endif; ?>
-            <!-- Per page -->
-            <div style="min-width:110px;">
-                <label style="font-size:0.68rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.05em;display:block;margin-bottom:4px;">Per Page</label>
+            <div style="min-width:100px;">
+                <label style="font-size:0.6rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.07em;display:block;margin-bottom:3px;">Per Page</label>
                 <select name="per_page" style="<?= $sel_style ?>" onchange="this.form.submit()">
                     <?php foreach ([10,25,50,100] as $n): ?>
                     <option value="<?= $n ?>" <?= $per_page===$n?'selected':'' ?>><?= $n ?> / page</option>
                     <?php endforeach; ?>
                 </select>
             </div>
-            <!-- Submit + Clear -->
-            <div style="display:flex;gap:0.5rem;align-items:flex-end;">
+            <div style="display:flex;gap:0.4rem;align-items:flex-end;">
                 <button type="submit"
-                        style="background:#1a3a6b;color:#fff;border:none;border-radius:8px;padding:0.47rem 1.1rem;font-size:0.83rem;font-weight:600;cursor:pointer;white-space:nowrap;">
-                    <i class="bi bi-search me-1"></i>Search
+                        style="background:#1a3a6b;color:#fff;border:none;border-radius:0;padding:0.45rem 1rem;font-size:0.8rem;font-weight:600;cursor:pointer;">
+                    Search
                 </button>
-                <?php if ($search || $filter_role || $filter_action || $filter_campus): ?>
+                <?php if ($search || $filter_role || $filter_action || $filter_campus || $filter_date_from || $filter_user): ?>
                 <a href="index.php?page=<?= $role === 'admin' ? 'audit' : 'my_audit' ?>"
-                   style="background:#f1f5f9;color:#64748b;border:1.5px solid #e2e8f0;border-radius:8px;padding:0.47rem 0.9rem;font-size:0.82rem;font-weight:600;text-decoration:none;white-space:nowrap;">
-                    <i class="bi bi-x-circle me-1"></i>Clear
+                   style="background:#f8fafc;color:#64748b;border:1px solid #e2e8f0;border-radius:0;padding:0.45rem 0.85rem;font-size:0.8rem;font-weight:600;text-decoration:none;">
+                    Clear
                 </a>
                 <?php endif; ?>
             </div>
@@ -223,69 +231,71 @@ function auditDisplayText(?string $text): string {
 </div>
 
 <!-- Table -->
-<div class="neon-card" style="padding:0;overflow:hidden;">
+<div class="neon-card" style="padding:0;overflow:hidden;border-radius:0;box-shadow:none;">
     <div class="table-responsive">
-        <table style="width:100%;border-collapse:collapse;font-size:0.84rem;">
+        <table style="width:100%;border-collapse:collapse;font-size:0.82rem;">
             <thead>
                 <tr style="background:#f8fafc;border-bottom:2px solid #e2e8f0;">
-                    <th style="padding:0.65rem 1rem;font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;width:44px;">#</th>
+                    <th style="padding:0.55rem 0.9rem;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;width:44px;text-align:center;">#</th>
                     <?php if ($role === 'admin'): ?>
-                    <th style="padding:0.65rem 0.75rem;font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;">User</th>
-                    <th style="padding:0.65rem 0.75rem;font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;width:90px;">Role</th>
+                    <th style="padding:0.55rem 0.75rem;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;">User</th>
+                    <th style="padding:0.55rem 0.75rem;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;width:90px;text-align:center;">Role</th>
                     <?php endif; ?>
-                    <th style="padding:0.65rem 0.75rem;font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;width:180px;">Action</th>
-                    <th style="padding:0.65rem 0.75rem;font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;">Details</th>
-                    <th style="padding:0.65rem 0.75rem;font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;width:160px;white-space:nowrap;">Date &amp; Time</th>
+                    <th style="padding:0.55rem 0.75rem;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;width:180px;">Action</th>
+                    <th style="padding:0.55rem 0.75rem;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;">Details</th>
+                    <th style="padding:0.55rem 0.75rem;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;width:130px;white-space:nowrap;text-align:right;">Date &amp; Time</th>
                 </tr>
             </thead>
             <tbody>
             <?php if ($logs): foreach ($logs as $i => $log):
                 [$bg, $tc, $ic] = actionBadge($log['action_performed']);
-                $action_display = auditDisplayText($log['action_performed'] ?? '');
+                $action_display  = auditDisplayText($log['action_performed'] ?? '');
                 $details_display = auditDisplayText($log['details'] ?? '');
             ?>
-            <tr style="border-bottom:1px solid #f0f4fb;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background=''">
-                <td style="padding:0.65rem 1rem;color:#94a3b8;font-size:0.78rem;vertical-align:middle;"><?= $offset + $i + 1 ?></td>
+            <tr style="border-bottom:1px solid #f4f6f9;" onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background=''">
+                <td style="padding:0.6rem 0.9rem;color:#94a3b8;font-size:0.75rem;text-align:center;vertical-align:middle;"><?= $offset + $i + 1 ?></td>
                 <?php if ($role === 'admin'): ?>
-                <td style="padding:0.65rem 0.75rem;font-weight:600;color:#1e293b;font-size:0.82rem;vertical-align:middle;">
+                <td style="padding:0.6rem 0.75rem;font-weight:600;color:#1e293b;font-size:0.8rem;vertical-align:middle;">
                     <?php
                     $actor_role = $log['role_at_time'] ?? '';
-                    $actor_display = in_array($actor_role, ['checker','talisay_checker'])
-                        ? checkerDisplayLabel(['checker_label' => $log['checker_label'] ?? null, 'user_id' => $log['user_id'] ?? null])
+                    $actor_display = $actor_role === 'evaluator'
+                        ? checkerDisplayLabel(['checker_label'=>$log['checker_label']??null,'user_id'=>$log['user_id']??null])
                         : ($log['full_name'] ?? 'System');
+                    if ($actor_role === 'admin' && str_contains($actor_display, ',')) {
+                        $parts_name = array_map('trim', explode(',', $actor_display, 2));
+                        $actor_display = trim(($parts_name[1]??'').' '.($parts_name[0]??''));
+                    }
                     ?>
                     <?= sanitize($actor_display) ?>
                 </td>
-                <td style="padding:0.65rem 0.75rem;vertical-align:middle;">
+                <td style="padding:0.6rem 0.75rem;vertical-align:middle;text-align:center;">
                     <?php
-                    $rc_map = ['admin'=>['#f1f5f9','#334155'],'checker'=>['#dbeafe','#1e4d8c'],'faculty'=>['#f0f4fb','#475569'],'talisay_checker'=>['#f0f4fb','#1a3a6b']];
-                    $role_display_map = ['admin'=>'Admin','checker'=>'Evaluator','faculty'=>'Faculty','talisay_checker'=>'ITC Evaluator'];
+                    $role_display_map = ['admin'=>'Admin','evaluator'=>'Evaluator','faculty'=>'Faculty'];
                     $role_key = $log['role_at_time'] ?? '';
-                    [$rb,$rt] = $rc_map[$role_key] ?? ['#f1f5f9','#64748b'];
                     ?>
-                    <span style="background:<?= $rb ?>;color:<?= $rt ?>;padding:0.18rem 0.5rem;border-radius:20px;font-size:0.68rem;font-weight:600;white-space:nowrap;">
-                        <?= sanitize($role_display_map[$role_key] ?? ($role_key ?: 'N/A')) ?>
+                    <span style="font-size:0.65rem;font-weight:600;color:#64748b;background:#f1f5f9;border:1px solid #e2e8f0;padding:1px 7px;">
+                        <?= sanitize($role_display_map[$role_key] ?? ($role_key ?: '—')) ?>
                     </span>
                 </td>
                 <?php endif; ?>
-                <td style="padding:0.65rem 0.75rem;vertical-align:middle;">
-                    <span style="background:<?= $bg ?>;color:<?= $tc ?>;padding:0.22rem 0.6rem;border-radius:20px;font-size:0.75rem;font-weight:600;white-space:nowrap;display:inline-flex;align-items:center;gap:4px;">
-                        <i class="bi <?= $ic ?>" style="font-size:0.72rem;"></i>
+                <td style="padding:0.6rem 0.75rem;vertical-align:middle;">
+                    <span style="font-size:0.72rem;font-weight:600;color:<?= $tc ?>;display:inline-flex;align-items:center;gap:4px;">
+                        <i class="bi <?= $ic ?>" style="font-size:0.68rem;flex-shrink:0;"></i>
                         <?= sanitize($action_display) ?>
                     </span>
                 </td>
-                <td style="padding:0.65rem 0.75rem;color:#64748b;font-size:0.82rem;vertical-align:middle;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                <td style="padding:0.6rem 0.75rem;color:#64748b;font-size:0.78rem;vertical-align:middle;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
                     title="<?= sanitize($details_display) ?>">
                     <?= sanitize($details_display) ?>
                 </td>
-                <td style="padding:0.65rem 0.75rem;color:#94a3b8;font-size:0.78rem;vertical-align:middle;white-space:nowrap;">
+                <td style="padding:0.6rem 0.75rem;color:#94a3b8;font-size:0.72rem;vertical-align:middle;white-space:nowrap;text-align:right;">
                     <?= date('M d, Y', strtotime($log['timestamp'])) ?>
-                    <div style="font-size:0.72rem;color:#cbd5e1;"><?= date('h:i A', strtotime($log['timestamp'])) ?></div>
+                    <div style="font-size:0.65rem;color:#cbd5e1;"><?= date('h:i A', strtotime($log['timestamp'])) ?></div>
                 </td>
             </tr>
             <?php endforeach; else: ?>
-            <tr><td colspan="7" style="padding:3rem;text-align:center;color:#94a3b8;">
-                <i class="bi bi-inbox d-block mb-2" style="font-size:2rem;color:#e2e8f0;"></i>
+            <tr><td colspan="7" style="padding:2.5rem;text-align:center;color:#94a3b8;font-size:0.8rem;">
+                <i class="bi bi-inbox" style="font-size:1.5rem;color:#e2e8f0;display:block;margin-bottom:0.5rem;"></i>
                 No logs found.
             </td></tr>
             <?php endif; ?>
@@ -295,34 +305,35 @@ function auditDisplayText(?string $text): string {
 
     <!-- Pagination -->
     <?php if ($total_pages > 1): ?>
-    <div class="px-3 py-2 d-flex justify-content-between align-items-center" style="border-top:1px solid #f0f4fb;">
-        <small class="text-muted">
-            Showing <?= $offset + 1 ?>-<?= min($offset + $per_page, $total_rows) ?> of <?= number_format($total_rows) ?>
-        </small>
-        <ul class="pagination pagination-sm mb-0">
+    <div style="padding:0.6rem 1rem;border-top:1px solid #f0f4fb;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;">
+        <span style="font-size:0.72rem;color:#94a3b8;">
+            Showing <?= $offset + 1 ?>–<?= min($offset + $per_page, $total_rows) ?> of <?= number_format($total_rows) ?>
+        </span>
+        <ul class="pagination pagination-sm mb-0" style="gap:2px;">
             <li class="page-item <?= $page_num <= 1 ? 'disabled' : '' ?>">
-                <a class="page-link" href="<?= auditUrl(['p' => $page_num - 1]) ?>">‹</a>
+                <a class="page-link" href="<?= auditUrl(['p' => $page_num - 1]) ?>" style="border-radius:0;">‹</a>
             </li>
             <?php
             $start = max(1, $page_num - 2);
             $end   = min($total_pages, $page_num + 2);
             if ($start > 1): ?>
-            <li class="page-item"><a class="page-link" href="<?= auditUrl(['p'=>1]) ?>">1</a></li>
-            <?php if ($start > 2): ?><li class="page-item disabled"><span class="page-link">...</span></li><?php endif; ?>
+            <li class="page-item"><a class="page-link" href="<?= auditUrl(['p'=>1]) ?>" style="border-radius:0;">1</a></li>
+            <?php if ($start > 2): ?><li class="page-item disabled"><span class="page-link" style="border-radius:0;">…</span></li><?php endif; ?>
             <?php endif; ?>
             <?php for ($pg = $start; $pg <= $end; $pg++): ?>
             <li class="page-item <?= $pg === $page_num ? 'active' : '' ?>">
-                <a class="page-link" href="<?= auditUrl(['p' => $pg]) ?>"><?= $pg ?></a>
+                <a class="page-link" href="<?= auditUrl(['p' => $pg]) ?>" style="border-radius:0;"><?= $pg ?></a>
             </li>
             <?php endfor; ?>
             <?php if ($end < $total_pages): ?>
-            <?php if ($end < $total_pages - 1): ?><li class="page-item disabled"><span class="page-link">...</span></li><?php endif; ?>
-            <li class="page-item"><a class="page-link" href="<?= auditUrl(['p'=>$total_pages]) ?>"><?= $total_pages ?></a></li>
+            <?php if ($end < $total_pages - 1): ?><li class="page-item disabled"><span class="page-link" style="border-radius:0;">…</span></li><?php endif; ?>
+            <li class="page-item"><a class="page-link" href="<?= auditUrl(['p'=>$total_pages]) ?>" style="border-radius:0;"><?= $total_pages ?></a></li>
             <?php endif; ?>
             <li class="page-item <?= $page_num >= $total_pages ? 'disabled' : '' ?>">
-                <a class="page-link" href="<?= auditUrl(['p' => $page_num + 1]) ?>">›</a>
+                <a class="page-link" href="<?= auditUrl(['p' => $page_num + 1]) ?>" style="border-radius:0;">›</a>
             </li>
         </ul>
     </div>
     <?php endif; ?>
 </div>
+    <div style="display:flex;align-items:center;gap:0.6rem;">

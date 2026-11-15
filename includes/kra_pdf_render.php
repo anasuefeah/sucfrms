@@ -57,7 +57,7 @@ function kraDefinitions(): array {
         ],
         'III' => [
             'number' => 'III', 'label' => 'EXTENSION SERVICES',
-            'category' => 'Extension', 'max_points' => 120,
+            'category' => 'Extension', 'max_points' => 100,
             'criteria' => [
                 'A' => [
                     'title' => 'CRITERION A - EXTENSION SERVICES (MAX = 100 POINTS)',
@@ -70,7 +70,7 @@ function kraDefinitions(): array {
         ],
         'IV' => [
             'number' => 'IV', 'label' => 'PROFESSIONAL DEVELOPMENT',
-            'category' => 'Professional Development', 'max_points' => 120,
+            'category' => 'Professional Development', 'max_points' => 100,
             'criteria' => [
                 'A' => [
                     'title' => 'CRITERION A - INVOLVEMENT IN PROFESSIONAL ORGANIZATIONS (MAX = 20 POINTS)',
@@ -459,7 +459,6 @@ class KRA_PDF extends FPDF {
         $this->is_iss_page = true;
         $this->AddPage();
         $this->SetFont('Arial', '', 9);
-        $this->Cell(0, 5, 'Generated for the current cycle - not cached from any prior computation', 0, 1, 'C');
         $this->Ln(3);
 
         // -- Table 1: Faculty Rank | KRA1 Pts | Weight | ... | Total Points --

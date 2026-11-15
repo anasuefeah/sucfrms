@@ -47,12 +47,12 @@ CREATE TABLE IF NOT EXISTS users (
                 ) STORED,
     email       VARCHAR(150) NOT NULL UNIQUE,
     password    VARCHAR(255) NOT NULL,
-    role        ENUM('faculty','checker','admin','checker_faculty','talisay_checker') DEFAULT 'faculty',
+    role        ENUM('faculty','admin','evaluator') DEFAULT 'faculty',
     status      ENUM('active','inactive','rejected') DEFAULT 'active',
     campus_id   INT DEFAULT NULL,
     -- rank stores the current faculty rank (e.g. "Assistant Professor II")
     -- used as the starting point for reclassification scoring
-    rank        VARCHAR(100),
+    `rank`        VARCHAR(100),
     employee_id VARCHAR(50) UNIQUE,
     profile_pic VARCHAR(255) DEFAULT NULL,
     profile_completed TINYINT(1) DEFAULT 0,
@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS faculty_employment (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
     type ENUM('current','previous') NOT NULL,
-    rank VARCHAR(100) NOT NULL,
+    `rank` VARCHAR(100) NOT NULL,
     mode_of_appointment VARCHAR(100) NOT NULL,
     date_of_appointment DATE DEFAULT NULL,
     employment_sector VARCHAR(150) DEFAULT NULL,
@@ -133,7 +133,6 @@ CREATE TABLE IF NOT EXISTS cycle_submission_extensions (
 -- ============================================================
 CREATE TABLE IF NOT EXISTS applications (
     application_id     INT AUTO_INCREMENT PRIMARY KEY,
-    tracking_number    VARCHAR(30) DEFAULT NULL UNIQUE,
     user_id            INT NOT NULL,
     cycle_id           INT DEFAULT NULL,
     status             ENUM('draft','submitted','under_review','talisay_review','approved','rejected','reclassified','admin_rejected','edit_requested','needs_revision') DEFAULT 'draft',
@@ -143,17 +142,14 @@ CREATE TABLE IF NOT EXISTS applications (
     potential_rank     VARCHAR(100) DEFAULT NULL,
     checker_id         INT DEFAULT NULL,
     checker_remarks    TEXT,
-    edit_reason        TEXT,
     reviewed_at        TIMESTAMP NULL,
     submitted_at       TIMESTAMP NULL,
     position_title     VARCHAR(100) DEFAULT NULL,
-    salary_grade       VARCHAR(20)  DEFAULT NULL,
-    study_leave        ENUM('yes','no') DEFAULT 'no',
     created_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id)    REFERENCES users(user_id) ON DELETE CASCADE,
-    FOREIGN KEY (cycle_id)   REFERENCES cycles(cycle_id) ON DELETE SET NULL,
-    FOREIGN KEY (checker_id) REFERENCES users(user_id) ON DELETE SET NULL
+    FOREIGN KEY (user_id)      REFERENCES users(user_id) ON DELETE CASCADE,
+    FOREIGN KEY (cycle_id)     REFERENCES cycles(cycle_id) ON DELETE SET NULL,
+    FOREIGN KEY (checker_id)   REFERENCES users(user_id) ON DELETE SET NULL
 );
 
 -- ============================================================
@@ -174,6 +170,7 @@ CREATE TABLE IF NOT EXISTS kra_submissions (
     revision_note   TEXT DEFAULT NULL,
     revision_by     INT DEFAULT NULL,
     revision_at     TIMESTAMP NULL,
+    revision_saved_at DATETIME(6) DEFAULT NULL,
     submitted_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (application_id) REFERENCES applications(application_id) ON DELETE CASCADE,
     FOREIGN KEY (user_id)        REFERENCES users(user_id) ON DELETE CASCADE,
@@ -196,20 +193,20 @@ CREATE TABLE IF NOT EXISTS kra_evidence_files (
 );
 
 -- ============================================================
--- 8. CHECKER KRA ASSIGNMENTS
+-- 8. EVALUATOR KRA ASSIGNMENTS
 -- ============================================================
 CREATE TABLE IF NOT EXISTS checker_kra_assignments (
     assignment_id INT AUTO_INCREMENT PRIMARY KEY,
-    cycle_id INT NOT NULL,
-    checker_id INT NOT NULL,
-    kra_category ENUM('Instruction','Research','Extension','Professional Development') NOT NULL,
-    assigned_by INT DEFAULT NULL,
-    assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    cycle_id      INT NOT NULL,
+    checker_id    INT NOT NULL,
+    kra_category  ENUM('Instruction','Research','Extension','Professional Development') NOT NULL,
+    assigned_by   INT DEFAULT NULL,
+    assigned_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uq_checker_cycle_kra (cycle_id, checker_id, kra_category),
-    INDEX idx_cka_cycle_kra (cycle_id, kra_category),
-    INDEX idx_cka_checker_cycle (checker_id, cycle_id),
-    FOREIGN KEY (cycle_id) REFERENCES cycles(cycle_id) ON DELETE CASCADE,
-    FOREIGN KEY (checker_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    INDEX idx_cka_cycle_kra       (cycle_id, kra_category),
+    INDEX idx_cka_checker_cycle   (checker_id, cycle_id),
+    FOREIGN KEY (cycle_id)    REFERENCES cycles(cycle_id) ON DELETE CASCADE,
+    FOREIGN KEY (checker_id)  REFERENCES users(user_id) ON DELETE CASCADE,
     FOREIGN KEY (assigned_by) REFERENCES users(user_id) ON DELETE SET NULL
 );
 
@@ -220,31 +217,31 @@ CREATE TABLE IF NOT EXISTS appeals (
     appeal_id INT AUTO_INCREMENT PRIMARY KEY,
     application_id INT NOT NULL,
     submission_id INT NOT NULL,
-    faculty_id INT NOT NULL,
-    checker_id INT NOT NULL,
-    cycle_id INT NOT NULL,
-    appeal_type ENUM('flag','score_change') NOT NULL,
+    faculty_id    INT NOT NULL,
+    checker_id    INT NOT NULL,
+    cycle_id      INT NOT NULL,
+    appeal_type   ENUM('flag','score_change') NOT NULL,
     original_score DECIMAL(6,2) DEFAULT NULL,
-    changed_score DECIMAL(6,2) DEFAULT NULL,
+    changed_score  DECIMAL(6,2) DEFAULT NULL,
     checker_remark TEXT DEFAULT NULL,
-    reason TEXT NOT NULL,
-    status ENUM('open','under_review','resolved') DEFAULT 'open',
-    outcome ENUM('upheld','revised','dismissed') DEFAULT NULL,
-    is_read_by_faculty TINYINT(1) DEFAULT 1,
-    is_read_by_checker TINYINT(1) DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    resolved_at TIMESTAMP NULL,
-    resolved_by INT DEFAULT NULL,
+    reason        TEXT NOT NULL,
+    status        ENUM('open','under_review','resolved') DEFAULT 'open',
+    outcome       ENUM('upheld','revised','dismissed') DEFAULT NULL,
+    is_read_by_faculty  TINYINT(1) DEFAULT 1,
+    is_read_by_checker  TINYINT(1) DEFAULT 0,
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    resolved_at   TIMESTAMP NULL,
+    resolved_by   INT DEFAULT NULL,
     INDEX idx_appeals_submission_status (submission_id, status),
-    INDEX idx_appeals_faculty (faculty_id, status),
-    INDEX idx_appeals_checker (checker_id, status),
+    INDEX idx_appeals_faculty  (faculty_id, status),
+    INDEX idx_appeals_checker  (checker_id, status),
     FOREIGN KEY (application_id) REFERENCES applications(application_id) ON DELETE CASCADE,
-    FOREIGN KEY (submission_id) REFERENCES kra_submissions(submission_id) ON DELETE CASCADE,
-    FOREIGN KEY (faculty_id) REFERENCES users(user_id) ON DELETE CASCADE,
-    FOREIGN KEY (checker_id) REFERENCES users(user_id) ON DELETE CASCADE,
-    FOREIGN KEY (cycle_id) REFERENCES cycles(cycle_id) ON DELETE CASCADE,
-    FOREIGN KEY (resolved_by) REFERENCES users(user_id) ON DELETE SET NULL
+    FOREIGN KEY (submission_id)  REFERENCES kra_submissions(submission_id) ON DELETE CASCADE,
+    FOREIGN KEY (faculty_id)     REFERENCES users(user_id) ON DELETE CASCADE,
+    FOREIGN KEY (checker_id)     REFERENCES users(user_id) ON DELETE CASCADE,
+    FOREIGN KEY (cycle_id)       REFERENCES cycles(cycle_id) ON DELETE CASCADE,
+    FOREIGN KEY (resolved_by)    REFERENCES users(user_id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS appeal_messages (
@@ -291,7 +288,7 @@ CREATE TABLE IF NOT EXISTS scoring_criteria (
     UNIQUE KEY uq_cycle_pos_criterion (cycle_id, position_rank, criterion_key),
     UNIQUE KEY uq_scoring_scope_key (cycle_scope, position_scope, criterion_key),
     UNIQUE KEY uq_scoring_scope_label (cycle_scope, position_scope, kra_category, criterion_label),
-    FOREIGN KEY (cycle_id)   REFERENCES cycles(cycle_id) ON DELETE CASCADE,
+    -- MySQL 8 does not allow a CASCADE foreign key on cycle_id because cycle_scope is generated from it
     FOREIGN KEY (updated_by) REFERENCES users(user_id) ON DELETE SET NULL
 );
 
@@ -312,8 +309,8 @@ CREATE TABLE IF NOT EXISTS password_resets (
 
 -- ============================================================
 -- 10. APPLICATION CHECKER REVIEWS
---     Multi-checker approval tracking per application.
---     Each checker gets one row per application they review.
+--     Multi-evaluator approval tracking per application.
+--     Each evaluator gets one row per application they review.
 -- ============================================================
 CREATE TABLE IF NOT EXISTS application_checker_reviews (
     review_id      INT AUTO_INCREMENT PRIMARY KEY,
@@ -343,11 +340,11 @@ CREATE TABLE IF NOT EXISTS auto_sub_rank (
                            COMMENT '40 when points_only or blocked_historical, 0 otherwise',
     doctorate_details  TEXT DEFAULT NULL,
 
-    -- Doctorate checker verification
-    doctorate_verified      ENUM('pending','verified','rejected') NOT NULL DEFAULT 'pending',
-    doctorate_verified_by   INT DEFAULT NULL,
-    doctorate_verified_at   TIMESTAMP NULL DEFAULT NULL,
-    doctorate_verification_notes TEXT DEFAULT NULL,
+    -- Doctorate evaluator verification
+    doctorate_verified            ENUM('pending','verified','rejected') NOT NULL DEFAULT 'pending',
+    doctorate_verified_by         INT DEFAULT NULL,
+    doctorate_verified_at         TIMESTAMP NULL DEFAULT NULL,
+    doctorate_verification_notes  TEXT DEFAULT NULL,
 
     -- Award criterion
     award_mode         ENUM('triggered','not_eligible','insufficient_score')
@@ -356,11 +353,11 @@ CREATE TABLE IF NOT EXISTS auto_sub_rank (
     award_details      TEXT DEFAULT NULL,
     award_evidence     VARCHAR(255) DEFAULT NULL,
 
-    -- Award checker verification
-    award_verified      ENUM('pending','verified','rejected') NOT NULL DEFAULT 'pending',
-    award_verified_by   INT DEFAULT NULL,
-    award_verified_at   TIMESTAMP NULL DEFAULT NULL,
-    award_verification_notes TEXT DEFAULT NULL,
+    -- Award evaluator verification
+    award_verified            ENUM('pending','verified','rejected') NOT NULL DEFAULT 'pending',
+    award_verified_by         INT DEFAULT NULL,
+    award_verified_at         TIMESTAMP NULL DEFAULT NULL,
+    award_verification_notes  TEXT DEFAULT NULL,
 
     -- Calculation metadata (audit trail)
     calculation_reason       TEXT DEFAULT NULL,
@@ -370,10 +367,6 @@ CREATE TABLE IF NOT EXISTS auto_sub_rank (
 
     created_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-    -- Keep legacy status columns so old data is not lost
-    doctorate_status   ENUM('Triggered','Not Triggered','Needs Review') DEFAULT 'Needs Review',
-    award_status       ENUM('Triggered','Not Triggered','Needs Review') DEFAULT 'Needs Review',
 
     FOREIGN KEY (application_id)      REFERENCES applications(application_id) ON DELETE CASCADE,
     FOREIGN KEY (doctorate_verified_by) REFERENCES users(user_id) ON DELETE SET NULL,
@@ -405,10 +398,6 @@ CREATE TABLE IF NOT EXISTS pre_eval_auto_sub_rank (
     weighted_score_at_calc   DECIMAL(7,2) DEFAULT NULL,
     rank_at_calc             VARCHAR(100) DEFAULT NULL,
 
-    -- Keep legacy status columns so old data is not lost
-    doctorate_status   ENUM('Triggered','Not Triggered','Needs Review') DEFAULT 'Needs Review',
-    award_status       ENUM('Triggered','Not Triggered','Needs Review') DEFAULT 'Needs Review',
-
     updated_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
@@ -428,6 +417,57 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 );
 
 -- ============================================================
+-- 14. NOTIFICATIONS
+-- ============================================================
+CREATE TABLE IF NOT EXISTS notifications (
+    notif_id       INT AUTO_INCREMENT PRIMARY KEY,
+    user_id        INT NOT NULL,
+    type           VARCHAR(60) NOT NULL,
+    message        TEXT NOT NULL,
+    application_id INT DEFAULT NULL,
+    submission_id  INT DEFAULT NULL,
+    is_read        TINYINT(1) DEFAULT 0,
+    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id)          REFERENCES users(user_id) ON DELETE CASCADE,
+    FOREIGN KEY (application_id)   REFERENCES applications(application_id) ON DELETE CASCADE
+);
+
+-- ============================================================
+-- 15. KRA EVALUATOR VERIFICATIONS
+--     Tracks per-evaluator acceptance of each KRA submission.
+--     When all assigned evaluators verify a submission, the
+--     global verified flag on kra_submissions is set to 1.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS kra_checker_verifications (
+    ckv_id        INT AUTO_INCREMENT PRIMARY KEY,
+    submission_id INT NOT NULL,
+    checker_id    INT NOT NULL,
+    verified_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_sub_checker (submission_id, checker_id),
+    FOREIGN KEY (submission_id) REFERENCES kra_submissions(submission_id) ON DELETE CASCADE,
+    FOREIGN KEY (checker_id)    REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+-- ============================================================
+-- 16. POSITION REQUIREMENTS
+--     Stores Professor-gate document upload status per application.
+--     Required for Professor I–VI and University Professor ranks.
+-- ============================================================
+CREATE TABLE IF NOT EXISTS position_requirements (
+    pos_req_id            INT AUTO_INCREMENT PRIMARY KEY,
+    application_id        INT NOT NULL,
+    cav_transcript        ENUM('Uploaded','Missing') DEFAULT 'Missing',
+    cav_file              VARCHAR(255) DEFAULT NULL,
+    international_article ENUM('Uploaded','Missing') DEFAULT 'Missing',
+    article_file          VARCHAR(255) DEFAULT NULL,
+    certification_form    ENUM('Uploaded','Missing') DEFAULT 'Missing',
+    cert_file             VARCHAR(255) DEFAULT NULL,
+    created_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at            TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (application_id) REFERENCES applications(application_id) ON DELETE CASCADE
+);
+
+-- ============================================================
 -- SEED: DEFAULT CAMPUSES
 -- ============================================================
 INSERT INTO campuses (campus_name) VALUES
@@ -442,7 +482,7 @@ ON DUPLICATE KEY UPDATE campus_id = campus_id;
 -- ============================================================
 INSERT INTO users (first_name, middle_name, last_name, email, password, role, status, employee_id)
 VALUES ('System', NULL, 'Administrator', 'succhmsuadmin@gmail.com',
-        '$2y$10$TKh8H1.PfbuS35e/VTMC5eFxHU0qlLGk.XdBZl0ey/tqULq9BjzO2',
+        '$2y$10$CQW1Wk/UKe.mhwRbeF0gs.23H1vp0TnFtCynLcJEr99k0IeFozGRS',
         'admin', 'active', 'ADMIN-001')
 ON DUPLICATE KEY UPDATE
     email    = VALUES(email),
@@ -554,6 +594,8 @@ INSERT INTO scoring_criteria (kra_category, criterion_key, criterion_label, max_
 ('Extension','kra3_d_program_chair','Criterion D (BONUS) - Program Chair / Project Head (College/Dept)',3.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
 ('Extension','kra3_d_committee_chair_dept','Criterion D (BONUS) - Committee Chair (College/Dept)',2.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
 ('Extension','kra3_d_committee_member_dept','Criterion D (BONUS) - Committee Member (College/Dept)',1.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
+('Extension','kra3_d_coordinator_inst','Criterion D (BONUS) - Coordinator (Institutional Level)',2.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
+('Extension','kra3_d_coordinator_dept','Criterion D (BONUS) - Coordinator (College/Department Level)',1.00,100.00,'Copy of appointment or designation with effectivity period. Copy of accomplishment report duly submitted to authorized official/supervisor.'),
 
 -- -- KRA IV: PROFESSIONAL DEVELOPMENT -------------------------
 ('Professional Development','kra4_a_org_membership','Criterion A - Active Professional Org Membership',5.00,100.00,'Copy of proof of membership such as certificate of membership or ID. Copy of certification of engagement, role, or assignment from the head of the organization.'),
@@ -566,10 +608,10 @@ INSERT INTO scoring_criteria (kra_category, criterion_key, criterion_label, max_
 ('Professional Development','kra4_b_paper_local','Criterion B - Paper Presentation, Local',3.00,100.00,'Copy of letter/certificate of acceptance for paper presentations.'),
 ('Professional Development','kra4_b_paper_intl','Criterion B - Paper Presentation, International',5.00,100.00,'Copy of letter/certificate of acceptance for paper presentations.'),
 ('Professional Development','kra4_c_award_institutional','Criterion C - Institutional Award',2.00,100.00,'Copy of certificate of recognition or award. Copy of picture of plaque, trophy, medal, or similar items.'),
-('Professional Development','kra4_c_award_local','Criterion C - Local Award (City/Municipality/Province)',3.00,100.00,'Copy of certificate of recognition or award. Copy of picture of plaque, trophy, medal, or similar items.'),
-('Professional Development','kra4_c_award_regional','Criterion C - Regional In-Country Award',4.00,100.00,'Copy of certificate of recognition or award. Copy of picture of plaque, trophy, medal, or similar items.'),
-('Professional Development','kra4_c_award_national','Criterion C - National Award (Triggers +1 Sub-rank)',0.00,100.00,'Copy of certificate of recognition or award. Copy of picture of plaque, trophy, medal, or similar items.'),
-('Professional Development','kra4_c_award_international','Criterion C - International Award (Triggers +1 Sub-rank)',0.00,100.00,'Copy of certificate of recognition or award. Copy of picture of plaque, trophy, medal, or similar items.'),
+('Professional Development','kra4_c_award_local','Criterion C - Local / Regional Award (City/Municipality/Province/Region)',3.00,100.00,'Copy of certificate of recognition or award. Copy of picture of plaque, trophy, medal, or similar items.'),
+('Professional Development','kra4_c_award_national','Criterion C - National Award',4.00,100.00,'Copy of certificate of recognition or award. Copy of picture of plaque, trophy, medal, or similar items.'),
+('Professional Development','kra4_c_award_international','Criterion C - International Award (CONFIG GAP — set after confirming with CHED-RO)',0.00,100.00,'Copy of certificate of recognition or award. Copy of picture of plaque, trophy, medal, or similar items. CONFIG_INTERNATIONAL_AWARD_PTS: the Points value for the international tier is blank in JC01 s.2026. Set max_points to the confirmed value once known.'),
+('Professional Development','kra4_c_award_prestigious','Criterion C - Prestigious Award (Auto Sub-Rank Trigger only, 0 KRA IV pts)',0.00,100.00,'Copy of certificate, picture of award. Award-giving body mandate/history. Prior winners list. Requires checker confirmation for sub-rank trigger — never auto-approved.'),
 ('Professional Development','kra4_d_academic_president','Criterion D (BONUS, New Faculty) - Academic Service as President',5.00,100.00,'Copy of service record, certificate of employment, notice of appointment or designation for academic experience.'),
 ('Professional Development','kra4_d_academic_vp_dean','Criterion D (BONUS, New Faculty) - Academic Service as VP/Dean/Director',4.00,100.00,'Copy of service record, certificate of employment, notice of appointment or designation for academic experience.'),
 ('Professional Development','kra4_d_academic_dept_head','Criterion D (BONUS, New Faculty) - Academic Service as Dept/Program Head',3.00,100.00,'Copy of service record, certificate of employment, notice of appointment or designation for academic experience.'),
@@ -690,12 +732,12 @@ ON DUPLICATE KEY UPDATE article_id = article_id;
 -- ============================================================
 -- Add orchestrator result columns to applications
 ALTER TABLE applications
-    ADD COLUMN IF NOT EXISTS committee_route       VARCHAR(10)  DEFAULT NULL,
-    ADD COLUMN IF NOT EXISTS evaluation_period_ok  TINYINT(1)   DEFAULT 1,
-    ADD COLUMN IF NOT EXISTS double_counting_flags TEXT         DEFAULT NULL,
-    ADD COLUMN IF NOT EXISTS pending_documentation TEXT         DEFAULT NULL,
-    ADD COLUMN IF NOT EXISTS config_incomplete     TEXT         DEFAULT NULL,
-    ADD COLUMN IF NOT EXISTS orchestrator_flags    TEXT         DEFAULT NULL;
+    ADD COLUMN committee_route       VARCHAR(10)  DEFAULT NULL,
+    ADD COLUMN evaluation_period_ok  TINYINT(1)   DEFAULT 1,
+    ADD COLUMN double_counting_flags TEXT         DEFAULT NULL,
+    ADD COLUMN pending_documentation TEXT         DEFAULT NULL,
+    ADD COLUMN config_incomplete     TEXT         DEFAULT NULL,
+    ADD COLUMN orchestrator_flags    TEXT         DEFAULT NULL;
 
 -- Correct the panel member point values per JC01 s.2026
 UPDATE scoring_criteria SET max_points = 4.00
@@ -717,22 +759,22 @@ UPDATE scoring_criteria
       AND cycle_id IS NULL;
 
 -- ============================================================
--- 15. RUNTIME MIGRATION for anonymous evaluator identity
---     checker_label holds the auto-incremented anonymous name
---     ("Evaluator #1", "Evaluator #2", ...) shown wherever an evaluator's
---     identity appears as text on faculty- or evaluator-facing pages.
+-- 16. RUNTIME MIGRATION for anonymous evaluator identity
+--     evaluator_label holds the auto-incremented anonymous name
+--     ("Evaluator #1", "Evaluator #2", ...) shown wherever an
+--     evaluator's identity appears on faculty-facing pages.
 --     Real name stays visible only in Manage Users (admin view).
 -- ============================================================
 ALTER TABLE users
-    ADD COLUMN IF NOT EXISTS checker_label VARCHAR(50) DEFAULT NULL AFTER role;
+    ADD COLUMN checker_label VARCHAR(50) DEFAULT NULL AFTER role;
 
--- Backfill labels for any pre-existing checker/talisay_checker accounts
+-- Backfill labels for any pre-existing evaluator accounts
 -- created before this column existed.
 SET @cl_rownum = (SELECT COALESCE(MAX(CAST(SUBSTRING(checker_label, 12) AS UNSIGNED)), 0)
                    FROM users WHERE checker_label REGEXP '^Evaluator #[0-9]+$');
 UPDATE users
     SET checker_label = CONCAT('Evaluator #', (@cl_rownum := @cl_rownum + 1))
-    WHERE role IN ('checker','talisay_checker') AND checker_label IS NULL
+    WHERE role = 'evaluator' AND checker_label IS NULL
     ORDER BY user_id ASC;
 
 -- Re-enable foreign key checks after all inserts

@@ -49,7 +49,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     echo "<script>window.location.href='index.php?page=profile';</script>";
                     exit;
                 }
-                $pdo->prepare("UPDATE users SET first_name=?, middle_name=?, last_name=?, suffix=?, employee_id=?, campus_id=?, rank=?, faculty_status=?, applied_first_cycle=?, profile_pic=? WHERE user_id=?")
+                $pdo->prepare("UPDATE users SET first_name=?, middle_name=?, last_name=?, suffix=?, employee_id=?, campus_id=?, `rank`=?, faculty_status=?, applied_first_cycle=?, profile_pic=? WHERE user_id=?")
                     ->execute([$first_name, $middle_name, $last_name, $suffix, $employee_id ?: null, $campus_id ?: null, $rank, $faculty_status, $applied_first_cycle, $pic_path, $uid]);
 
                 if (isset($_POST['edu_level']) && is_array($_POST['edu_level'])) {
@@ -186,48 +186,38 @@ foreach ($education as $ed_row) {
 
 <div class="profile-page">
 
-    <!-- -- Banner -- -->
-    <div style="width:100%;height:160px;border-radius:14px 14px 0 0;overflow:hidden;position:relative;background:linear-gradient(135deg,#0f2952 0%,#1a3a6b 35%,#1e4d8c 65%,#1a5276 100%);">
-        <!-- Subtle pattern overlay -->
-        <div style="position:absolute;inset:0;opacity:0.12;background-image:
-            radial-gradient(circle at 20% 50%,#fff 1px,transparent 1px),
-            radial-gradient(circle at 80% 20%,#fff 1px,transparent 1px),
-            radial-gradient(circle at 60% 80%,#fff 1px,transparent 1px);
-            background-size:40px 40px,60px 60px,50px 50px;"></div>
-        <div style="position:absolute;inset:0;background:linear-gradient(to bottom,rgba(0,0,0,0.0) 0%,rgba(30,77,140,0.45) 100%);"></div>
+    <!-- ── Banner — same hero image as portal ── -->
+    <div style="width:100%;height:150px;position:relative;overflow:hidden;background:#0f2952;">
+        <img src="assets/images/portal_hero.jpg" alt=""
+             style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center 30%;opacity:0.35;">
+        <div style="position:absolute;inset:0;background:linear-gradient(to bottom,rgba(15,41,82,0.3) 0%,rgba(15,41,82,0.75) 100%);"></div>
     </div>
 
-    <!-- -- Avatar + Identity Row -- -->
-    <div style="background:#fff;padding:0 2rem 1.25rem;display:flex;align-items:flex-end;gap:1.5rem;border-bottom:1px solid #e8edf5;flex-wrap:wrap;">
-        <div style="flex-shrink:0;margin-top:-55px;position:relative;z-index:2;">
+    <!-- ── Avatar + Identity Row ── -->
+    <div style="background:#fff;padding:0 2rem 1rem;display:flex;align-items:flex-end;gap:1.5rem;border-bottom:1px solid #e2e8f0;flex-wrap:wrap;">
+        <div style="flex-shrink:0;margin-top:-52px;position:relative;z-index:2;">
             <?php if (!empty($user['profile_pic'])): ?>
-              <img class="profile-avatar" id="profileAvatarImg" src="<?= sanitize($user['profile_pic']) ?>" alt="Profile"
-                  style="width:120px;height:120px;border-radius:50%;object-fit:cover;object-position:center;border:4px solid #fff;box-shadow:0 4px 20px rgba(0,0,0,0.18);display:block;">
+            <img class="profile-avatar" id="profileAvatarImg" src="<?= sanitize($user['profile_pic']) ?>" alt="Profile"
+                 style="width:110px;height:110px;border-radius:50%;object-fit:cover;object-position:center;border:4px solid #fff;box-shadow:0 2px 12px rgba(0,0,0,0.18);display:block;">
             <?php elseif ($_SESSION['role'] === 'admin'): ?>
-              <img src="assets/images/logo.jpg" alt="SUCFRMS Logo"
-                  style="width:120px;height:120px;border-radius:50%;object-fit:cover;object-position:center;border:4px solid #fff;box-shadow:0 4px 20px rgba(0,0,0,0.18);display:block;clip-path:circle(50%);">
+            <img src="assets/images/logo.jpg" alt="SUCFRMS Logo"
+                 style="width:110px;height:110px;border-radius:50%;object-fit:cover;border:4px solid #fff;box-shadow:0 2px 12px rgba(0,0,0,0.18);display:block;">
             <?php else: ?>
-            <div class="profile-avatar-placeholder" id="profileAvatarPlaceholder" style="width:120px;height:120px;border-radius:50%;border:4px solid #fff;background:linear-gradient(135deg,#1a3a6b,#2563b0);display:flex;align-items:center;justify-content:center;box-shadow:0 4px 20px rgba(0,0,0,0.18);">
-                <span style="color:#fff;font-size:2.5rem;font-weight:700;letter-spacing:2px;"><?= htmlspecialchars($initials) ?></span>
+            <div class="profile-avatar-placeholder" id="profileAvatarPlaceholder"
+                 style="width:110px;height:110px;border-radius:50%;border:4px solid #fff;background:#1a3a6b;
+                        display:flex;align-items:center;justify-content:center;box-shadow:0 2px 12px rgba(0,0,0,0.18);">
+                <span style="color:#fff;font-size:2.25rem;font-weight:700;"><?= htmlspecialchars($initials) ?></span>
             </div>
             <?php endif; ?>
 
             <?php if ($_SESSION['role'] !== 'admin'): ?>
-            <!-- Camera overlay -->
             <button type="button" onclick="document.getElementById('avatarFileInput').click()"
                     title="Change profile picture"
-                    style="position:absolute;bottom:6px;right:6px;
-                           width:32px;height:32px;border-radius:50%;
-                           background:#1e4d8c;border:2px solid #fff;
-                           color:#fff;cursor:pointer;
-                           display:flex;align-items:center;justify-content:center;
-                           box-shadow:0 2px 8px rgba(0,0,0,0.25);
-                           transition:background 0.15s;z-index:3;"
-                    onmouseover="this.style.background='#1a3a6b'"
-                    onmouseout="this.style.background='#1e4d8c'">
-                <i class="bi bi-camera-fill" style="font-size:0.78rem;line-height:1;"></i>
+                    style="position:absolute;bottom:5px;right:5px;width:30px;height:30px;border-radius:50%;
+                           background:#1a3a6b;border:2px solid #fff;color:#fff;cursor:pointer;
+                           display:flex;align-items:center;justify-content:center;z-index:3;">
+                <i class="bi bi-camera-fill" style="font-size:0.72rem;"></i>
             </button>
-            <!-- Hidden instant-upload form -->
             <form id="avatarUploadForm" method="POST" action="index.php?page=profile" enctype="multipart/form-data" style="display:none;">
                 <input type="hidden" name="action"      value="update_info">
                 <input type="hidden" name="first_name"  value="<?= htmlspecialchars($user['first_name']  ?? '') ?>">
@@ -239,13 +229,13 @@ foreach ($education as $ed_row) {
                 <input type="hidden" name="rank"        value="<?= htmlspecialchars($user['rank']        ?? '') ?>">
                 <input type="hidden" name="faculty_status" value="<?= htmlspecialchars($user['faculty_status'] ?? 'New Faculty') ?>">
                 <input type="hidden" name="applied_first_cycle" value="<?= !empty($user['applied_first_cycle']) ? '1' : '0' ?>">
-                <input type="file"   id="avatarFileInput" name="profile_pic" accept=".jpg,.jpeg,.png,.gif,.webp"
+                <input type="file" id="avatarFileInput" name="profile_pic" accept=".jpg,.jpeg,.png,.gif,.webp"
                        onchange="previewAndUploadAvatar(this)">
             </form>
             <?php endif; ?>
         </div>
 
-        <div style="flex:1;padding-bottom:0.5rem;padding-top:0.5rem;">
+        <div style="flex:1;padding-bottom:0.75rem;padding-top:0.5rem;">
             <div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:1rem;">
                 <div>
                     <?php
@@ -257,79 +247,74 @@ foreach ($education as $ed_row) {
                         ? trim($display_first . $display_mi . ' ' . $display_last)
                         : htmlspecialchars($user['full_name'] ?? '');
                     ?>
-                    <h2 style="font-size:1.5rem;font-weight:700;color:#0f172a;margin:0 0 0.2rem;letter-spacing:-0.01em;"><?= htmlspecialchars($display_name) ?></h2>
-                    <p style="font-size:0.85rem;color:#64748b;margin:0 0 0.5rem;"><?= htmlspecialchars($user['email']) ?></p>
-                    <div style="display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center;">
-                        <span class="badge <?= $role === 'admin' ? 'bg-warning text-dark' : ($role === 'checker' ? 'bg-success' : 'bg-primary') ?>"><?= ucfirst($_SESSION['role']) ?></span>
+                    <h2 style="font-size:1.4rem;font-weight:700;color:#0f172a;margin:0 0 0.2rem;letter-spacing:-0.01em;"><?= htmlspecialchars($display_name) ?></h2>
+                    <p style="font-size:0.8rem;color:#94a3b8;margin:0 0 0.5rem;"><?= htmlspecialchars($user['email']) ?></p>
+                    <div style="display:flex;flex-wrap:wrap;gap:0.4rem;align-items:center;">
+                        <!-- Role badge — boxy -->
+                        <span style="font-size:0.65rem;font-weight:700;letter-spacing:0.05em;padding:2px 8px;
+                                     background:<?= $role==='admin'?'#1a3a6b':($role==='evaluator'?'#16a34a':'#1e4d8c') ?>;color:#fff;">
+                            <?= strtoupper($_SESSION['role']) ?>
+                        </span>
                         <?php if ($campus_name): ?>
-                        <span style="font-size:0.78rem;color:#475569;background:#f1f5f9;padding:0.2rem 0.6rem;border-radius:20px;border:1px solid #e2e8f0;">
-                            <i class="bi bi-building me-1"></i><?= htmlspecialchars($campus_name) ?>
+                        <span style="font-size:0.72rem;color:#475569;background:#f8fafc;padding:2px 8px;border:1px solid #e2e8f0;display:inline-flex;align-items:center;gap:3px;">
+                            <i class="bi bi-building" style="font-size:0.65rem;"></i><?= htmlspecialchars($campus_name) ?>
                         </span>
                         <?php endif; ?>
                         <?php if (!empty($user['rank'])): ?>
-                        <span style="font-size:0.78rem;color:#475569;background:#f1f5f9;padding:0.2rem 0.6rem;border-radius:20px;border:1px solid #e2e8f0;">
-                            <i class="bi bi-award me-1"></i><?= htmlspecialchars($user['rank']) ?>
+                        <span style="font-size:0.72rem;color:#475569;background:#f8fafc;padding:2px 8px;border:1px solid #e2e8f0;display:inline-flex;align-items:center;gap:3px;">
+                            <i class="bi bi-award" style="font-size:0.65rem;"></i><?= htmlspecialchars($user['rank']) ?>
                         </span>
                         <?php endif; ?>
-                        <span style="font-size:0.74rem;color:#16a34a;background:#f0fdf4;padding:0.18rem 0.55rem;border-radius:20px;border:1px solid #bbf7d0;font-weight:600;">
-                            <i class="bi bi-circle-fill" style="font-size:0.4rem;vertical-align:middle;margin-right:3px;"></i>Active
+                        <span style="font-size:0.65rem;font-weight:700;color:#16a34a;background:#f0fdf4;padding:2px 8px;border:1px solid #bbf7d0;display:inline-flex;align-items:center;gap:3px;">
+                            <i class="bi bi-circle-fill" style="font-size:0.4rem;"></i>Active
                         </span>
                     </div>
                 </div>
-                <!-- Settings icon button -->
+                <!-- Settings button -->
                 <button onclick="document.getElementById('pf-edit-modal').style.display='flex'"
                         title="Account Settings"
-                        style="width:38px;height:38px;border-radius:8px;
-                               background:#f1f5f9;color:#475569;border:1px solid #e2e8f0;
-                               display:flex;align-items:center;justify-content:center;
-                               cursor:pointer;flex-shrink:0;transition:all 0.15s;"
-                        onmouseover="this.style.background='#1e4d8c';this.style.color='#fff';this.style.borderColor='#1e4d8c'"
-                        onmouseout="this.style.background='#f1f5f9';this.style.color='#475569';this.style.borderColor='#e2e8f0'">
-                    <i class="bi bi-gear-fill" style="font-size:1rem;"></i>
+                        style="width:36px;height:36px;background:#f8fafc;color:#475569;border:1px solid #e2e8f0;
+                               display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;"
+                        onmouseover="this.style.background='#1a3a6b';this.style.color='#fff';this.style.borderColor='#1a3a6b'"
+                        onmouseout="this.style.background='#f8fafc';this.style.color='#475569';this.style.borderColor='#e2e8f0'">
+                    <i class="bi bi-gear-fill" style="font-size:0.9rem;"></i>
                 </button>
             </div>
         </div>
     </div>
 
-    <!-- Stats + Latest App -->
-    <div style="background:#fff;padding:1.25rem 2rem 1.5rem;border-bottom:1px solid #e8edf5;">
+    <!-- ── Stats + Latest App ── -->
+    <div style="background:#fff;padding:1rem 2rem;border-bottom:1px solid #e2e8f0;">
+        <div style="display:flex;flex-wrap:wrap;gap:0.65rem;margin-bottom:<?= ($_SESSION['role']==='faculty'&&$latest)?'0.65rem':'0' ?>;">
 
-        <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-bottom:0.85rem;">
-
-            <div style="display:flex;align-items:center;gap:0.6rem;background:#f8fafc;border:1px solid #e8edf5;border-radius:10px;padding:0.65rem 1rem;flex:1;min-width:140px;">
-                <div style="width:34px;height:34px;border-radius:8px;background:#eff6ff;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-                    <i class="bi bi-person-badge" style="color:#1e4d8c;font-size:0.95rem;"></i>
-                </div>
+            <div style="display:flex;align-items:center;gap:0.6rem;background:#f8fafc;border:1px solid #e2e8f0;padding:0.6rem 1rem;flex:1;min-width:140px;">
+                <i class="bi bi-person-badge" style="color:#1a3a6b;font-size:1rem;flex-shrink:0;"></i>
                 <div>
-                    <div style="font-size:0.62rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">Employee ID</div>
-                    <div style="font-size:0.92rem;font-weight:700;color:#0f172a;margin-top:1px;"><?= htmlspecialchars($user['employee_id'] ?? ' - ') ?></div>
+                    <div style="font-size:0.58rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;">Employee ID</div>
+                    <div style="font-size:0.88rem;font-weight:700;color:#0f172a;margin-top:1px;"><?= htmlspecialchars($user['employee_id'] ?? '—') ?></div>
                 </div>
             </div>
 
-            <div style="display:flex;align-items:center;gap:0.6rem;background:#f8fafc;border:1px solid #e8edf5;border-radius:10px;padding:0.65rem 1rem;flex:1;min-width:140px;">
-                <div style="width:34px;height:34px;border-radius:8px;background:#eff6ff;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-                    <i class="bi bi-calendar-check" style="color:#1e4d8c;font-size:0.95rem;"></i>
-                </div>
+            <div style="display:flex;align-items:center;gap:0.6rem;background:#f8fafc;border:1px solid #e2e8f0;padding:0.6rem 1rem;flex:1;min-width:140px;">
+                <i class="bi bi-calendar3" style="color:#1a3a6b;font-size:1rem;flex-shrink:0;"></i>
                 <div>
-                    <div style="font-size:0.62rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">Member Since</div>
-                    <div style="font-size:0.92rem;font-weight:700;color:#0f172a;margin-top:1px;"><?= $since ?></div>
+                    <div style="font-size:0.58rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;">Member Since</div>
+                    <div style="font-size:0.88rem;font-weight:700;color:#0f172a;margin-top:1px;"><?= $since ?></div>
                 </div>
             </div>
 
             <?php if ($_SESSION['role'] === 'faculty'): ?>
-            <div style="display:flex;align-items:center;gap:0.6rem;background:#f8fafc;border:1px solid #e8edf5;border-radius:10px;padding:0.65rem 1rem;flex:1;min-width:140px;">
-                <div style="width:34px;height:34px;border-radius:8px;background:<?= ($latest && $latest['weighted_score'] >= 41) ? '#f0fdf4' : '#eff6ff' ?>;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-                    <i class="bi bi-bar-chart-fill" style="color:<?= ($latest && $latest['weighted_score'] >= 41) ? '#16a34a' : '#1e4d8c' ?>;font-size:0.95rem;"></i>
-                </div>
+            <div style="display:flex;align-items:center;gap:0.6rem;background:#f8fafc;border:1px solid #e2e8f0;padding:0.6rem 1rem;flex:1;min-width:140px;">
+                <i class="bi bi-bar-chart-fill" style="color:<?= ($latest&&(float)$latest['weighted_score']>=41)?'#16a34a':'#1a3a6b' ?>;font-size:1rem;flex-shrink:0;"></i>
                 <div>
-                    <div style="font-size:0.62rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">Weighted Score</div>
-                    <?php if ($latest && $latest['weighted_score'] > 0): ?>
-                    <div style="font-size:1.1rem;font-weight:800;color:#1a3a6b;margin-top:1px;line-height:1.1;">
+                    <div style="font-size:0.58rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;">Weighted Score</div>
+                    <?php if ($latest && (float)$latest['weighted_score'] > 0): ?>
+                    <div style="font-size:1rem;font-weight:800;color:#1a3a6b;margin-top:1px;line-height:1.1;">
                         <?= number_format($latest['weighted_score'], 2) ?>
-                        <span style="font-size:0.62rem;color:#94a3b8;font-weight:500;"> /100</span>
+                        <span style="font-size:0.58rem;color:#94a3b8;font-weight:500;">/100</span>
                     </div>
                     <?php else: ?>
-                    <div style="font-size:0.82rem;color:#cbd5e1;font-weight:600;margin-top:1px;">No data yet</div>
+                    <div style="font-size:0.8rem;color:#cbd5e1;font-weight:600;margin-top:1px;">No data yet</div>
                     <?php endif; ?>
                 </div>
             </div>
@@ -339,43 +324,39 @@ foreach ($education as $ed_row) {
 
         <?php if ($_SESSION['role'] === 'faculty' && $latest): ?>
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.75rem;
-                    background:#f8fafc;border:1px solid #e8edf5;border-left:3px solid #1e4d8c;
-                    border-radius:10px;padding:0.7rem 1rem;">
-            <div style="display:flex;align-items:center;gap:0.65rem;">
-                <i class="bi bi-file-earmark-text" style="color:#1e4d8c;font-size:1rem;flex-shrink:0;"></i>
+                    background:#f8fafc;border:1px solid #e2e8f0;border-left:3px solid #1a3a6b;padding:0.65rem 1rem;">
+            <div style="display:flex;align-items:center;gap:0.6rem;">
+                <i class="bi bi-file-earmark-text" style="color:#1a3a6b;font-size:0.95rem;flex-shrink:0;"></i>
                 <div>
-                    <div style="font-size:0.62rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">Latest Application</div>
-                    <div style="font-size:0.85rem;font-weight:600;color:#1e293b;margin-top:1px;"><?= htmlspecialchars($latest['cycle_name'] ?? ' - ') ?></div>
+                    <div style="font-size:0.58rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;">Latest Application</div>
+                    <div style="font-size:0.82rem;font-weight:600;color:#1e293b;margin-top:1px;"><?= htmlspecialchars($latest['cycle_name'] ?? '—') ?></div>
                 </div>
             </div>
-            <div><?= statusBadge($latest['status']) ?></div>
+            <?= statusBadge($latest['status']) ?>
         </div>
         <?php endif; ?>
-
     </div>
 
     <?php if ($_SESSION['role'] === 'faculty'): ?>
-    <div style="background:#fff;padding:1.25rem 2rem 1.5rem;border-bottom:1px solid #e8edf5;">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-bottom:0.9rem;">
-            <div>
-                <div style="font-weight:700;color:#1a3a6b;font-size:0.95rem;">Faculty Details</div>
-                <div style="font-size:0.72rem;color:#94a3b8;">Education and employment information from your profile entry</div>
-            </div>
+    <div style="background:#fff;padding:1.25rem 2rem 1.5rem;border-bottom:1px solid #e2e8f0;">
+        <div style="margin-bottom:0.85rem;">
+            <div style="font-weight:700;color:#0f172a;font-size:0.9rem;">Faculty Details</div>
+            <div style="font-size:0.7rem;color:#94a3b8;margin-top:1px;">Education and employment information from your profile entry</div>
         </div>
 
-        <div style="display:flex;gap:0.5rem;margin-bottom:1rem;overflow-x:auto;">
+        <div style="display:flex;gap:0.4rem;margin-bottom:1rem;">
             <button type="button" class="pf-detail-tab active" data-tab="edu" onclick="pfDetailTab('edu')"
-                    style="border:1px solid #1a3a6b;background:#1a3a6b;color:#fff;border-radius:8px;padding:0.45rem 0.85rem;font-size:0.78rem;font-weight:700;white-space:nowrap;">
+                    style="border:1px solid #1a3a6b;background:#1a3a6b;color:#fff;padding:0.38rem 0.85rem;font-size:0.75rem;font-weight:700;cursor:pointer;white-space:nowrap;">
                 Educational Attainment
             </button>
             <button type="button" class="pf-detail-tab" data-tab="emp" onclick="pfDetailTab('emp')"
-                    style="border:1px solid #e2e8f0;background:#f8fafc;color:#475569;border-radius:8px;padding:0.45rem 0.85rem;font-size:0.78rem;font-weight:700;white-space:nowrap;">
+                    style="border:1px solid #e2e8f0;background:#f8fafc;color:#475569;padding:0.38rem 0.85rem;font-size:0.75rem;font-weight:700;cursor:pointer;white-space:nowrap;">
                 Employment History
             </button>
         </div>
 
         <div id="pf-detail-edu">
-            <div style="background:#f8fafc;border:1px solid #e8edf5;border-radius:10px;padding:1rem;">
+            <div style="background:#f8fafc;border:1px solid #e2e8f0;padding:0.85rem 1rem;">
                 <?php foreach ($education_levels as $level_key => $level_label):
                     $ed = $education_by_level[$level_key] ?? [];
                 ?>
@@ -398,12 +379,12 @@ foreach ($education as $ed_row) {
         <div id="pf-detail-emp" style="display:none;">
             <div class="pf-detail-grid">
                 <?php foreach ([['CURRENT EMPLOYMENT',$employment['current'] ?? []],['PREVIOUS EMPLOYMENT',$employment['previous'] ?? []]] as [$heading, $row]): ?>
-                <div style="background:#f8fafc;border:1px solid #e8edf5;border-radius:10px;padding:1rem;">
-                    <div style="font-size:0.68rem;font-weight:800;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;border-bottom:1px solid #e8edf5;padding-bottom:0.5rem;margin-bottom:0.2rem;"><?= $heading ?></div>
+                <div style="background:#f8fafc;border:1px solid #e2e8f0;padding:0.85rem 1rem;">
+                    <div style="font-size:0.62rem;font-weight:800;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;border-bottom:1px solid #e2e8f0;padding-bottom:0.45rem;margin-bottom:0.2rem;"><?= $heading ?></div>
                     <?php
                     $items = $heading === 'CURRENT EMPLOYMENT'
-                        ? [['Faculty Rank',$row['rank'] ?? ''],['Mode of Appointment',$row['mode_of_appointment'] ?? ''],['Date of Appointment',$pfDate($row['date_of_appointment'] ?? '')],['SUC',$row['suc'] ?? ''],['Campus',$row['campus'] ?? ''],['Address',$row['address'] ?? '']]
-                        : [['Previous Rank',$row['rank'] ?? ''],['Mode of Appointment',$row['mode_of_appointment'] ?? ''],['Date of Appointment',$pfDate($row['date_of_appointment'] ?? '')],['Employment Sector',$row['employment_sector'] ?? ''],['SUC',$row['suc'] ?? ''],['Campus',$row['campus'] ?? ''],['Address',$row['address'] ?? '']];
+                        ? [['Faculty Rank',$row['rank']??''],['Mode of Appointment',$row['mode_of_appointment']??''],['Date of Appointment',$pfDate($row['date_of_appointment']??'')],['SUC',$row['suc']??''],['Campus',$row['campus']??''],['Address',$row['address']??'']]
+                        : [['Previous Rank',$row['rank']??''],['Mode of Appointment',$row['mode_of_appointment']??''],['Date of Appointment',$pfDate($row['date_of_appointment']??'')],['Employment Sector',$row['employment_sector']??''],['SUC',$row['suc']??''],['Campus',$row['campus']??''],['Address',$row['address']??'']];
                     foreach ($items as [$label, $value]):
                     ?>
                     <div class="pf-detail-row"><span><?= $label ?></span><strong><?= $pfVal($value) ?></strong></div>

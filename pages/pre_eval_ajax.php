@@ -15,14 +15,8 @@ require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/functions.php';
 
 // -- Load official KRA scorer modules --------------------------
-$_scoring_dir = __DIR__ . '/../includes/scoring/';
-foreach (['kra1_scorer.php','kra2_scorer.php','kra3_scorer.php','kra4_scorer.php'] as $_sf) {
-    if (file_exists($_scoring_dir . $_sf)) require_once $_scoring_dir . $_sf;
-}
-// Make PDO available to KRA1Scorer for CONFIG_MENTORSHIP_POINTS lookup
-if (class_exists('\Scoring\KRA1Scorer')) {
-    \Scoring\KRA1Scorer::setPdo($pdo);
-}
+// -- Load shared pre-eval scoring engine (two-pass Orchestrator-aligned) ------
+require_once __DIR__ . '/../includes/pre_eval_scoring.php';
 
 if (!isLoggedIn() || !isFaculty()) {
     http_response_code(403);
@@ -96,200 +90,7 @@ function peComputeScore(string $cat, string $remarks): float {
     }
 }
 
-/**
- * Aggregate all pre-eval entries for a user through the official scorer
- * modules so that sub-caps (KRA I: 60/30/10; KRA II: sum-then-cap;
- * KRA III/IV: A+B+C+D capped at 100) are applied identically to the
- * live reclassification pipeline.
- *
- * Also detects auto sub-rank triggers (doctorate, national/intl award)
- * using the same rules as AutoSubrank::compute() but without needing a
- * full orchestrator DB run.
- *
- * Returns the same shape as computeWeightedScore() plus:
- *   kra1_detail, kra2_detail, kra3_detail, kra4_detail   -  per-criterion breakdowns
- *   has_doctorate, has_national_award                    -  trigger flags
- *   auto_subrank                                         -  bump detection result
- *   pending_documentation, config_incomplete             -  scorer flags
- */
-function peAggregateScores(\PDO $pdo, int $uid, string $rank): array
-{
-    // Load all entries grouped by category, shaped as scorer expects
-    $stmt = $pdo->prepare("
-        SELECT pe.entry_id AS submission_id,
-               pe.kra_category,
-               pe.remarks,
-               pe.computed_points,
-               GROUP_CONCAT(pf.original_filename ORDER BY pf.file_id SEPARATOR '|||') AS evidence_names
-        FROM pre_eval_entries pe
-        LEFT JOIN pre_eval_files pf ON pf.entry_id = pe.entry_id
-        WHERE pe.user_id = ?
-        GROUP BY pe.entry_id
-        ORDER BY pe.created_at ASC
-    ");
-    $stmt->execute([$uid]);
-    $all = $stmt->fetchAll(\PDO::FETCH_ASSOC);
-
-    $by_cat = [];
-    foreach ($all as $row) {
-        $by_cat[$row['kra_category']][] = $row;
-    }
-
-    // -- Run official scorers ------------------------------------
-    $kra1 = class_exists('\Scoring\KRA1Scorer')
-        ? \Scoring\KRA1Scorer::score($by_cat['Instruction'] ?? [])
-        : ['subtotal'=>0,'criterion_a'=>0,'criterion_b'=>0,'criterion_c'=>0,'cap'=>100,'pending_documentation'=>[],'config_incomplete'=>[]];
-
-    $kra2 = class_exists('\Scoring\KRA2Scorer')
-        ? \Scoring\KRA2Scorer::score($by_cat['Research'] ?? [])
-        : ['subtotal'=>0,'criterion_a_raw'=>0,'criterion_b_raw'=>0,'criterion_c_raw'=>0,'sum_before_cap'=>0,'cap'=>100,'pending_documentation'=>[],'config_incomplete'=>[]];
-
-    $kra3 = class_exists('\Scoring\KRA3Scorer')
-        ? \Scoring\KRA3Scorer::score($by_cat['Extension'] ?? [])
-        : ['subtotal'=>0,'criterion_a'=>0,'criterion_b'=>0,'criterion_c'=>0,'criterion_d_bonus'=>0,'cap'=>100,'pending_documentation'=>[],'config_incomplete'=>[]];
-
-    $kra4 = class_exists('\Scoring\KRA4Scorer')
-        ? \Scoring\KRA4Scorer::score($by_cat['Professional Development'] ?? [])
-        : ['subtotal'=>0,'criterion_a'=>0,'criterion_b'=>0,'criterion_c'=>0,'criterion_d_bonus'=>0,'cap'=>100,'has_doctorate'=>false,'has_national_award'=>false,'pending_documentation'=>[],'config_incomplete'=>[]];
-
-    // -- Auto sub-rank trigger detection ------------------------
-    // Mirrors AutoSubrank::compute() logic without the DB-heavy first-doctorate
-    // historical check (pre-eval cannot know prior approved applications).
-    // We give benefit of the doubt  -  if a doctorate is present, treat as first.
-    $has_doctorate    = $kra4['has_doctorate']     ?? false;
-    $has_nat_award    = $kra4['has_national_award'] ?? false;
-
-    $doctorate_eligible_ranks = [
-        'Instructor I','Instructor II','Instructor III',
-        'Assistant Professor I','Assistant Professor II',
-        'Assistant Professor III','Assistant Professor IV',
-        'Associate Professor I','Associate Professor II',
-        'Associate Professor III','Associate Professor IV',
-    ];
-    $rank_eligible   = in_array($rank, $doctorate_eligible_ranks);
-    $auto_bump       = 0;
-    $auto_triggers   = [];
-
-    if ($has_doctorate && $rank_eligible) {
-        $auto_bump++;
-        $auto_triggers[] = 'doctorate';
-    }
-    // Award bonus only applies if weighted score already reaches increment > 0
-    // We compute a provisional weighted score first to check the threshold.
-    $weights_prov    = getKraWeights($rank);
-    $ws_prov         = round(
-        ($kra1['subtotal'] * $weights_prov['Instruction']) +
-        ($kra2['subtotal'] * $weights_prov['Research']) +
-        ($kra3['subtotal'] * $weights_prov['Extension']) +
-        ($kra4['subtotal'] * $weights_prov['Professional Development']),
-        2
-    );
-    if ($has_nat_award && $ws_prov >= 41) {
-        $auto_bump++;
-        $auto_triggers[] = 'award';
-    }
-
-    // -- Apply auto bump to base rank, then recompute weighted score -
-    $bumped_rank   = $rank;
-    if ($auto_bump > 0) {
-        $all_ranks   = facultyRanks();
-        $cur_idx     = array_search($rank, $all_ranks);
-        if ($cur_idx !== false) {
-            $bumped_idx  = min($cur_idx + $auto_bump, count($all_ranks) - 1);
-            $bumped_rank = $all_ranks[$bumped_idx];
-        }
-    }
-
-    $weights      = getKraWeights($bumped_rank);
-    $weighted     = round(
-        ($kra1['subtotal'] * $weights['Instruction']) +
-        ($kra2['subtotal'] * $weights['Research']) +
-        ($kra3['subtotal'] * $weights['Extension']) +
-        ($kra4['subtotal'] * $weights['Professional Development']),
-        2
-    );
-    $sub_rank     = getSubRankIncrement($weighted);
-
-    // -- Potential rank ------------------------------------------
-    $all_ranks    = facultyRanks();
-    $bumped_idx   = array_search($bumped_rank, $all_ranks);
-    $target_rank  = ($bumped_idx !== false && $sub_rank > 0)
-        ? $all_ranks[min($bumped_idx + $sub_rank, count($all_ranks) - 1)]
-        : ($sub_rank === 0 ? $rank : $bumped_rank);
-
-    // -- Merge pending/config flags ------------------------------
-    $pending  = array_merge(
-        $kra1['pending_documentation'],
-        $kra2['pending_documentation'],
-        $kra3['pending_documentation'],
-        $kra4['pending_documentation']
-    );
-    $config_i = array_merge(
-        $kra1['config_incomplete'],
-        $kra2['config_incomplete'],
-        $kra3['config_incomplete'],
-        $kra4['config_incomplete']
-    );
-
-    return [
-        // Top-level (same shape as computeWeightedScore + computePotentialRank)
-        'kra1'               => $kra1['subtotal'],
-        'kra2'               => $kra2['subtotal'],
-        'kra3'               => $kra3['subtotal'],
-        'kra4'               => $kra4['subtotal'],
-        'weighted_score'     => $weighted,
-        'sub_rank_increment' => $sub_rank,
-        'weights'            => $weights,
-        'pot_rank'           => $target_rank,
-        // Per-criterion breakdowns
-        'kra1_detail' => [
-            'criterion_a' => $kra1['criterion_a'],
-            'criterion_b' => $kra1['criterion_b'],
-            'criterion_c' => $kra1['criterion_c'],
-            'subtotal'    => $kra1['subtotal'],
-            'cap'         => $kra1['cap'],
-        ],
-        'kra2_detail' => [
-            'criterion_a_raw'  => $kra2['criterion_a_raw'],
-            'criterion_b_raw'  => $kra2['criterion_b_raw'],
-            'criterion_c_raw'  => $kra2['criterion_c_raw'],
-            'sum_before_cap'   => $kra2['sum_before_cap'],
-            'subtotal'         => $kra2['subtotal'],
-            'cap'              => $kra2['cap'],
-        ],
-        'kra3_detail' => [
-            'criterion_a'     => $kra3['criterion_a'],
-            'criterion_b'     => $kra3['criterion_b'],
-            'criterion_c'     => $kra3['criterion_c'],
-            'criterion_d_bonus'=> $kra3['criterion_d_bonus'],
-            'subtotal'        => $kra3['subtotal'],
-            'cap'             => $kra3['cap'],
-        ],
-        'kra4_detail' => [
-            'criterion_a'     => $kra4['criterion_a'],
-            'criterion_b'     => $kra4['criterion_b'],
-            'criterion_c'     => $kra4['criterion_c'],
-            'criterion_d_bonus'=> $kra4['criterion_d_bonus'],
-            'subtotal'        => $kra4['subtotal'],
-            'cap'             => $kra4['cap'],
-        ],
-        // Auto sub-rank
-        'has_doctorate'      => $has_doctorate,
-        'has_national_award' => $has_nat_award,
-        'auto_subrank' => [
-            'applied'           => $auto_bump > 0,
-            'trigger'           => implode('|', $auto_triggers) ?: 'none',
-            'bonus_increment'   => $auto_bump,
-            'updated_base_rank' => $bumped_rank,
-            'note'              => $auto_bump > 0
-                ? 'Pre-eval auto sub-rank is indicative. First-doctorate historical check requires a full orchestrator run.'
-                : '',
-        ],
-        // Flags
-        'pending_documentation' => $pending,
-        'config_incomplete'     => $config_i,
-    ];
-}
+// peAggregateScores() is defined in includes/pre_eval_scoring.php (loaded above).
 
 // -- Helper: upload a file --------------------------------------
 function peUploadFile(array $file, string $cat, int $kra_num): array|false {
@@ -313,7 +114,7 @@ $valid_cats = ['Instruction','Research','Extension','Professional Development'];
 // -- Eligibility gate (server-side enforcement) ----------------
 // Presence check only  -  authenticity verified by human checkers.
 function checkPreEvalEligibility(\PDO $pdo, int $uid): array {
-    $fac = $pdo->prepare("SELECT rank FROM users WHERE user_id=?");
+    $fac = $pdo->prepare("SELECT `rank` FROM users WHERE user_id=?");
     $fac->execute([$uid]);
     $rank = (string)($fac->fetchColumn() ?? '');
     $all_ranks = [
@@ -393,7 +194,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && $action === 'get_files') {
 
 // -- GET: score summary -----------------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && $action === 'get_score') {
-    $rankRow = $pdo->prepare("SELECT rank FROM users WHERE user_id=?");
+    $rankRow = $pdo->prepare("SELECT `rank` FROM users WHERE user_id=?");
     $rankRow->execute([$uid]);
     $rank = (string)($rankRow->fetchColumn() ?? '');
 
@@ -618,7 +419,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'delete_file') {
     exit;
 }
 
-// -- POST: upload to repository ---------------------------------
+// -- POST: rename file -----------------------------------------
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'rename_file') {
+    $fid      = intval($_POST['file_id'] ?? 0);
+    $new_name = trim($_POST['new_name'] ?? '');
+    if (!$fid || $new_name === '') { echo json_encode(['ok'=>false,'error'=>'Missing parameters']); exit; }
+    // Strip any directory components — filename only
+    $new_name = basename($new_name);
+    if (strlen($new_name) > 255) { echo json_encode(['ok'=>false,'error'=>'Name too long']); exit; }
+    $row = $pdo->prepare("SELECT file_id FROM pre_eval_files WHERE file_id=? AND user_id=?");
+    $row->execute([$fid, $uid]);
+    if (!$row->fetch()) { echo json_encode(['ok'=>false,'error'=>'Not found']); exit; }
+    $pdo->prepare("UPDATE pre_eval_files SET original_filename=? WHERE file_id=? AND user_id=?")
+        ->execute([$new_name, $fid, $uid]);
+    logAudit($pdo, $uid, 'Pre-Eval File Renamed', "Evidence file #{$fid} renamed to '{$new_name}'.");
+    echo json_encode(['ok'=>true,'original_filename'=>$new_name]);
+    exit;
+}
+
+// -- POST: move file to different KRA --------------------------
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'move_file') {
+    $fid      = intval($_POST['file_id'] ?? 0);
+    $new_cat  = trim($_POST['new_cat'] ?? '');
+    if (!$fid || !in_array($new_cat, $valid_cats, true)) { echo json_encode(['ok'=>false,'error'=>'Invalid parameters']); exit; }
+    $row = $pdo->prepare("SELECT file_id, kra_category FROM pre_eval_files WHERE file_id=? AND user_id=?");
+    $row->execute([$fid, $uid]);
+    $row = $row->fetch();
+    if (!$row) { echo json_encode(['ok'=>false,'error'=>'Not found']); exit; }
+    if ($row['kra_category'] === $new_cat) { echo json_encode(['ok'=>true]); exit; }
+    $pdo->prepare("UPDATE pre_eval_files SET kra_category=? WHERE file_id=? AND user_id=?")
+        ->execute([$new_cat, $fid, $uid]);
+    logAudit($pdo, $uid, 'Pre-Eval File Moved', "Evidence file #{$fid} moved from '{$row['kra_category']}' to '{$new_cat}'.");
+    echo json_encode(['ok'=>true,'new_cat'=>$new_cat]);
+    exit;
+}
+
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'upload_repo') {
     $cat  = $_POST['cat']  ?? '';
     $desc = trim($_POST['description'] ?? '');

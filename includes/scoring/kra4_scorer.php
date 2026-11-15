@@ -26,6 +26,32 @@ class KRA4Scorer
     const CAP_C = 20;
     const CAP_D = 20;
 
+    private static ?\PDO $pdo_ref = null;
+    private static ?int $criteria_cycle_id = null;
+    private static ?string $criteria_position_rank = null;
+    private static array $criteria_max_cache = [];
+    private static ?float $doctorate_points_override = null;
+
+    public static function setPdo(\PDO $pdo): void
+    {
+        self::$pdo_ref = $pdo;
+        self::$criteria_max_cache = [];
+        self::$intl_award_pts_loaded = false;
+    }
+
+    public static function setCriteriaContext(?int $cycleId, ?string $positionRank): void
+    {
+        self::$criteria_cycle_id = $cycleId ?: null;
+        self::$criteria_position_rank = $positionRank !== null && trim($positionRank) !== '' ? trim($positionRank) : null;
+        self::$criteria_max_cache = [];
+        self::$intl_award_pts_loaded = false;
+    }
+
+    public static function setDoctoratePointsOverride(?float $points): void
+    {
+        self::$doctorate_points_override = $points;
+    }
+
     private static function professionalOrgYears($raw): float
     {
         $years = max(1.0, (float)($raw ?? 1));
@@ -63,12 +89,22 @@ class KRA4Scorer
             $subVal   = (float)($parts[2] ?? 0);
             $pts      = 0.0;
 
+            if ($critType === 'CUSTOM') {
+                $letter = strtoupper($parts[1] ?? '');
+                $pts = max(0.0, (float)($parts[4] ?? 0));
+                if ($letter === 'A') $crit_a += $pts;
+                elseif ($letter === 'B') $crit_b_edu += $pts;
+                elseif ($letter === 'C') $crit_c += $pts;
+                else $crit_d += $pts;
+                continue;
+            }
+
             switch ($critType) {
                 // -- Criterion A: Professional Organizations ----------
                 case 'A-org':
                     // 5 pts per year of current active membership
                     $years = self::professionalOrgYears($parts[2] ?? 1);
-                    $pts   = min(self::CAP_A, 5.0 * $years);
+                    $pts   = min(self::CAP_A, self::configuredMax('kra4_a_org_membership', 5.0) * $years);
                     if (empty($s['evidence_names'])) {
                         $pending[] = "KRA IV Crit A: '{$desc}'  -  missing membership certificate/ID and engagement certification from org head.";
                     }
@@ -77,14 +113,16 @@ class KRA4Scorer
 
                 // -- Criterion B: Educational Qualifications ----------
                 case 'B-degree':
-                    $pts = match(true) {
-                        $subVal >= 20  => 20.0,  // additional master's
-                        $subVal >= 10  => 10.0,  // post-master's / post-doc diploma
-                        default        => 0.0,
-                    };
-                    // Doctorate entries (40pts) are now handled by Auto Sub Rank tab
-                    // They either give +1 sub-rank OR 40 points, never both
-                    if ($subVal >= 40.0) $has_doctorate = true;
+                    if ($subVal >= 40.0) {
+                        $pts = 0.0;
+                        $has_doctorate = true;
+                    } elseif ($subVal >= 20.0) {
+                        $pts = self::configuredMax('kra4_b_additional_masters', 20.0);
+                    } elseif ($subVal >= 10.0) {
+                        $pts = self::configuredMax('kra4_b_postmaster_cert', 10.0);
+                    } else {
+                        $pts = 0.0;
+                    }
                     
                     if (empty($s['evidence_names'])) {
                         $pending[] = "KRA IV Crit B: Educational qualification '{$desc}'  -  missing transcript of records / diploma / certificate.";
@@ -94,12 +132,14 @@ class KRA4Scorer
 
                 // -- Criterion B: Training/Conference/Workshop --------
                 case 'B-training':
-                    $pts_each = str_contains(strtolower($desc), 'intl') || $subVal >= 2 ? 2.0 : 1.0;
+                    $pts_each = str_contains(strtolower($desc), 'intl') || $subVal >= 2
+                        ? self::configuredMax('kra4_b_training_intl', 2.0)
+                        : self::configuredMax('kra4_b_training_local', 1.0);
                     // International capacity-building in PH: must have >=3 countries represented
                     if ($pts_each === 2.0 && str_contains(strtolower($desc), 'philippines')) {
                         if (empty($parts[3]) || (int)$parts[3] < 3) {
                             $config_i[] = "KRA IV Crit B: '{$desc}'  -  international activity in PH requires >=3 countries represented among speakers/participants to qualify at international rate.";
-                            $pts_each = 1.0; // downgrade to local rate
+                            $pts_each = self::configuredMax('kra4_b_training_local', 1.0); // downgrade to local rate
                         }
                     }
                     // Hours check: min 6 hours (8 if virtual)
@@ -124,14 +164,14 @@ class KRA4Scorer
 
                 // -- Criterion B: Paper Presentations ----------------
                 case 'B-paper':
-                    $pts_each = $subVal >= 5 ? 5.0 : 3.0;
+                    $pts_each = $subVal >= 5 ? self::configuredMax('kra4_b_paper_intl', 5.0) : self::configuredMax('kra4_b_paper_local', 3.0);
                     $is_intl  = ($pts_each === 5.0);
                     // International: requires 3 countries among speakers/participants
                     if ($is_intl) {
                         $countries = (int)($parts[3] ?? 0);
                         if ($countries < 3) {
                             $config_i[] = "KRA IV Crit B: Paper '{$desc}'  -  international rate requires >=3 countries represented among speakers/participants. Downgrading to local rate.";
-                            $pts_each = 3.0;
+                            $pts_each = self::configuredMax('kra4_b_paper_local', 3.0);
                         }
                     }
                     if ($paper_total + $pts_each <= self::CAP_B_PAPER) {
@@ -148,25 +188,60 @@ class KRA4Scorer
 
                 // -- Criterion C: Awards & Recognition ---------------
                 case 'C-award':
-                    // Only 3 confirmed tiers per JC01 evidence table
-                    $pts = match(true) {
-                        $subVal >= 4  => 4.0,   // national (and international  -  see below)
-                        $subVal >= 3  => 3.0,   // local/regional
-                        $subVal >= 2  => 2.0,   // institutional
-                        default       => 0.0,
-                    };
-                    // International award: no distinct tier in source table.
-                    // Per JC01 gap note: default to national rate (4) and flag explicitly.
+                    /*
+                     * JC01 s.2026 confirmed tiers (KRA IV Crit C evidence table):
+                     *   subVal 2  = Institutional                        → 2 pts  (CONFIRMED)
+                     *   subVal 3  = Local / Regional (City/Prov/Region)  → 3 pts  (CONFIRMED)
+                     *   subVal 4  = National                             → 4 pts  (CONFIRMED)
+                     *   subVal 5  = International                        → CONFIG_INCOMPLETE (GAP — blank in circular)
+                     *   subVal 0  = Prestigious Award (Ramon Magsaysay-tier)
+                     *              → 0 KRA IV pts; triggers Auto Sub-Rank review only (JC01 Art. IV Trigger 2)
+                     *              → requires human checker confirmation; never auto-approved
+                     *
+                     * NOTE: "Local and Regional" in JC01 = 3 pts (same tier).
+                     * Only the HIGHEST award per event/competition is counted — do not sum placements.
+                     */
                     if ($subVal === 0.0) {
-                        // 0-pts award = national/international -> triggers auto sub-rank only
+                        // Prestigious award → sub-rank trigger only; no KRA IV points.
                         $has_nat_award = true;
-                        $config_i[] = "KRA IV Crit C: '{$desc}'  -  national/international award triggers +1 automatic sub-rank (JC01 Art. IV). No KRA IV points awarded here; sub-rank handled by Auto Sub-Rank module.";
+                        $config_i[] = "KRA IV Crit C: '{$desc}'  -  prestigious national/international award flagged for Auto Sub-Rank review (JC01 Art. IV Trigger 2). No KRA IV points awarded here; sub-rank requires human checker confirmation.";
                         break;
                     }
-                    // International award stored at national rate (4) with explicit flag
-                    if (str_contains(strtolower($desc), 'international') && $pts === 4.0) {
-                        $config_i[] = "KRA IV Crit C: '{$desc}'  -  international award defaulted to national rate (4 pts) per JC01 known gap (no distinct international tier in confirmed points table). Flag for committee review.";
+
+                    if ($subVal >= 5) {
+                        /*
+                         * International award — CONFIRMED SOURCE GAP (JC01 s.2026, KRA IV Crit C table).
+                         * The Points column for the International tier is blank in the official circular.
+                         * CONFIG_INTERNATIONAL_AWARD_PTS must be set by an administrator before this
+                         * entry can score anything. Until configured, returns PENDING_DOCUMENTATION.
+                         * Confirm value with CHED-RO or adviser before finalising.
+                         */
+                        $intl_pts = self::getInternationalAwardPoints();
+                        if ($intl_pts === null) {
+                            $pending[] = "KRA IV Crit C - International Award: '{$desc}'  -  PENDING_DOCUMENTATION. "
+                                       . "CONFIG_INTERNATIONAL_AWARD_PTS has not been set by a system administrator. "
+                                       . "The Points value for International awards is blank in JC01 s.2026 (confirmed source gap). "
+                                       . "This entry cannot be scored until the value is confirmed with CHED-RO or your adviser and entered in Scoring Criteria configuration.";
+                            // No points added
+                        } else {
+                            $pts = (float)$intl_pts;
+                            $config_i[] = "KRA IV Crit C: International Award '{$desc}' scored at {$pts} pt(s) using administrator-configured CONFIG_INTERNATIONAL_AWARD_PTS. "
+                                        . "Note: this value was not sourced from the JC01 circular (Points column is blank)  -  confirm with CHED-RO before finalising.";
+                            // Only highest per event; no duplicate check here — checker responsibility
+                            if (empty($s['evidence_names'])) {
+                                $pending[] = "KRA IV Crit C: '{$desc}'  -  missing award certificate and picture of plaque/trophy/medal.";
+                            }
+                            $crit_c += $pts;
+                        }
+                        break;
                     }
+
+                    $pts = match(true) {
+                        $subVal >= 4  => self::configuredMax('kra4_c_award_national', 4.0),
+                        $subVal >= 3  => self::configuredMax('kra4_c_award_local', 3.0),
+                        $subVal >= 2  => self::configuredMax('kra4_c_award_institutional', 2.0),
+                        default       => 0.0,
+                    };
                     // Only the HIGHEST award per event/competition  -  do not sum multiple placements
                     if (empty($s['evidence_names'])) {
                         $pending[] = "KRA IV Crit C: '{$desc}'  -  missing award certificate and picture of plaque/trophy/medal.";
@@ -178,10 +253,10 @@ class KRA4Scorer
                 case 'D-prior-academic':
                     $years = max(1, (float)($parts[2] ?? 1));
                     $role  = strtolower($parts[1] ?? '');
-                    if (str_contains($role, 'president'))          $pts = 5.0 * $years;
-                    elseif (str_contains($role, 'vp') || str_contains($role, 'vice') || str_contains($role, 'dean') || str_contains($role, 'director')) $pts = 4.0 * $years;
-                    elseif (str_contains($role, 'dept') || str_contains($role, 'head') || str_contains($role, 'program')) $pts = 3.0 * $years;
-                    else $pts = 2.0 * $years;  // faculty member
+                    if (str_contains($role, 'president'))          $pts = self::configuredMax('kra4_d_academic_president', 5.0) * $years;
+                    elseif (str_contains($role, 'vp') || str_contains($role, 'vice') || str_contains($role, 'dean') || str_contains($role, 'director')) $pts = self::configuredMax('kra4_d_academic_vp_dean', 4.0) * $years;
+                    elseif (str_contains($role, 'dept') || str_contains($role, 'head') || str_contains($role, 'program')) $pts = self::configuredMax('kra4_d_academic_dept_head', 3.0) * $years;
+                    else $pts = self::configuredMax('kra4_d_academic_faculty', 2.0) * $years;
                     if (empty($s['evidence_names'])) $pending[] = "KRA IV Crit D: '{$desc}'  -  missing service record / certificate of employment / appointment order.";
                     $crit_d += $pts;
                     break;
@@ -189,20 +264,23 @@ class KRA4Scorer
                 case 'D-prior-industry':
                     $years = max(1, (float)($parts[2] ?? 1));
                     $role  = strtolower($parts[1] ?? '');
-                    if (str_contains($role, 'managerial') || str_contains($role, 'supervisor')) $pts = 4.0 * $years;
-                    elseif (str_contains($role, 'technical') || str_contains($role, 'skilled'))  $pts = 3.0 * $years;
-                    else $pts = 2.0 * $years;  // support/admin staff
+                    if (str_contains($role, 'managerial') || str_contains($role, 'supervisor')) $pts = self::configuredMax('kra4_d_industry_managerial', 4.0) * $years;
+                    elseif (str_contains($role, 'technical') || str_contains($role, 'skilled'))  $pts = self::configuredMax('kra4_d_industry_technical', 3.0) * $years;
+                    else $pts = self::configuredMax('kra4_d_industry_support', 2.0) * $years;
                     if (empty($s['evidence_names'])) $pending[] = "KRA IV Crit D: '{$desc}'  -  missing service record / certificate of employment / appointment order for industry experience.";
                     $crit_d += $pts;
                     break;
 
                 default:
                     // Legacy PD format: credential|||degree_value
+                    // Only set the has_doctorate flag here; actual points are
+                    // applied by the doctorate override block below to avoid
+                    // double-counting with setDoctoratePointsOverride().
                     if (is_numeric($parts[1] ?? '')) {
                         $dv = (float)$parts[1];
-                        if ($dv >= 40) { $crit_b_edu += 40.0; $has_doctorate = true; }
-                        elseif ($dv >= 20) $crit_b_edu += 20.0;
-                        elseif ($dv >= 10) $crit_b_edu += 10.0;
+                        if ($dv >= 40)      { $has_doctorate = true; }
+                        elseif ($dv >= 20)  { $crit_b_edu += 20.0; }
+                        elseif ($dv >= 10)  { $crit_b_edu += 10.0; }
                     }
                     break;
             }
@@ -215,39 +293,13 @@ class KRA4Scorer
         $crit_d = min(self::CAP_D, $crit_d);
 
         // -- Doctorate auto sub-rank points -----------------------------------
-        // AutoSubRankCalculator determines mode automatically:
-        //   triggered       -> 0 pts (doctorate used for +1 rank instead)
-        //   points_only     -> 40 pts added to education score
-        //   blocked_historical -> 40 pts (historical trigger, reverts to points)
-        //   not_eligible    -> 0 pts (no doctorate present or rank ineligible)
+        // The orchestrator always calls KRA4Scorer::setDoctoratePointsOverride()
+        // before invoking score(). If that was not done, we skip the bonus
+        // rather than reaching into the HTTP request or global scope.
         if ($has_doctorate) {
-            global $pdo;
-            $doctorate_pts = 0.0;
+            $doctorate_pts = self::$doctorate_points_override;
 
-            if (isset($pdo)) {
-                // Load the AutoSubRankCalculator if not already loaded
-                $asr_file = __DIR__ . '/autosubrank.php';
-                if (file_exists($asr_file) && !class_exists('\Scoring\AutoSubRankCalculator')) {
-                    require_once $asr_file;
-                }
-
-                // Resolve application_id: prefer passed parameter, then GET, then skip
-                $asr_app_id = 0;
-                if (!empty($_GET['app_id'])) {
-                    $asr_app_id = (int)$_GET['app_id'];
-                } elseif (!empty($_POST['app_id'])) {
-                    $asr_app_id = (int)$_POST['app_id'];
-                }
-
-                if ($asr_app_id > 0 && class_exists('\Scoring\AutoSubRankCalculator')) {
-                    $doctorate_pts = \Scoring\AutoSubRankCalculator::getDoctoratePoints($pdo, $asr_app_id);
-                } else {
-                    // Fallback: no app context  -  default to points_only (safe)
-                    $doctorate_pts = \Scoring\AutoSubRankCalculator::DOCTORATE_POINTS;
-                }
-            }
-
-            if ($doctorate_pts > 0) {
+            if ((float)$doctorate_pts > 0) {
                 $crit_b_edu += $doctorate_pts;
                 $crit_b      = min(self::CAP_B, $crit_b_edu + $crit_b_train + $crit_b_paper);
             }
@@ -256,7 +308,7 @@ class KRA4Scorer
         $sum_before_bonus = $crit_a + $crit_b + $crit_c;
         $capped_base      = min(self::CAP, $sum_before_bonus);
         $sum_with_bonus   = $capped_base + $crit_d;
-        $subtotal         = $sum_with_bonus;
+        $subtotal         = min(self::CAP, $sum_with_bonus);
 
         return [
             'criterion_a'           => round($crit_a, 2),
@@ -287,38 +339,49 @@ class KRA4Scorer
         $critType = $parts[0] ?? '';
         $subVal   = (float)($parts[2] ?? 0);
 
+        if ($critType === 'CUSTOM') {
+            return max(0.0, (float)($parts[4] ?? 0));
+        }
+
         switch ($critType) {
             case 'A-org':
                 $years = self::professionalOrgYears($parts[2] ?? 1);
-                return min(self::CAP_A, 5.0 * $years);
+                return min(self::CAP_A, self::configuredMax('kra4_a_org_membership', 5.0) * $years);
             case 'B-degree':
-                if ($subVal >= 40)  return 40.0;
-                if ($subVal >= 20)  return 20.0;
-                if ($subVal >= 10)  return 10.0;
+                // Store the entry's earned points. Auto sub-rank exclusions are
+                // applied separately by score() when the application is totaled.
+                if ($subVal >= 40)  return self::configuredMax('kra4_b_doctorate', 40.0);
+                if ($subVal >= 20)  return self::configuredMax('kra4_b_additional_masters', 20.0);
+                if ($subVal >= 10)  return self::configuredMax('kra4_b_postmaster_cert', 10.0);
                 return 0.0;
             case 'B-training':
-                return $subVal >= 2 ? 2.0 : 1.0;
+                return $subVal >= 2 ? self::configuredMax('kra4_b_training_intl', 2.0) : self::configuredMax('kra4_b_training_local', 1.0);
             case 'B-paper':
-                return $subVal >= 5 ? 5.0 : 3.0;
+                return $subVal >= 5 ? self::configuredMax('kra4_b_paper_intl', 5.0) : self::configuredMax('kra4_b_paper_local', 3.0);
             case 'C-award':
-                if ($subVal === 0.0) return 0.0;  // national/intl = sub-rank trigger only
-                if ($subVal >= 4)  return 4.0;
-                if ($subVal >= 3)  return 3.0;
-                if ($subVal >= 2)  return 2.0;
+                if ($subVal === 0.0) return 0.0;  // prestigious award = sub-rank trigger only
+                if ($subVal >= 5) {
+                    // International: GAP — return 0 here; full score() raises PENDING_DOCUMENTATION
+                    $intl_pts = self::getInternationalAwardPoints();
+                    return $intl_pts !== null ? (float)$intl_pts : 0.0;
+                }
+                if ($subVal >= 4)  return self::configuredMax('kra4_c_award_national', 4.0);
+                if ($subVal >= 3)  return self::configuredMax('kra4_c_award_local', 3.0);
+                if ($subVal >= 2)  return self::configuredMax('kra4_c_award_institutional', 2.0);
                 return 0.0;
             case 'D-prior-academic':
             case 'D-prior-industry':
                 $years = max(1, (float)($parts[2] ?? 1));
                 $role  = strtolower($parts[1] ?? '');
                 if ($critType === 'D-prior-academic') {
-                    if (str_contains($role, 'president')) return 5.0 * $years;
-                    if (str_contains($role, 'vp') || str_contains($role, 'dean') || str_contains($role, 'director')) return 4.0 * $years;
-                    if (str_contains($role, 'dept') || str_contains($role, 'head')) return 3.0 * $years;
-                    return 2.0 * $years;
+                    if (str_contains($role, 'president')) return self::configuredMax('kra4_d_academic_president', 5.0) * $years;
+                    if (str_contains($role, 'vp') || str_contains($role, 'dean') || str_contains($role, 'director')) return self::configuredMax('kra4_d_academic_vp_dean', 4.0) * $years;
+                    if (str_contains($role, 'dept') || str_contains($role, 'head')) return self::configuredMax('kra4_d_academic_dept_head', 3.0) * $years;
+                    return self::configuredMax('kra4_d_academic_faculty', 2.0) * $years;
                 }
-                if (str_contains($role, 'managerial') || str_contains($role, 'supervisor')) return 4.0 * $years;
-                if (str_contains($role, 'technical') || str_contains($role, 'skilled')) return 3.0 * $years;
-                return 2.0 * $years;
+                if (str_contains($role, 'managerial') || str_contains($role, 'supervisor')) return self::configuredMax('kra4_d_industry_managerial', 4.0) * $years;
+                if (str_contains($role, 'technical') || str_contains($role, 'skilled')) return self::configuredMax('kra4_d_industry_technical', 3.0) * $years;
+                return self::configuredMax('kra4_d_industry_support', 2.0) * $years;
             default:
                 // Legacy: degree value in $parts[1]
                 $dv = (float)($parts[1] ?? 0);
@@ -330,5 +393,92 @@ class KRA4Scorer
                 if (in_array($subVal, $allowed)) return $subVal;
                 return 0.0;
         }
+    }
+
+    /**
+     * Return administrator-configured points for the International award tier.
+     *
+     * This value is a CONFIRMED SOURCE GAP — the Points column for the International
+     * tier is blank in the official JC01 s.2026 circular (KRA IV Crit C table).
+     * Returns null → not configured; full score() raises PENDING_DOCUMENTATION.
+     * Returns float → admin has explicitly set the value; use it.
+     *
+     * criterion_key: 'kra4_c_award_international'
+     * max_points = 0 means "not yet configured" (same mechanic as kra1_c_mentor_competition).
+     * Confirm value with CHED-RO or adviser before finalising.
+     */
+    private static ?float  $intl_award_pts_cache  = null;
+    private static bool    $intl_award_pts_loaded  = false;
+
+    private static function getInternationalAwardPoints(): ?float
+    {
+        if (self::$intl_award_pts_loaded) return self::$intl_award_pts_cache;
+        self::$intl_award_pts_loaded = true;
+        self::$intl_award_pts_cache  = null;
+
+        if (self::$pdo_ref === null) return null;
+
+        try {
+            $stmt = self::$pdo_ref->prepare(
+                "SELECT max_points, cycle_id, position_rank
+                 FROM scoring_criteria
+                 WHERE criterion_key = 'kra4_c_award_international'
+                   AND is_active = 1"
+            );
+            $stmt->execute();
+            $best_score = -1;
+            $best_val   = null;
+            foreach ($stmt->fetchAll(\PDO::FETCH_ASSOC) as $row) {
+                $score = self::criteriaScopeScore($row);
+                if ($score > $best_score) {
+                    $best_score = $score;
+                    $best_val   = $row['max_points'];
+                }
+            }
+            // max_points = 0 means "not yet configured"
+            self::$intl_award_pts_cache = ($best_val !== null && (float)$best_val > 0)
+                ? (float)$best_val
+                : null;
+        } catch (\Exception $e) {
+            self::$intl_award_pts_cache = null;
+        }
+
+        return self::$intl_award_pts_cache;
+    }
+
+    private static function configuredMax(string $key, float $default): float
+    {
+        if (isset(self::$criteria_max_cache[$key])) return self::$criteria_max_cache[$key];
+        $value = $default;
+        if (self::$pdo_ref !== null) {
+            try {
+                $stmt = self::$pdo_ref->prepare("SELECT max_points, cycle_id, position_rank FROM scoring_criteria WHERE criterion_key=? AND is_active=1");
+                $stmt->execute([$key]);
+                $best_score = -1;
+                foreach ($stmt->fetchAll(\PDO::FETCH_ASSOC) as $row) {
+                    $score = self::criteriaScopeScore($row);
+                    if ($score > $best_score) {
+                        $best_score = $score;
+                        $value = (float)$row['max_points'];
+                    }
+                }
+            } catch (\Exception $e) {
+                $value = $default;
+            }
+        }
+        self::$criteria_max_cache[$key] = $value;
+        return $value;
+    }
+
+    private static function criteriaScopeScore(array $row): int
+    {
+        $row_cycle = isset($row['cycle_id']) ? (int)$row['cycle_id'] : null;
+        $row_position = isset($row['position_rank']) && $row['position_rank'] !== null ? trim((string)$row['position_rank']) : null;
+        if (self::$criteria_cycle_id !== null && $row_cycle === self::$criteria_cycle_id) {
+            if (self::$criteria_position_rank !== null && $row_position === self::$criteria_position_rank) return 3;
+            if ($row_position === null || $row_position === '') return 2;
+        }
+        if ($row_cycle === null || $row_cycle === 0) return 1;
+        return 0;
     }
 }

@@ -8,12 +8,8 @@ require_once __DIR__ . '/../includes/functions.php';
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../fpdf/fpdf.php';
 
-$_sd = __DIR__ . '/../includes/scoring/';
-foreach (['kra1_scorer.php','kra2_scorer.php','kra3_scorer.php','kra4_scorer.php'] as $_sf) {
-    if (file_exists($_sd.$_sf)) require_once $_sd.$_sf;
-}
-if (class_exists('\Scoring\KRA1Scorer')) \Scoring\KRA1Scorer::setPdo($pdo);
-
+$_sd = __DIR__ . '/../includes/';
+require_once $_sd . 'pre_eval_scoring.php';
 if (!isLoggedIn() || !isFaculty()) { ob_end_clean(); http_response_code(403); die('Access denied.'); }
 
 $uid = (int)$_SESSION['user_id'];
@@ -31,6 +27,17 @@ function parseRemarks(string $remarks): string {
     if ($sub !== '' && $sub !== '0' && $sub !== '100') return $desc . ' (' . $sub . ')';
     return $desc;
 }
+// Extract just the type/criterion label from remarks
+function parseType(string $remarks): string {
+    $p = array_map('trim', explode('|||', $remarks));
+    return $p[0] ?? '';
+}
+// Extract sub-value (score, count, etc.)
+function parseSub(string $remarks): string {
+    $p = array_map('trim', explode('|||', $remarks));
+    $sub = $p[2] ?? '';
+    return ($sub !== '' && $sub !== '0') ? $sub : '';
+}
 
 // Faculty
 $fac = $pdo->prepare("SELECT u.*, c.campus_name FROM users u LEFT JOIN campuses c ON u.campus_id=c.campus_id WHERE u.user_id=?");
@@ -43,32 +50,24 @@ $full_name  = formatDisplayName($fac);
 $campus     = $fac['campus_name'] ?? 'N/A';
 $generated  = date('F d, Y  h:i A');
 
-// Entries
-$eq = $pdo->prepare("
-    SELECT pe.entry_id, pe.kra_category, pe.remarks, pe.computed_points,
-           GROUP_CONCAT(pf.original_filename ORDER BY pf.file_id SEPARATOR ', ') AS evidence
-    FROM pre_eval_entries pe
-    LEFT JOIN pre_eval_files pf ON pf.entry_id=pe.entry_id
-    WHERE pe.user_id=?
-    GROUP BY pe.entry_id ORDER BY pe.kra_category, pe.created_at ASC
-");
+// Entries (for per-row display in the PDF table)
+$eq = $pdo->prepare("SELECT pe.entry_id, pe.kra_category, pe.remarks, pe.computed_points, pe.notes, pe.created_at FROM pre_eval_entries pe WHERE pe.user_id=? ORDER BY pe.kra_category, pe.created_at ASC");
 $eq->execute([$uid]);
 $by_cat = [];
 foreach ($eq->fetchAll() as $e) $by_cat[$e['kra_category']][] = $e;
 
-// Scorers
-$r1 = class_exists('\Scoring\KRA1Scorer') ? \Scoring\KRA1Scorer::score($by_cat['Instruction']??[])              : ['subtotal'=>0,'criterion_a'=>0,'criterion_b'=>0,'criterion_c'=>0,'pending_documentation'=>[],'config_incomplete'=>[]];
-$r2 = class_exists('\Scoring\KRA2Scorer') ? \Scoring\KRA2Scorer::score($by_cat['Research']??[])                 : ['subtotal'=>0,'criterion_a_raw'=>0,'criterion_b_raw'=>0,'criterion_c_raw'=>0,'pending_documentation'=>[],'config_incomplete'=>[]];
-$r3 = class_exists('\Scoring\KRA3Scorer') ? \Scoring\KRA3Scorer::score($by_cat['Extension']??[])                : ['subtotal'=>0,'criterion_a'=>0,'criterion_b'=>0,'criterion_c'=>0,'criterion_d_bonus'=>0,'pending_documentation'=>[],'config_incomplete'=>[]];
-$r4 = class_exists('\Scoring\KRA4Scorer') ? \Scoring\KRA4Scorer::score($by_cat['Professional Development']??[]) : ['subtotal'=>0,'criterion_a'=>0,'criterion_b'=>0,'criterion_c'=>0,'criterion_d_bonus'=>0,'has_doctorate'=>false,'has_national_award'=>false,'pending_documentation'=>[],'config_incomplete'=>[]];
+// Scores — two-pass Orchestrator-aligned engine (same as AJAX preview and sidebar)
+$_pe = peAggregateScores($pdo, $uid, $rank);
+$r1  = array_merge(['subtotal'=>0,'criterion_a'=>0,'criterion_b'=>0,'criterion_c'=>0,'pending_documentation'=>[],'config_incomplete'=>[]], $_pe['kra1_detail']);
+$r2  = array_merge(['subtotal'=>0,'criterion_a_raw'=>0,'criterion_b_raw'=>0,'criterion_c_raw'=>0,'sum_before_cap'=>0,'pending_documentation'=>[],'config_incomplete'=>[]], $_pe['kra2_detail']);
+$r3  = array_merge(['subtotal'=>0,'criterion_a'=>0,'criterion_b'=>0,'criterion_c'=>0,'criterion_d_bonus'=>0,'pending_documentation'=>[],'config_incomplete'=>[]], $_pe['kra3_detail']);
+$r4  = array_merge(['subtotal'=>0,'criterion_a'=>0,'criterion_b'=>0,'criterion_c'=>0,'criterion_d_bonus'=>0,'has_doctorate'=>false,'has_national_award'=>false,'pending_documentation'=>[],'config_incomplete'=>[]], $_pe['kra4_detail']);
 
-$w  = getKraWeights($rank);
-$ws = round(
-    ($r1['subtotal']*$w['Instruction'])+($r2['subtotal']*$w['Research'])+
-    ($r3['subtotal']*$w['Extension'])+($r4['subtotal']*$w['Professional Development']),2);
-$sr  = getSubRankIncrement($ws);
-$pot = computePotentialRank(['Instruction'=>$r1['subtotal'],'Research'=>$r2['subtotal'],'Extension'=>$r3['subtotal'],'Professional Development'=>$r4['subtotal']],$rank);
-$pr  = $pot['potential_rank'];
+$ws       = $_pe['weighted_score'];
+$sr       = $_pe['sub_rank_increment'];
+$pr       = $_pe['pot_rank'];
+$pending  = $_pe['pending_documentation'];
+$config_i = $_pe['config_incomplete'];
 
 $kras = [
     ['num'=>'I',  'label'=>'Instruction',             'cat'=>'Instruction',             'raw'=>$r1['subtotal'],
@@ -80,9 +79,6 @@ $kras = [
     ['num'=>'IV', 'label'=>'Professional Development','cat'=>'Professional Development','raw'=>$r4['subtotal'],
      'crit'=>[['A - Professional Organisations',$r4['criterion_a'],20],['B - Training / Degrees',$r4['criterion_b'],60],['C - Awards',$r4['criterion_c'],20],['D - Bonus',$r4['criterion_d_bonus'],20]]],
 ];
-
-$pending  = array_merge($r1['pending_documentation']??[],$r2['pending_documentation']??[],$r3['pending_documentation']??[],$r4['pending_documentation']??[]);
-$config_i = array_merge($r1['config_incomplete']??[],$r2['config_incomplete']??[],$r3['config_incomplete']??[],$r4['config_incomplete']??[]);
 
 // -- PDF class -------------------------------------------------
 class PreEvalPDF extends FPDF
@@ -143,7 +139,7 @@ class PreEvalPDF extends FPDF
             0,0,'C');
     }
 
-    // Bold underlined section heading  -  no fill
+    // Bold underlined section heading  -  underline only
     function SectionHead(string $txt): void
     {
         $this->SetFont('Times','B',9);
@@ -152,23 +148,22 @@ class PreEvalPDF extends FPDF
         $this->Ln(1);
     }
 
-    // Table header  -  black fill, white text
+    // Table header  -  light grey fill, black text
     function THead(array $cols): void
     {
-        $this->SetFillColor(0,0,0);
-        $this->SetTextColor(255,255,255);
+        $this->SetFillColor(220,220,220);
+        $this->SetTextColor(0,0,0);
         $this->SetFont('Times','B',7.5);
         foreach ($cols as [$cw,$ct,$ca]) $this->Cell($cw,5.5,$ct,1,0,$ca,true);
         $this->Ln();
-        $this->SetTextColor(0,0,0);
         $this->SetFillColor(255,255,255);
     }
 
-    // Plain table row  -  border only, no fill
+    // Plain table row  -  alternating very light grey
     function TRow(array $cols, bool $shade=false): void
     {
         $this->SetFont('Times','',7.5);
-        $this->SetFillColor($shade?245:255,$shade?245:255,$shade?245:255);
+        $this->SetFillColor($shade?247:255,$shade?247:255,$shade?247:255);
         foreach ($cols as [$cw,$ct,$ca]) $this->Cell($cw,5,$ct,1,0,$ca,$shade);
         $this->Ln();
     }
@@ -202,7 +197,6 @@ $pdf->SetFont('Times','B',8.5);
 $pdf->SetTextColor(0,0,0);
 $badge = $ws>=41 ? 'MEETS minimum threshold (41)' : 'BELOW minimum threshold (41)';
 $pdf->Cell(70,5.5,u($badge),'1',1,'C');
-$pdf->SetTextColor(0,0,0);
 $pdf->Ln(5);
 
 // KRA table
@@ -217,8 +211,9 @@ foreach ($kras as $k) {
 }
 // Total row  -  bold, black fill
 $sl = '+'.$sr.' sub-rank'.($sr!==1?'s':'');
-$pdf->SetFillColor(0,0,0);
-$pdf->SetTextColor(255,255,255);
+// Total row  -  bold, light grey fill
+$pdf->SetFillColor(220,220,220);
+$pdf->SetTextColor(0,0,0);
 $pdf->SetFont('Times','B',8);
 $pdf->Cell(62,6,'  TOTAL WEIGHTED SCORE',1,0,'L',true);
 $pdf->Cell(24,6,'',1,0,'C',true);
@@ -226,7 +221,6 @@ $pdf->Cell(20,6,'',1,0,'C',true);
 $pdf->Cell(26,6,number_format($ws,2),1,0,'C',true);
 $pdf->Cell(30,6,u($sl),1,0,'C',true);
 $pdf->Cell(28,6,u($pr),1,1,'C',true);
-$pdf->SetTextColor(0,0,0);
 $pdf->SetFillColor(255,255,255);
 $pdf->Ln(6);
 
@@ -236,10 +230,12 @@ $pdf->SectionHead('CRITERION BREAKDOWNS');
 foreach ($kras as $k) {
     $pdf->Ln(1);
 
-    // KRA sub-heading
+    // KRA sub-heading  -  light grey fill, black text
+    $pdf->SetFillColor(220,220,220);
     $pdf->SetFont('Times','B',8.5);
     $pdf->SetTextColor(0,0,0);
-    $pdf->Cell(0,5,u('KRA '.$k['num'].' - '.strtoupper($k['label']).'  ('.number_format($k['raw'],2).' / 100 pts)'),0,1,'L');
+    $pdf->Cell(0,5.5,u('  KRA '.$k['num'].' - '.strtoupper($k['label']).'  ('.number_format($k['raw'],2).' / 100 pts)'),1,1,'L',true);
+    $pdf->SetFillColor(255,255,255);
 
     // Criterion sub-cap rows  -  plain, no fill
     $pdf->SetFont('Times','',7.5);
@@ -268,49 +264,58 @@ foreach ($kras as $k) {
         continue;
     }
 
-    // Entry table header
-    $pdf->THead([[10,'#','C'],[145,'Details','L'],[15,'Pts','C'],[20,'Evidence','C']]);
+    // Entry table header — no Evidence, more detail columns
+    $pdf->THead([[8,'#','C'],[68,'Description','L'],[50,'Type / Criterion','L'],[30,'Notes','L'],[24,'Date','C'],[10,'Pts','C']]);
 
     $shade=false;
     foreach ($entries as $idx=>$e) {
-        $detail = u(parseRemarks($e['remarks']??''));
-        $has_ev = !empty($e['evidence']) ? 'Yes' : '--';
+        $desc   = u(parseRemarks($e['remarks']??''));
+        $type   = u(parseType($e['remarks']??''));
+        $sub    = u(parseSub($e['remarks']??''));
+        $notes  = u(trim($e['notes']??''));
+        $date   = !empty($e['created_at']) ? date('M d, Y', strtotime($e['created_at'])) : '';
+        $pts    = number_format($e['computed_points'],2);
+
+        // Build type+sub string
+        $typeStr = $sub !== '' ? $type.' ('.$sub.')' : $type;
 
         if ($pdf->GetY()>268) $pdf->AddPage();
 
         $x=$pdf->GetX(); $y=$pdf->GetY();
 
-        // Estimate line count
-        $chars = strlen($detail);
-        $lines = max(1,(int)ceil($chars/90));
-        $rh    = max(5,$lines*4);
+        // Estimate row height based on longest wrapping cell
+        $descLines  = max(1,(int)ceil(strlen($desc)/38));
+        $typeLines  = max(1,(int)ceil(strlen($typeStr)/28));
+        $notesLines = max(1,(int)ceil(strlen($notes)/16));
+        $lines = max($descLines, $typeLines, $notesLines);
+        $rh    = max(5, $lines*4);
+        $lh    = max(4, $rh/$lines);
 
-        $pdf->SetFillColor($shade?245:255,$shade?245:255,$shade?245:255);
+        $pdf->SetFillColor($shade?247:255,$shade?247:255,$shade?247:255);
         $pdf->SetFont('Times','',7);
 
         $pdf->SetXY($x,$y);
-        $pdf->Cell(10,$rh,(string)($idx+1),1,0,'C',$shade);
-        $pdf->SetXY($x+10,$y);
-        $pdf->MultiCell(145,max(4,$rh/$lines),$detail,1,'L',$shade);
-        $pdf->SetXY($x+155,$y);
-        $pdf->Cell(15,$rh,number_format($e['computed_points'],2),1,0,'C',$shade);
-        $pdf->Cell(20,$rh,$has_ev,1,1,'C',$shade);
+        $pdf->Cell(8,$rh,(string)($idx+1),1,0,'C',$shade);
+
+        $pdf->SetXY($x+8,$y);
+        $pdf->MultiCell(68,$lh,$desc,1,'L',$shade);
+
+        $pdf->SetXY($x+76,$y);
+        $pdf->MultiCell(50,$lh,$typeStr,1,'L',$shade);
+
+        $pdf->SetXY($x+126,$y);
+        $pdf->MultiCell(30,$lh,$notes ?: '--',1,'L',$shade);
+
+        $pdf->SetXY($x+156,$y);
+        $pdf->Cell(24,$rh,u($date),1,0,'C',$shade);
+
+        $pdf->SetXY($x+180,$y);
+        $pdf->Cell(10,$rh,$pts,1,0,'C',$shade);
+
         $pdf->SetXY($x,$y+$rh);
         $shade=!$shade;
     }
     $pdf->Ln(3);
-}
-
-// -- PENDING DOCUMENTATION ------------------------------------
-if (!empty($pending)) {
-    $pdf->Ln(2);
-    $pdf->SectionHead('PENDING DOCUMENTATION ('.count($pending).')');
-    $pdf->SetFont('Times','',7.5);
-    foreach ($pending as $p) {
-        $pdf->SetTextColor(0,0,0);
-        $pdf->MultiCell(0,4.5,u('  * '.$p),0,'L');
-    }
-    $pdf->Ln(2);
 }
 
 // -- SCORING FLAGS ---------------------------------------------

@@ -128,7 +128,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             logAudit($pdo, $_SESSION['user_id'], 'Cycle Created', "New cycle: {$name}. Period {$start_date} to {$end_date}; submissions {$sub_start} to {$deadline}; evaluation due {$eval_deadline}.");
             ensureKraAssignmentTable($pdo);
-            $checker_ids = $pdo->query("SELECT user_id FROM users WHERE role='checker' AND status='active'")->fetchAll(PDO::FETCH_COLUMN);
+            $checker_ids = $pdo->query("SELECT user_id FROM users WHERE role='evaluator' AND status='active'")->fetchAll(PDO::FETCH_COLUMN);
             if ($checker_ids) {
                 $assign = $pdo->prepare("INSERT IGNORE INTO checker_kra_assignments (cycle_id, checker_id, kra_category, assigned_by) VALUES (?,?,?,?)");
                 foreach ($checker_ids as $checker_id) {
@@ -242,114 +242,70 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         echo "<script>window.location.href='index.php?page=cycles&cycle_id={$cid}';</script>"; exit;
     } elseif ($action === 'delete_cycle') {
-        $cid = intval($_POST['cycle_id']);
-        $has = $pdo->prepare("SELECT COUNT(*) FROM applications WHERE cycle_id=? AND status!='draft'");
-        $has->execute([$cid]);
-        if ($has->fetchColumn() > 0) {
-            flashMessage('danger', 'Cannot delete - this cycle has submitted applications.');
+        $cid  = (int)$_POST['cycle_id'];
+        $typed_name = trim($_POST['confirm_name'] ?? '');
+        $typed_pass = $_POST['confirm_password'] ?? '';
+
+        // Load cycle
+        $cy_row = $pdo->prepare("SELECT cycle_name FROM cycles WHERE cycle_id=?");
+        $cy_row->execute([$cid]);
+        $cy = $cy_row->fetch();
+        if (!$cy) {
+            flashMessage('danger', 'Cycle not found.');
+            echo "<script>window.location.href='index.php?page=cycles';</script>"; exit;
+        }
+
+        // Verify typed cycle name
+        if (strtolower($typed_name) !== strtolower($cy['cycle_name'])) {
+            flashMessage('danger', 'Cycle name does not match. Deletion cancelled.');
             echo "<script>window.location.href='index.php?page=cycles&cycle_id={$cid}';</script>"; exit;
         }
-        $pdo->prepare("DELETE FROM cycles WHERE cycle_id=?")->execute([$cid]);
-        logAudit($pdo, $_SESSION['user_id'], 'Cycle Deleted', "Deleted cycle #{$cid}");
-        flashMessage('success', 'Cycle deleted.');
+
+        // Verify admin password
+        $me = $pdo->prepare("SELECT password FROM users WHERE user_id=?");
+        $me->execute([$_SESSION['user_id']]);
+        $me_row = $me->fetch();
+        if (!$me_row || !password_verify($typed_pass, $me_row['password'])) {
+            flashMessage('danger', 'Incorrect password. Deletion cancelled.');
+            echo "<script>window.location.href='index.php?page=cycles&cycle_id={$cid}';</script>"; exit;
+        }
+
+        // Delete: cascade related data
+        $pdo->beginTransaction();
+        try {
+            // Remove KRA assignments for this cycle
+            $pdo->prepare("DELETE FROM checker_kra_assignments WHERE cycle_id=?")->execute([$cid]);
+            // Remove scoring criteria for this cycle
+            $pdo->prepare("DELETE FROM scoring_criteria WHERE cycle_id=?")->execute([$cid]);
+            // Remove applications (and their submissions, files, reviews, appeals)
+            $apps = $pdo->prepare("SELECT application_id FROM applications WHERE cycle_id=?");
+            $apps->execute([$cid]);
+            foreach ($apps->fetchAll(PDO::FETCH_COLUMN) as $aid) {
+                $subs = $pdo->prepare("SELECT submission_id FROM kra_submissions WHERE application_id=?");
+                $subs->execute([$aid]);
+                foreach ($subs->fetchAll(PDO::FETCH_COLUMN) as $sid) {
+                    $pdo->prepare("DELETE FROM evidence_files WHERE submission_id=?")->execute([$sid]);
+                    $pdo->prepare("DELETE FROM appeals WHERE submission_id=?")->execute([$sid]);
+                    $pdo->prepare("DELETE FROM application_checker_reviews WHERE submission_id=?")->execute([$sid]);
+                }
+                $pdo->prepare("DELETE FROM kra_submissions WHERE application_id=?")->execute([$aid]);
+                $pdo->prepare("DELETE FROM application_checker_reviews WHERE application_id=?")->execute([$aid]);
+                $pdo->prepare("DELETE FROM appeals WHERE application_id=?")->execute([$aid]);
+                $pdo->prepare("DELETE FROM applications WHERE application_id=?")->execute([$aid]);
+            }
+            // Delete the cycle itself
+            $pdo->prepare("DELETE FROM cycles WHERE cycle_id=?")->execute([$cid]);
+            $pdo->commit();
+            logAudit($pdo, $_SESSION['user_id'], 'Cycle Deleted', "Permanently deleted cycle #{$cid}: {$cy['cycle_name']}");
+            flashMessage('success', "Cycle \"{$cy['cycle_name']}\" has been permanently deleted.");
+        } catch (\Exception $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            flashMessage('danger', 'Deletion failed: ' . htmlspecialchars($e->getMessage()));
+            echo "<script>window.location.href='index.php?page=cycles&cycle_id={$cid}';</script>"; exit;
+        }
         echo "<script>window.location.href='index.php?page=cycles';</script>"; exit;
 
-    // -- Criteria CRUD -----------------------------------------
-    } elseif ($action === 'seed_all_positions') {
-        $cid = intval($_POST['target_cycle_id']);
-        if ($cid) {
-            $globals = $pdo->query("SELECT * FROM scoring_criteria WHERE cycle_id IS NULL AND position_rank IS NULL ORDER BY criteria_id")->fetchAll();
-            $all_ranks = facultyRanks();
-            $ins = $pdo->prepare("INSERT IGNORE INTO scoring_criteria (cycle_id, position_rank, kra_category, criterion_key, criterion_label, max_points, weight_pct, description, is_active, updated_by) VALUES (?,?,?,?,?,?,?,?,?,?)");
-            $seeded = 0;
-            foreach ($all_ranks as $rank) {
-                $cnt = $pdo->prepare("SELECT COUNT(*) FROM scoring_criteria WHERE cycle_id=? AND position_rank=?");
-                $cnt->execute([$cid, $rank]);
-                if ((int)$cnt->fetchColumn() === 0) {
-                    foreach ($globals as $g) {
-                        $ins->execute([$cid, $rank, $g['kra_category'], $g['criterion_key'], $g['criterion_label'], $g['max_points'], $g['weight_pct'], $g['description'], $g['is_active'], $_SESSION['user_id']]);
-                    }
-                    $seeded++;
-                }
-            }
-            logAudit($pdo, $_SESSION['user_id'], 'Criteria Seeded', "Seeded criteria for {$seeded} positions in cycle #{$cid}");
-            flashMessage('success', "Criteria seeded for <strong>{$seeded}</strong> position(s). Each position now has its own editable criteria.");
-        }
-        echo "<script>window.location.href='index.php?page=cycles&cycle_id={$cid}';</script>"; exit;
-    } elseif ($action === 'copy_defaults_to_cycle') {
-        $cid      = intval($_POST['target_cycle_id']);
-        $pos_rank = trim($_POST['position_rank'] ?? '') ?: null;
-        if ($cid) {
-            // Copy global criteria (matching position or position-agnostic) to this cycle+position
-            if ($pos_rank) {
-                $globals = $pdo->prepare("SELECT * FROM scoring_criteria WHERE cycle_id IS NULL AND (position_rank = ? OR position_rank IS NULL) ORDER BY position_rank DESC, criteria_id");
-                $globals->execute([$pos_rank]);
-                $globals = $globals->fetchAll();
-            } else {
-                $globals = $pdo->query("SELECT * FROM scoring_criteria WHERE cycle_id IS NULL AND position_rank IS NULL ORDER BY criteria_id")->fetchAll();
-            }
-            $ins = $pdo->prepare("INSERT IGNORE INTO scoring_criteria (cycle_id, position_rank, kra_category, criterion_key, criterion_label, max_points, weight_pct, description, is_active, updated_by) VALUES (?,?,?,?,?,?,?,?,?,?)");
-            $copied = 0;
-            foreach ($globals as $g) {
-                $ins->execute([$cid, $pos_rank, $g['kra_category'], $g['criterion_key'], $g['criterion_label'], $g['max_points'], $g['weight_pct'], $g['description'], $g['is_active'], $_SESSION['user_id']]);
-                $copied++;
-            }
-            $pos_label = $pos_rank ? " for <strong>{$pos_rank}</strong>" : '';
-            logAudit($pdo, $_SESSION['user_id'], 'Criteria Copied', "Copied {$copied} defaults to cycle #{$cid}" . ($pos_rank ? " / {$pos_rank}" : ''));
-            flashMessage('success', "Criteria copied{$pos_label}. You can now customise them per position.");
-        }
-        $redir = "index.php?page=cycles&cycle_id={$cid}" . ($pos_rank ? '&position=' . urlencode($pos_rank) : '');
-        echo "<script>window.location.href='{$redir}';</script>"; exit;
-    } elseif ($action === 'add_criterion') {
-        $cid      = intval($_POST['cycle_id']) ?: null;
-        $pos_rank = trim($_POST['position_rank'] ?? '') ?: null;
-        $kra      = $_POST['kra_category'] ?? '';
-        $key      = trim($_POST['criterion_key'] ?? '');
-        $label    = trim($_POST['criterion_label'] ?? '');
-        $max      = floatval($_POST['max_points'] ?? 0);
-        $weight   = floatval($_POST['weight_pct'] ?? 100);
-        $desc     = trim($_POST['description'] ?? '');
-        if (in_array($kra, $kra_list) && $key && $label && $max > 0) {
-            $pdo->prepare("INSERT INTO scoring_criteria (cycle_id, position_rank, kra_category, criterion_key, criterion_label, max_points, weight_pct, description, updated_by) VALUES (?,?,?,?,?,?,?,?,?)")
-                ->execute([$cid, $pos_rank, $kra, $key, $label, $max, $weight, $desc, $_SESSION['user_id']]);
-            logAudit($pdo, $_SESSION['user_id'], 'Criterion Added', "{$label} ({$kra}) = {$max} pts" . ($cid ? " [cycle #{$cid}]" : " [global]") . ($pos_rank ? " [{$pos_rank}]" : ''));
-            flashMessage('success', "Criterion <strong>{$label}</strong> added.");
-        }
-        $back = $cid ?: 0;
-        $redir = "index.php?page=cycles&cycle_id={$back}" . ($pos_rank ? '&position=' . urlencode($pos_rank) : '');
-        echo "<script>window.location.href='{$redir}';</script>"; exit;
-    } elseif ($action === 'update_criterion') {
-        $crit_id   = intval($_POST['criteria_id']);
-        $label     = trim($_POST['criterion_label'] ?? '');
-        $max_pts   = floatval($_POST['max_points'] ?? 0);
-        $weight    = floatval($_POST['weight_pct'] ?? 100);
-        $desc      = trim($_POST['description'] ?? '');
-        $is_active = isset($_POST['is_active']) ? 1 : 0;
-        $back_cid  = intval($_POST['back_cycle_id'] ?? 0);
-        $back_pos  = trim($_POST['back_position'] ?? '');
-        if ($label && $max_pts > 0) {
-            $pdo->prepare("UPDATE scoring_criteria SET criterion_label=?, max_points=?, weight_pct=?, description=?, is_active=?, updated_by=? WHERE criteria_id=?")
-                ->execute([$label, $max_pts, $weight, $desc, $is_active, $_SESSION['user_id'], $crit_id]);
-            logAudit($pdo, $_SESSION['user_id'], 'Criterion Updated', "ID {$crit_id}: {$label}");
-            flashMessage('success', "Criterion <strong>{$label}</strong> updated.");
-        }
-        $redir = "index.php?page=cycles&cycle_id={$back_cid}" . ($back_pos ? '&position=' . urlencode($back_pos) : '');
-        echo "<script>window.location.href='{$redir}';</script>"; exit;
-    } elseif ($action === 'delete_criterion') {
-        $crit_id  = intval($_POST['criteria_id']);
-        $back_cid = intval($_POST['back_cycle_id'] ?? 0);
-        $back_pos = trim($_POST['back_position'] ?? '');
-        $row = $pdo->prepare("SELECT criterion_label FROM scoring_criteria WHERE criteria_id=?");
-        $row->execute([$crit_id]);
-        $existing = $row->fetch();
-        if ($existing) {
-            $pdo->prepare("DELETE FROM scoring_criteria WHERE criteria_id=?")->execute([$crit_id]);
-            logAudit($pdo, $_SESSION['user_id'], 'Criterion Deleted', "ID {$crit_id}: {$existing['criterion_label']}");
-            flashMessage('success', 'Criterion deleted.');
-        }
-        $redir = "index.php?page=cycles&cycle_id={$back_cid}" . ($back_pos ? '&position=' . urlencode($back_pos) : '');
-        echo "<script>window.location.href='{$redir}';</script>"; exit;
-    }
+    } // end delete_cycle
 
     echo "<script>window.location.href='index.php?page=cycles';</script>"; exit;
 }
@@ -404,153 +360,152 @@ if ($panel_cycle) {
     } catch (\Exception $e) {}
 }
 
-// Load criteria for selected cycle (always position-scoped)
-$cycle_criteria = [];
-$criteria_source = 'none';
-if ($active_cycle_id) {
-    if ($active_position) {
-        // Load criteria specific to this cycle + position
-        $stmt = $pdo->prepare("SELECT * FROM scoring_criteria WHERE cycle_id=? AND position_rank=? ORDER BY kra_category, criteria_id");
-        $stmt->execute([$active_cycle_id, $active_position]);
-        $cycle_criteria = $stmt->fetchAll();
-        $criteria_source = count($cycle_criteria) > 0 ? 'cycle_position' : 'empty_position';
-    } else {
-        // Overview: show summary of all positions
-        $criteria_source = 'overview';
-    }
-}
-$grouped = [];
-foreach ($cycle_criteria as $c) $grouped[$c['kra_category']][] = $c;
-
-// Get all positions and their criteria counts for this cycle
-// Auto-seed any missing positions on load
-$position_counts = [];
-if ($active_cycle_id) {
-    $all_ranks = facultyRanks();
-    foreach ($all_ranks as $rank) {
-        $cnt = $pdo->prepare("SELECT COUNT(*) FROM scoring_criteria WHERE cycle_id=? AND position_rank=?");
-        $cnt->execute([$active_cycle_id, $rank]);
-        $position_counts[$rank] = (int)$cnt->fetchColumn();
-    }
-
-    // Auto-seed any position that has no criteria yet
-    $missing = array_keys(array_filter($position_counts, fn($c) => $c === 0));
-    if (!empty($missing)) {
-        $globals = $pdo->query("SELECT * FROM scoring_criteria WHERE cycle_id IS NULL AND position_rank IS NULL ORDER BY criteria_id")->fetchAll();
-        if ($globals) {
-            $ins = $pdo->prepare("INSERT IGNORE INTO scoring_criteria (cycle_id, position_rank, kra_category, criterion_key, criterion_label, max_points, weight_pct, description, is_active, updated_by) VALUES (?,?,?,?,?,?,?,?,?,?)");
-            foreach ($missing as $rank) {
-                foreach ($globals as $g) {
-                    $ins->execute([$active_cycle_id, $rank, $g['kra_category'], $g['criterion_key'], $g['criterion_label'], $g['max_points'], $g['weight_pct'], $g['description'], $g['is_active'], $_SESSION['user_id']]);
-                }
-                $position_counts[$rank] = count($globals);
-            }
-        }
-    }
-}
-$positions_with_criteria = array_keys(array_filter($position_counts, fn($c) => $c > 0));
-$positions_missing = array_keys(array_filter($position_counts, fn($c) => $c === 0));
 ?>
 
 <?php showFlash(); ?>
 
 <!-- Page Header -->
-<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;margin-bottom:1.5rem;">
-    <div style="display:flex;align-items:center;gap:0.6rem;">
-        <div style="width:36px;height:36px;border-radius:8px;background:#1e4d8c;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+<div style="background:#fff;border:1px solid #e2e8f0;padding:0.85rem 1.25rem;margin-bottom:1.25rem;
+            display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;">
+    <div style="display:flex;align-items:center;gap:0.75rem;">
+        <div style="width:36px;height:36px;background:#1a3a6b;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
             <i class="bi bi-calendar-range" style="color:#fff;font-size:0.9rem;"></i>
         </div>
         <div>
-            <div style="font-weight:700;color:#1a3a6b;font-size:0.95rem;">Cycles &amp; Scoring Criteria</div>
-            <div style="font-size:0.72rem;color:#94a3b8;margin-top:1px;">Manage evaluation cycles and configure scoring criteria per faculty position</div>
+            <div style="font-size:0.92rem;font-weight:700;color:#0f172a;line-height:1.2;">Cycles</div>
+            <div style="font-size:0.72rem;color:#94a3b8;margin-top:2px;">Create and manage evaluation cycles</div>
         </div>
     </div>
     <button class="btn btn-primary btn-sm" data-bs-toggle="collapse" data-bs-target="#createCyclePanel"
-            style="background:#1a3a6b;border:none;border-radius:8px;padding:0.45rem 1.1rem;font-size:0.82rem;font-weight:600;">
-        <i class="bi bi-plus-lg me-1"></i>New Cycle
+            style="background:#1a3a6b;border:none;padding:0.45rem 1.1rem;font-size:0.8rem;font-weight:600;display:inline-flex;align-items:center;gap:0.3rem;">
+        <i class="bi bi-plus-lg"></i> New Cycle
     </button>
 </div>
 
-<!-- Create Cycle (collapsible  -  closed by default) -->
+<!-- Create Cycle (collapsible - closed by default) -->
 <div class="collapse mb-4" id="createCyclePanel">
-    <div class="neon-card" style="border-left:4px solid #1e4d8c;padding:0;overflow:hidden;">
-        <div style="padding:0.9rem 1.25rem;border-bottom:1px solid #f1f5f9;background:#fff;">
-            <div style="font-weight:700;color:#1a3a6b;font-size:0.9rem;display:flex;align-items:center;gap:0.5rem;">
-                <i class="bi bi-plus-circle" style="color:#1e4d8c;"></i>Create New Cycle
-            </div>
-        </div>
-        <div style="padding:1.25rem;">
+    <div style="border:1px solid #e2e8f0;overflow:hidden;">
 
-            <!-- #7: Warning about closing current open cycle -->
+        <!-- Panel header -->
+        <div style="padding:0.85rem 1.25rem;border-bottom:1px solid #f1f5f9;background:#f8fafc;
+                    display:flex;align-items:center;justify-content:space-between;">
+            <div style="display:flex;align-items:center;gap:0.5rem;">
+                <i class="bi bi-plus-circle" style="color:#1e4d8c;font-size:0.9rem;"></i>
+                <span style="font-weight:700;color:#1a3a6b;font-size:0.88rem;">Create New Cycle</span>
+            </div>
+            <button type="button" class="btn-close btn-close-sm"
+                    onclick="document.getElementById('createCyclePanel').classList.remove('show')"
+                    style="font-size:0.65rem;opacity:0.4;" aria-label="Close"></button>
+        </div>
+
+        <div style="padding:1.25rem 1.5rem;">
+
             <?php
             $open_cycle = null;
             foreach ($cycles as $cy) { if ($cy['status'] === 'open') { $open_cycle = $cy; break; } }
             if ($open_cycle):
             ?>
-            <div class="alert py-2 mb-3 d-flex align-items-center gap-2" style="background:#f8fafc;border:1px solid #e2e8f0;color:#334155;font-size:0.82rem;">
-                <i class="bi bi-exclamation-triangle-fill flex-shrink-0"></i>
-                <div>
-                    Creating a new cycle will <strong>automatically close</strong> the currently open cycle:
-                    <strong><?= sanitize($open_cycle['cycle_name']) ?></strong>.
-                </div>
+            <div style="display:flex;align-items:flex-start;gap:0.5rem;background:#fffbeb;border:1px solid #fde68a;
+                        border-left:3px solid #d97706;padding:0.55rem 0.85rem;margin-bottom:1.1rem;font-size:0.78rem;color:#92400e;">
+                <i class="bi bi-exclamation-triangle-fill" style="color:#d97706;flex-shrink:0;margin-top:1px;"></i>
+                <span>Creating a new cycle will <strong>automatically close</strong> the currently open cycle: <strong><?= sanitize($open_cycle['cycle_name']) ?></strong>.</span>
             </div>
             <?php endif; ?>
 
-            <form method="POST" class="row g-3" id="createCycleForm">
+            <form method="POST" id="createCycleForm">
                 <input type="hidden" name="action" value="create_cycle">
 
-                <div class="col-12">
-                    <label class="form-label fw-semibold small">Cycle Name <span class="text-danger">*</span></label>
+                <!-- Cycle name -->
+                <div style="margin-bottom:1.1rem;">
+                    <label class="form-label fw-semibold" style="font-size:0.8rem;color:#334155;">
+                        Cycle Name <span class="text-danger">*</span>
+                    </label>
                     <input type="text" name="cycle_name" id="cc_name" class="form-control" required
                            placeholder="e.g. AY 2026-2029 Reclassification Cycle"
-                           style="font-size:0.9rem;">
-                    <div class="form-text">The cycle will be set to <strong>Open</strong> immediately. Close it from the status control when submissions end.</div>
+                           style="font-size:0.88rem;">
+                    <div class="form-text" style="font-size:0.73rem;">
+                        The cycle will be set to <strong>Open</strong> immediately. Close it from the status control when submissions end.
+                    </div>
                 </div>
 
-                <div class="col-sm-6 col-lg-3">
-                    <label class="form-label fw-semibold small">Start Date <span class="text-danger">*</span></label>
-                    <input type="date" name="start_date" id="cc_start" class="form-control" required style="font-size:0.9rem;">
+                <!-- Date section label -->
+                <div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;
+                            color:#94a3b8;margin-bottom:0.6rem;padding-bottom:0.4rem;border-bottom:1px solid #f1f5f9;">
+                    Cycle Period
+                </div>
+                <div class="row g-2 mb-3">
+                    <div class="col-sm-6">
+                        <label class="form-label fw-semibold" style="font-size:0.78rem;color:#334155;">
+                            Start Date <span class="text-danger">*</span>
+                        </label>
+                        <input type="date" name="start_date" id="cc_start" class="form-control form-control-sm" required>
+                    </div>
+                    <div class="col-sm-6">
+                        <label class="form-label fw-semibold" style="font-size:0.78rem;color:#334155;">
+                            End Date <span class="text-danger">*</span>
+                        </label>
+                        <input type="date" name="end_date" id="cc_end" class="form-control form-control-sm" required>
+                    </div>
                 </div>
 
-                <div class="col-sm-6 col-lg-3">
-                    <label class="form-label fw-semibold small">End Date <span class="text-danger">*</span></label>
-                    <input type="date" name="end_date" id="cc_end" class="form-control" required style="font-size:0.9rem;">
+                <!-- Date section label -->
+                <div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;
+                            color:#94a3b8;margin-bottom:0.6rem;padding-bottom:0.4rem;border-bottom:1px solid #f1f5f9;">
+                    Faculty Submission Window
+                </div>
+                <div class="row g-2 mb-3">
+                    <div class="col-sm-6">
+                        <label class="form-label fw-semibold" style="font-size:0.78rem;color:#334155;">
+                            Submission Start <span class="text-danger">*</span>
+                        </label>
+                        <input type="date" name="submission_start_date" id="cc_sub_start" class="form-control form-control-sm" required>
+                    </div>
+                    <div class="col-sm-6">
+                        <label class="form-label fw-semibold" style="font-size:0.78rem;color:#334155;">
+                            Submission Deadline <span class="text-danger">*</span>
+                        </label>
+                        <input type="date" name="submission_deadline" id="cc_deadline" class="form-control form-control-sm" required>
+                        <div class="form-text" style="font-size:0.72rem;">Faculty cannot submit after this date.</div>
+                    </div>
                 </div>
 
-                <div class="col-sm-6 col-lg-3">
-                    <label class="form-label fw-semibold small">Submission Start <span class="text-danger">*</span></label>
-                    <input type="date" name="submission_start_date" id="cc_sub_start" class="form-control" required style="font-size:0.9rem;">
+                <!-- Date section label -->
+                <div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;
+                            color:#94a3b8;margin-bottom:0.6rem;padding-bottom:0.4rem;border-bottom:1px solid #f1f5f9;">
+                    Deadlines
+                </div>
+                <div class="row g-2 mb-3">
+                    <div class="col-sm-6">
+                        <label class="form-label fw-semibold" style="font-size:0.78rem;color:#334155;">
+                            Evaluation Deadline <span class="text-danger">*</span>
+                        </label>
+                        <input type="date" name="evaluation_deadline" id="cc_eval_deadline" class="form-control form-control-sm" required>
+                    </div>
+                    <div class="col-sm-6">
+                        <label class="form-label fw-semibold" style="font-size:0.78rem;color:#334155;">
+                            Appeal Deadline <span style="color:#94a3b8;font-weight:400;">(optional)</span>
+                        </label>
+                        <input type="date" name="appeal_deadline" id="cc_appeal_deadline" class="form-control form-control-sm">
+                        <div class="form-text" style="font-size:0.72rem;">Leave blank to allow appeals while the cycle is open.</div>
+                    </div>
                 </div>
 
-                <div class="col-sm-6 col-lg-3">
-                    <label class="form-label fw-semibold small">Submission Deadline <span class="text-danger">*</span></label>
-                    <input type="date" name="submission_deadline" id="cc_deadline" class="form-control" required style="font-size:0.9rem;">
-                    <div class="form-text">Faculty cannot submit after this date.</div>
-                </div>
-
-                <div class="col-sm-6 col-lg-3">
-                    <label class="form-label fw-semibold small">Evaluation Deadline <span class="text-danger">*</span></label>
-                    <input type="date" name="evaluation_deadline" id="cc_eval_deadline" class="form-control" required style="font-size:0.9rem;">
-                </div>
-
-                <div class="col-sm-6 col-lg-3">
-                    <label class="form-label fw-semibold small">Appeal Deadline</label>
-                    <input type="date" name="appeal_deadline" id="cc_appeal_deadline" class="form-control" style="font-size:0.9rem;">
-                    <div class="form-text">Optional. Leave blank to allow appeals while the cycle is open.</div>
-                </div>
-
-                <div id="cycle_date_error" style="display:none;" class="col-12">
-                    <div class="alert alert-danger py-2 mb-0" style="font-size:0.82rem;">
+                <!-- Inline error -->
+                <div id="cycle_date_error" style="display:none;" class="mb-3">
+                    <div class="alert alert-danger py-2 mb-0" style="font-size:0.8rem;">
                         <i class="bi bi-exclamation-circle me-1"></i>
                         <span id="cycle_date_error_msg"></span>
                     </div>
                 </div>
 
-                <div class="col-12">
-                    <button type="button" class="btn btn-primary" onclick="openCycleReview()">
+                <!-- Actions -->
+                <div style="display:flex;align-items:center;gap:0.5rem;padding-top:0.75rem;border-top:1px solid #f1f5f9;">
+                    <button type="button" class="btn btn-primary btn-sm" onclick="openCycleReview()"
+                            style="background:#1a3a6b;border-color:#1a3a6b;font-size:0.82rem;padding:0.42rem 1rem;">
                         <i class="bi bi-eye me-1"></i>Review &amp; Create
                     </button>
-                    <button type="button" class="btn btn-outline-secondary ms-2"
+                    <button type="button" class="btn btn-outline-secondary btn-sm"
+                            style="font-size:0.82rem;padding:0.42rem 0.85rem;"
                             onclick="document.getElementById('createCyclePanel').classList.remove('show')">
                         Cancel
                     </button>
@@ -563,50 +518,57 @@ $positions_missing = array_keys(array_filter($position_counts, fn($c) => $c === 
 <div class="row g-3">
 
     <!-- LEFT: Cycle list -->
-    <div class="col-lg-3">        <div class="neon-card h-100" style="padding:0;overflow:hidden;">
-            <div style="padding:0.75rem 1rem;background:#1a3a6b;">
-                <div style="font-size:0.78rem;font-weight:700;color:#fff;text-transform:uppercase;letter-spacing:0.05em;display:flex;align-items:center;gap:0.5rem;">
+    <div class="col-lg-3">
+        <div style="background:#fff;border:1px solid #e2e8f0;overflow:hidden;height:100%;">
+            <div style="padding:0.6rem 1rem;background:#1a3a6b;">
+                <div style="font-size:0.65rem;font-weight:700;color:#fff;text-transform:uppercase;letter-spacing:0.08em;display:flex;align-items:center;gap:0.4rem;">
                     <i class="bi bi-list-ul"></i>All Cycles
                 </div>
             </div>
             <?php if ($cycles): ?>
-            <div class="list-group list-group-flush" style="overflow-y:auto;max-height:70vh;">
+            <div style="overflow-y:auto;max-height:70vh;">
             <?php foreach ($cycles as $c):
                 $is_sel = ($c['cycle_id'] === $active_cycle_id);
-                $sc_map = ['open'=>'success','closed'=>'secondary','archived'=>'dark'];
             ?>
             <a href="?page=cycles&cycle_id=<?= $c['cycle_id'] ?>"
-               class="list-group-item list-group-item-action px-3 py-3"
-               style="border-left:<?= $is_sel ? '4px solid #475569' : '4px solid transparent' ?>;background:<?= $is_sel ? '#f0f4fb' : '#fff' ?>;">
-                <div class="d-flex justify-content-between align-items-start gap-2">
-                    <div class="flex-grow-1 min-w-0">
-                        <div class="fw-semibold text-truncate" style="font-size:0.875rem;color:<?= $is_sel ? '#1a3a6b' : '#1e293b' ?>;">
+               style="display:block;text-decoration:none;padding:0.75rem 1rem;border-bottom:1px solid #f1f5f9;
+                      background:<?= $is_sel ? '#f0f4fb' : '#fff' ?>;
+                      border-left:3px solid <?= $is_sel ? '#1a3a6b' : 'transparent' ?>;"
+               onmouseover="if(!<?= $is_sel?'true':'false' ?>)this.style.background='#f8fafc'"
+               onmouseout="if(!<?= $is_sel?'true':'false' ?>)this.style.background='#fff'">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:0.5rem;">
+                    <div style="min-width:0;flex:1;">
+                        <div style="font-size:0.8rem;font-weight:600;color:<?= $is_sel ? '#1a3a6b' : '#1e293b' ?>;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
                             <?= sanitize($c['cycle_name']) ?>
                         </div>
-                        <div class="small mt-1" style="color:#64748b;">
-                            <?php if (!empty($c['start_date']) && !empty($c['end_date'])): ?>
-                            <?= date('Y', strtotime($c['start_date'])) ?> - <?= date('Y', strtotime($c['end_date'])) ?>
-                            <?php endif; ?>
+                        <?php if (!empty($c['start_date']) && !empty($c['end_date'])): ?>
+                        <div style="font-size:0.68rem;color:#94a3b8;margin-top:2px;">
+                            <?= date('Y', strtotime($c['start_date'])) ?> – <?= date('Y', strtotime($c['end_date'])) ?>
                         </div>
-                        <div class="d-flex gap-1 mt-2 flex-wrap">
-                            <span class="badge bg-<?= $sc_map[$c['status']] ?>" style="font-size:0.65rem;"><?= ucfirst($c['status']) ?></span>
+                        <?php endif; ?>
+                        <div style="display:flex;gap:0.35rem;flex-wrap:wrap;margin-top:5px;">
+                            <?php
+                            $sc_colors = ['open'=>['#dcfce7','#16a34a'],'closed'=>['#f1f5f9','#64748b'],'archived'=>['#f8fafc','#94a3b8']];
+                            [$scb,$scc] = $sc_colors[$c['status']] ?? ['#f1f5f9','#64748b'];
+                            ?>
+                            <span style="background:<?= $scb ?>;color:<?= $scc ?>;font-size:0.6rem;font-weight:700;padding:1px 7px;"><?= ucfirst($c['status']) ?></span>
                             <?php if ($c['criteria_count'] > 0): ?>
-                            <span class="badge" style="background:#dbeafe;color:#1e4d8c;font-size:0.65rem;"><?= $c['criteria_count'] ?> criteria</span>
+                            <span style="background:#eff6ff;color:#1e4d8c;font-size:0.6rem;font-weight:700;padding:1px 7px;"><?= $c['criteria_count'] ?> criteria</span>
                             <?php else: ?>
-                            <span class="badge bg-warning text-dark" style="font-size:0.65rem;">No criteria</span>
+                            <span style="background:#fef3c7;color:#92400e;font-size:0.6rem;font-weight:700;padding:1px 7px;">No criteria</span>
                             <?php endif; ?>
                         </div>
                     </div>
-                    <div class="text-end" style="font-size:0.72rem;color:#94a3b8;white-space:nowrap;flex-shrink:0;">
+                    <div style="text-align:right;font-size:0.65rem;color:#94a3b8;white-space:nowrap;flex-shrink:0;">
                         <div><?= $c['applied'] ?> applied</div>
-                        <div><?= $c['reclassified'] ?> evaluation complete</div>
+                        <div><?= $c['reclassified'] ?> complete</div>
                     </div>
                 </div>
             </a>
             <?php endforeach; ?>
             </div>
             <?php else: ?>
-            <div class="p-4 text-center text-muted small">No cycles yet. Create one above.</div>
+            <div style="padding:2rem;text-align:center;font-size:0.78rem;color:#94a3b8;">No cycles yet. Create one above.</div>
             <?php endif; ?>
         </div>
     </div>
@@ -616,405 +578,167 @@ $positions_missing = array_keys(array_filter($position_counts, fn($c) => $c === 
     <?php if ($panel_cycle): ?>
 
         <!-- Cycle header card -->
-        <div class="neon-card mb-3" style="padding:0;overflow:hidden;">
-            <div style="padding:0.75rem 1.25rem;background:#1a3a6b;">
-                <div style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;flex-wrap:wrap;">
-                    <div style="font-weight:700;color:#fff;font-size:0.95rem;">
-                        <?= sanitize($panel_cycle['cycle_name']) ?>
+        <div style="background:#fff;border:1px solid #e2e8f0;margin-bottom:1rem;overflow:hidden;">
+            <!-- Cycle title bar -->
+            <div style="padding:0.75rem 1.25rem;background:#1a3a6b;display:flex;align-items:center;justify-content:space-between;gap:0.75rem;flex-wrap:wrap;">
+                <div style="font-weight:700;color:#fff;font-size:0.95rem;"><?= sanitize($panel_cycle['cycle_name']) ?></div>
+                <?php
+                $sc_colors2 = ['open'=>['#dcfce7','#16a34a'],'closed'=>['#f1f5f9','#64748b'],'archived'=>['#f8fafc','#94a3b8']];
+                [$scb2,$scc2] = $sc_colors2[$panel_cycle['status']] ?? ['#f1f5f9','#64748b'];
+                ?>
+                <span style="background:<?= $scb2 ?>;color:<?= $scc2 ?>;font-size:0.7rem;font-weight:700;padding:2px 10px;"><?= ucfirst($panel_cycle['status']) ?></span>
+            </div>
+
+            <!-- Stats + Dates two-column -->
+            <div style="display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid #f1f5f9;">
+                <div style="padding:0.85rem 1.25rem;border-right:1px solid #f1f5f9;">
+                    <div style="font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#94a3b8;margin-bottom:0.5rem;">Statistics</div>
+                    <div style="font-size:0.82rem;color:#1e293b;display:flex;flex-direction:column;gap:3px;">
+                        <div><i class="bi bi-file-earmark-text me-1" style="color:#1a3a6b;"></i><?= $panel_cycle['applied'] ?> applications</div>
+                        <div><i class="bi bi-check-circle me-1" style="color:#16a34a;"></i><?= $panel_cycle['reclassified'] ?> evaluation complete</div>
                     </div>
-                    <?php
-                    $sc_map2 = ['open'=>['#f0fdf4','#16a34a'],'closed'=>['#f1f5f9','#64748b'],'archived'=>['#f8fafc','#94a3b8']];
-                    [$scb,$scc] = $sc_map2[$panel_cycle['status']] ?? ['#f1f5f9','#64748b'];
-                    ?>
-                    <span style="background:<?= $scb ?>;color:<?= $scc ?>;font-size:0.72rem;font-weight:700;border-radius:20px;padding:2px 10px;">
-                        <?= ucfirst($panel_cycle['status']) ?>
-                    </span>
+                    <div style="font-size:0.7rem;color:#94a3b8;margin-top:5px;">Created by <?= sanitize($panel_cycle['full_name'] ?? 'System') ?></div>
+                </div>
+                <div style="padding:0.85rem 1.25rem;">
+                    <div style="font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#94a3b8;margin-bottom:0.5rem;">Cycle Dates</div>
+                    <div style="font-size:0.78rem;color:#1e293b;display:flex;flex-direction:column;gap:3px;">
+                        <?php if (!empty($panel_cycle['start_date']) && !empty($panel_cycle['end_date'])): ?>
+                        <div><i class="bi bi-calendar-event me-1" style="color:#1a3a6b;"></i><span style="color:#64748b;">Cycle:</span> <strong><?= date('M j, Y', strtotime($panel_cycle['start_date'])) ?> to <?= date('M j, Y', strtotime($panel_cycle['end_date'])) ?></strong></div>
+                        <?php endif; ?>
+                        <div><i class="bi bi-upload me-1" style="color:#1a3a6b;"></i><span style="color:#64748b;">Submission:</span> <strong><?= !empty($panel_cycle['submission_start_date']) ? date('M j, Y', strtotime($panel_cycle['submission_start_date'])) : 'N/A' ?> to <?= !empty($panel_cycle['submission_deadline']) ? date('M j, Y', strtotime($panel_cycle['submission_deadline'])) : 'N/A' ?></strong></div>
+                        <div><i class="bi bi-clock me-1" style="color:#d97706;"></i><span style="color:#64748b;">Evaluation Due:</span> <strong><?= !empty($panel_cycle['evaluation_deadline']) ? date('M j, Y', strtotime($panel_cycle['evaluation_deadline'])) : 'N/A' ?></strong></div>
+                        <div><i class="bi bi-chat-square-text me-1" style="color:#1a3a6b;"></i><span style="color:#64748b;">Appeals Due:</span> <strong><?= !empty($panel_cycle['appeal_deadline']) ? date('M j, Y', strtotime($panel_cycle['appeal_deadline'])) : 'While cycle is open' ?></strong></div>
+                    </div>
                 </div>
             </div>
-            <div style="padding:1rem 1.25rem;">
-                <div class="row g-3 mb-3">
-                    <div class="col-sm-6">
-                        <div class="small text-muted mb-1" style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;font-weight:700;">Statistics</div>
-                        <div style="font-size:0.85rem;color:#1e293b;">
-                            <span class="me-2"><i class="bi bi-file-earmark-text me-1 text-primary"></i><?= $panel_cycle['applied'] ?> applications</span>
-                            <span><i class="bi bi-check-circle me-1 text-success"></i><?= $panel_cycle['reclassified'] ?> evaluation complete</span>
-                        </div>
-                        <div class="text-muted small mt-1">Created by <?= sanitize($panel_cycle['full_name'] ?? 'System') ?></div>
-                    </div>
-                    <div class="col-sm-6">
-                        <div class="small text-muted mb-1" style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;font-weight:700;">Cycle Dates</div>
-                        <div style="font-size:0.82rem;color:#1e293b;display:flex;flex-direction:column;gap:2px;">
-                            <?php if (!empty($panel_cycle['start_date']) && !empty($panel_cycle['end_date'])): ?>
-                            <div><i class="bi bi-calendar-event me-1 text-primary"></i>
-                                <span class="text-muted">Cycle:</span>
-                                <strong><?= date('M j, Y', strtotime($panel_cycle['start_date'])) ?> to <?= date('M j, Y', strtotime($panel_cycle['end_date'])) ?></strong>
-                            </div>
-                            <?php endif; ?>
-                            <div><i class="bi bi-upload me-1 text-primary"></i>
-                                <span class="text-muted">Faculty Submission:</span>
-                                <strong>
-                                    <?= !empty($panel_cycle['submission_start_date']) ? date('M j, Y', strtotime($panel_cycle['submission_start_date'])) : 'N/A' ?>
-                                    to
-                                    <?= !empty($panel_cycle['submission_deadline']) ? date('M j, Y', strtotime($panel_cycle['submission_deadline'])) : 'N/A' ?>
-                                </strong>
-                            </div>
-                            <?php if (!empty($panel_cycle['submission_deadline'])): ?>
-                            <div><i class="bi bi-clock me-1 text-warning"></i>
-                                <span class="text-muted">Evaluation Due:</span>
-                                <strong><?= !empty($panel_cycle['evaluation_deadline']) ? date('M j, Y', strtotime($panel_cycle['evaluation_deadline'])) : 'N/A' ?></strong>
-                            </div>
-                            <div><i class="bi bi-chat-square-text me-1 text-primary"></i>
-                                <span class="text-muted">Appeals Due:</span>
-                                <strong><?= !empty($panel_cycle['appeal_deadline']) ? date('M j, Y', strtotime($panel_cycle['appeal_deadline'])) : 'While cycle is open' ?></strong>
-                            </div>
-                            <?php endif; ?>
-                            <?php if (empty($panel_cycle['start_date']) && empty($panel_cycle['end_date'])): ?>
-                            <div class="text-muted" style="font-size:0.78rem;"><i class="bi bi-dash me-1"></i>No dates set</div>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-                </div>
-                <!-- Status controls -->
-                <div class="d-flex gap-2 flex-wrap pt-2" style="border-top:1px solid #f0f4fb;">
-                    <button type="button" class="btn btn-sm btn-outline-primary"
-                            onclick="openEditCycleModal()"
-                            style="border-radius:6px;">
-                        <i class="bi bi-pencil me-1"></i>Edit Cycle
+
+            <!-- Action buttons -->
+            <div style="padding:0.65rem 1.25rem;display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;background:#f8fafc;border-bottom:1px solid #f1f5f9;">
+                <button type="button" onclick="openEditCycleModal()"
+                        style="padding:0.35rem 0.85rem;border:1px solid #e2e8f0;background:#fff;font-size:0.75rem;font-weight:600;cursor:pointer;color:#475569;display:inline-flex;align-items:center;gap:4px;"
+                        onmouseover="this.style.background='#1a3a6b';this.style.color='#fff';this.style.borderColor='#1a3a6b'"
+                        onmouseout="this.style.background='#fff';this.style.color='#475569';this.style.borderColor='#e2e8f0'">
+                    <i class="bi bi-pencil" style="font-size:0.7rem;"></i>Edit Cycle
+                </button>
+                <button type="button" onclick="openExtendSubmissionModal()"
+                        style="padding:0.35rem 0.85rem;border:1px solid #e2e8f0;background:#fff;font-size:0.75rem;font-weight:600;cursor:pointer;color:#475569;display:inline-flex;align-items:center;gap:4px;"
+                        onmouseover="this.style.background='#1a3a6b';this.style.color='#fff';this.style.borderColor='#1a3a6b'"
+                        onmouseout="this.style.background='#fff';this.style.color='#475569';this.style.borderColor='#e2e8f0'">
+                    <i class="bi bi-clock-history" style="font-size:0.7rem;"></i>Extend Submission
+                </button>
+                <form method="POST" class="d-flex gap-1 align-items-center" id="statusForm_<?= $panel_cycle['cycle_id'] ?>">
+                    <input type="hidden" name="action" value="update_status">
+                    <input type="hidden" name="cycle_id" value="<?= $panel_cycle['cycle_id'] ?>">
+                    <select name="status" style="border:1px solid #e2e8f0;padding:0.32rem 0.5rem;font-size:0.75rem;background:#fff;">
+                        <option value="open"     <?= $panel_cycle['status']==='open'     ?'selected':'' ?>>Open</option>
+                        <option value="closed"   <?= $panel_cycle['status']==='closed'   ?'selected':'' ?>>Closed</option>
+                        <option value="archived" <?= $panel_cycle['status']==='archived' ?'selected':'' ?>>Archived</option>
+                    </select>
+                    <button type="button"
+                            style="padding:0.35rem 0.85rem;background:#1a3a6b;color:#fff;border:none;font-size:0.75rem;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:4px;"
+                            onclick="confirmDelete('Update status for this cycle?','statusForm_<?= $panel_cycle['cycle_id'] ?>','Update','bi-check-circle')">
+                        <i class="bi bi-check-circle" style="font-size:0.7rem;"></i>Update Status
                     </button>
-                    <button type="button" class="btn btn-sm btn-outline-primary"
-                            onclick="openExtendSubmissionModal()"
-                            style="border-radius:6px;">
-                        <i class="bi bi-clock-history me-1"></i>Extend Submission
+                </form>
+                <!-- Delete Cycle button — opens verification modal -->
+                <div style="margin-left:auto;">
+                    <button type="button" id="deleteCycleBtn"
+                            data-cycle-id="<?= (int)$panel_cycle['cycle_id'] ?>"
+                            data-cycle-name="<?= htmlspecialchars($panel_cycle['cycle_name'], ENT_QUOTES) ?>"
+                            data-applied="<?= (int)$panel_cycle['applied'] ?>"
+                            style="padding:0.35rem 0.85rem;background:#fff;color:#dc2626;border:1px solid #fecaca;font-size:0.75rem;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:4px;"
+                            onmouseover="this.style.background='#fef2f2'" onmouseout="this.style.background='#fff'"
+                            onclick="openDeleteCycleModalFromBtn(this)">
+                        <i class="bi bi-trash" style="font-size:0.7rem;"></i> Delete Cycle
                     </button>
-                    <form method="POST" class="d-flex gap-1" id="statusForm_<?= $panel_cycle['cycle_id'] ?>">
-                        <input type="hidden" name="action" value="update_status">
-                        <input type="hidden" name="cycle_id" value="<?= $panel_cycle['cycle_id'] ?>">
-                        <select name="status" class="form-select form-select-sm" style="width:auto;min-width:130px;">
-                            <option value="open"     <?= $panel_cycle['status']==='open'     ?'selected':'' ?>>Open</option>
-                            <option value="closed"   <?= $panel_cycle['status']==='closed'   ?'selected':'' ?>>Closed</option>
-                            <option value="archived" <?= $panel_cycle['status']==='archived' ?'selected':'' ?>>Archived</option>
-                        </select>
-                        <button type="button" class="btn btn-sm btn-primary"
-                                onclick="confirmDelete('Update status for this cycle?','statusForm_<?= $panel_cycle['cycle_id'] ?>','Update','bi-check-circle')">
-                            <i class="bi bi-check-circle me-1"></i>Update Status
-                        </button>
-                    </form>
-                    <form method="POST" id="delCycleForm_<?= $panel_cycle['cycle_id'] ?>">
-                        <input type="hidden" name="action" value="delete_cycle">
-                        <input type="hidden" name="cycle_id" value="<?= $panel_cycle['cycle_id'] ?>">
-                        <button type="button" class="btn btn-sm"
-                                style="background:#fef2f2;color:#dc2626;border:1px solid #fecaca;"
-                                <?= $panel_cycle['applied'] > 0 ? 'disabled title="Has submitted applications"' : '' ?>
-                                onclick="confirmDelete('Delete cycle &ldquo;<?= addslashes(sanitize($panel_cycle['cycle_name'])) ?>&rdquo;? This cannot be undone.','delCycleForm_<?= $panel_cycle['cycle_id'] ?>')">
-                            <i class="bi bi-trash me-1"></i>Delete Cycle
-                        </button>
-                    </form>
                 </div>
-                <?php if ($cycle_extensions): ?>
-                <div class="mt-3 pt-3" style="border-top:1px solid #f0f4fb;">
-                    <div class="small text-muted mb-2" style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;font-weight:700;">Extension History</div>
-                    <div class="table-responsive">
-                        <table class="table table-sm align-middle mb-0" style="font-size:0.8rem;">
-                            <thead>
-                                <tr style="color:#64748b;">
-                                    <th>Scope</th>
-                                    <th>Previous</th>
-                                    <th>New Deadline</th>
-                                    <th>Extended By</th>
-                                    <th>When</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                            <?php foreach ($cycle_extensions as $ext): ?>
-                                <tr>
-                                    <td>
-                                        <?= !empty($ext['applies_to_all'])
-                                            ? 'All Faculty'
-                                            : sanitize(formatDisplayName($ext) ?: ($ext['full_name'] ?? 'Selected Faculty')) ?>
-                                        <?php if (!empty($ext['reason'])): ?>
-                                        <div class="text-muted" style="font-size:0.72rem;"><?= sanitize($ext['reason']) ?></div>
-                                        <?php endif; ?>
-                                    </td>
-                                    <td><?= date('M j, Y', strtotime($ext['previous_deadline'])) ?></td>
-                                    <td><strong><?= date('M j, Y', strtotime($ext['new_deadline'])) ?></strong></td>
-                                    <td><?= sanitize($ext['extended_by_name'] ?? 'Admin') ?></td>
-                                    <td><?= date('M j, Y g:i A', strtotime($ext['created_at'])) ?></td>
-                                </tr>
-                            <?php endforeach; ?>
-                            </tbody>
-                        </table>
+            </div>
+
+            <?php if ($cycle_extensions): ?>
+            <div style="padding:0.75rem 1.25rem;">
+                <div style="font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#94a3b8;margin-bottom:0.5rem;">Extension History</div>
+                <div class="table-responsive">
+                    <table style="width:100%;border-collapse:collapse;font-size:0.78rem;">
+                        <thead>
+                        <tr style="background:#f8fafc;border-bottom:1px solid #e2e8f0;">
+                            <th style="padding:0.4rem 0.75rem;text-align:left;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;">Scope</th>
+                            <th style="padding:0.4rem 0.75rem;text-align:left;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;">Previous</th>
+                            <th style="padding:0.4rem 0.75rem;text-align:left;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;">New Deadline</th>
+                            <th style="padding:0.4rem 0.75rem;text-align:left;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;">Extended By</th>
+                            <th style="padding:0.4rem 0.75rem;text-align:left;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;">When</th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        <?php foreach ($cycle_extensions as $ext): ?>
+                        <tr style="border-bottom:1px solid #f1f5f9;">
+                            <td style="padding:0.45rem 0.75rem;color:#334155;">
+                                <?= !empty($ext['applies_to_all']) ? 'All Faculty' : sanitize(formatDisplayName($ext) ?: ($ext['full_name'] ?? 'Selected Faculty')) ?>
+                                <?php if (!empty($ext['reason'])): ?><div style="font-size:0.68rem;color:#94a3b8;"><?= sanitize($ext['reason']) ?></div><?php endif; ?>
+                            </td>
+                            <td style="padding:0.45rem 0.75rem;color:#64748b;"><?= date('M j, Y', strtotime($ext['previous_deadline'])) ?></td>
+                            <td style="padding:0.45rem 0.75rem;font-weight:600;color:#1e293b;"><?= date('M j, Y', strtotime($ext['new_deadline'])) ?></td>
+                            <td style="padding:0.45rem 0.75rem;color:#64748b;"><?= sanitize($ext['extended_by_name'] ?? 'Admin') ?></td>
+                            <td style="padding:0.45rem 0.75rem;color:#94a3b8;font-size:0.72rem;"><?= date('M j, Y g:i A', strtotime($ext['created_at'])) ?></td>
+                        </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <?php endif; ?>
+        </div>
+
+        <!-- Scoring Criteria link tile -->
+        <div style="border:1px solid #e2e8f0;background:#fff;overflow:hidden;">
+            <div style="padding:0 1.25rem;border-bottom:1px solid #e2e8f0;background:#f8fafc;
+                        display:flex;align-items:center;justify-content:space-between;min-height:48px;">
+                <div style="display:flex;align-items:center;gap:0.6rem;">
+                    <div style="width:28px;height:28px;background:#1a3a6b;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+                        <i class="bi bi-sliders2" style="color:#fff;font-size:0.72rem;"></i>
+                    </div>
+                    <div>
+                        <div style="font-weight:700;color:#1a3a6b;font-size:0.82rem;line-height:1.2;">Scoring Criteria</div>
+                        <div style="font-size:0.65rem;color:#94a3b8;margin-top:1px;">Configure scoring criteria per faculty position for this cycle</div>
                     </div>
                 </div>
+                <a href="index.php?page=scoring_criteria&cycle_id=<?= (int)$panel_cycle['cycle_id'] ?>"
+                   style="display:inline-flex;align-items:center;gap:5px;padding:0.38rem 0.9rem;
+                          background:#1a3a6b;color:#fff;text-decoration:none;font-size:0.78rem;font-weight:700;flex-shrink:0;"
+                   onmouseover="this.style.background='#152d54'" onmouseout="this.style.background='#1a3a6b'">
+                    <i class="bi bi-arrow-right-square" style="font-size:0.72rem;"></i> Manage Criteria
+                </a>
+            </div>
+            <div style="padding:0.75rem 1.25rem;display:flex;align-items:center;gap:1.5rem;flex-wrap:wrap;">
+                <?php
+                $crit_total = (int)($panel_cycle['criteria_count'] ?? 0);
+                $crit_positions = 0;
+                if ($crit_total > 0) {
+                    $cp = $pdo->prepare("SELECT COUNT(DISTINCT position_rank) FROM scoring_criteria WHERE cycle_id=? AND position_rank IS NOT NULL");
+                    $cp->execute([(int)$panel_cycle['cycle_id']]);
+                    $crit_positions = (int)$cp->fetchColumn();
+                }
+                ?>
+                <div style="display:flex;align-items:center;gap:0.4rem;">
+                    <i class="bi bi-check-square" style="color:<?= $crit_total>0?'#1a3a6b':'#94a3b8' ?>;font-size:0.82rem;"></i>
+                    <span style="font-size:0.78rem;color:#475569;font-weight:600;"><?= $crit_total ?> criteria</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:0.4rem;">
+                    <i class="bi bi-people" style="color:<?= $crit_positions>0?'#1a3a6b':'#94a3b8' ?>;font-size:0.82rem;"></i>
+                    <span style="font-size:0.78rem;color:#475569;font-weight:600;"><?= $crit_positions ?> / 19 positions configured</span>
+                </div>
+                <?php if ($crit_total === 0): ?>
+                <span style="font-size:0.68rem;color:#dc2626;font-weight:700;padding:2px 8px;background:#fef2f2;border:1px solid #fecaca;">
+                    <i class="bi bi-exclamation-triangle" style="margin-right:3px;"></i>No criteria set
+                </span>
                 <?php endif; ?>
             </div>
         </div>
 
-        <!-- Criteria card -->
-        <div class="neon-card" style="padding:0;overflow:hidden;">
-            <div style="padding:0.75rem 1.25rem;border-bottom:1px solid #f1f5f9;display:flex;align-items:center;justify-content:space-between;">
-                <div style="font-weight:700;color:#1a3a6b;font-size:0.88rem;display:flex;align-items:center;gap:0.5rem;">
-                    <i class="bi bi-sliders" style="color:#1e4d8c;"></i>Scoring Criteria
-                    <?php if ($active_position): ?>
-                    <span style="background:#dbeafe;color:#1e4d8c;font-size:0.7rem;font-weight:700;border-radius:20px;padding:2px 8px;">
-                        <?= htmlspecialchars($active_position) ?>
-                    </span>
-                    <?php else: ?>
-                    <span style="background:#f1f5f9;color:#64748b;font-size:0.7rem;font-weight:700;border-radius:20px;padding:2px 8px;">All Positions Overview</span>
-                    <?php endif; ?>
-                </div>
-            </div>
-            <div style="padding:1rem 1.25rem;">
-
-            <!-- Position selector tabs -->
-            <div class="mb-3 pb-3" style="border-bottom:1px solid #f0f4fb;">
-                <div class="d-flex align-items-center gap-1 flex-wrap">
-                    <a href="?page=cycles&cycle_id=<?= $active_cycle_id ?>"
-                       class="btn btn-xs <?= !$active_position ? 'btn-primary' : 'btn-outline-secondary' ?>">
-                        <i class="bi bi-grid me-1"></i>Overview
-                    </a>
-                    <?php
-                    $rank_groups = [
-                        'Instructor'   => ['Instructor I','Instructor II','Instructor III'],
-                        'Asst. Prof.'  => ['Assistant Professor I','Assistant Professor II','Assistant Professor III','Assistant Professor IV'],
-                        'Assoc. Prof.' => ['Associate Professor I','Associate Professor II','Associate Professor III','Associate Professor IV','Associate Professor V'],
-                        'Professor'    => ['Professor I','Professor II','Professor III','Professor IV','Professor V','Professor VI'],
-                        'Univ. Prof.'  => ['University Professor'],
-                    ];
-                    foreach ($rank_groups as $group => $ranks):
-                    ?>
-                    <div class="dropdown">
-                        <button class="btn btn-xs <?= in_array($active_position, $ranks) ? 'btn-primary' : 'btn-outline-secondary' ?> dropdown-toggle" data-bs-toggle="dropdown">
-                            <?= $group ?>
-                        </button>
-                        <ul class="dropdown-menu shadow-sm" style="min-width:230px;border:1px solid #e2e8f0;">
-                            <?php foreach ($ranks as $rank):
-                                $cnt = $position_counts[$rank] ?? 0;
-                                $is_active_pos = ($active_position === $rank);
-                            ?>
-                            <li>
-                                <a class="dropdown-item small d-flex justify-content-between align-items-center py-2 <?= $is_active_pos ? 'active' : '' ?>"
-                                   href="?page=cycles&cycle_id=<?= $active_cycle_id ?>&position=<?= urlencode($rank) ?>">
-                                    <span><?= htmlspecialchars($rank) ?></span>
-                                    <?php if ($cnt > 0): ?>
-                                    <span class="badge ms-2" style="background:#dbeafe;color:#1e4d8c;font-size:0.6rem;"><?= $cnt ?></span>
-                                    <?php else: ?>
-                                    <span class="badge bg-warning text-dark ms-2" style="font-size:0.6rem;">empty</span>
-                                    <?php endif; ?>
-                                </a>
-                            </li>
-                            <?php endforeach; ?>
-                        </ul>
-                    </div>
-                    <?php endforeach; ?>
-                </div>
-            </div>
-
-            <?php if ($criteria_source === 'overview'): ?>
-            <!-- Overview: position status grid -->
-            <?php foreach ($rank_groups as $group => $ranks): ?>
-            <div class="mb-3">
-                <div class="fw-bold mb-2" style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;"><?= $group ?></div>
-                <div class="d-flex flex-wrap gap-2">
-                <?php foreach ($ranks as $rank):
-                    $cnt = $position_counts[$rank] ?? 0;
-                ?>
-                <a href="?page=cycles&cycle_id=<?= $active_cycle_id ?>&position=<?= urlencode($rank) ?>"
-                   class="btn btn-sm"
-                   style="font-size:0.78rem;<?= $cnt > 0
-                       ? 'background:#dbeafe;color:#1e4d8c;border:1px solid #bfdbfe;'
-                       : 'background:#fff;color:#334155;border:1px solid #475569;' ?>">
-                    <?= htmlspecialchars($rank) ?>
-                    <span class="ms-1" style="font-size:0.65rem;opacity:0.8;"><?= $cnt > 0 ? $cnt : '!' ?></span>
-                </a>
-                <?php endforeach; ?>
-                </div>
-            </div>
-            <?php endforeach; ?>
-
-            <?php elseif ($criteria_source === 'empty_position'): ?>
-            <div class="alert alert-info py-2 small">
-                <i class="bi bi-info-circle me-1"></i>
-                Criteria for <strong><?= htmlspecialchars($active_position) ?></strong> are being set up. Please refresh the page.
-            </div>
-
-            <?php else: ?>
-            <!-- Editable criteria accordion -->
-            <div class="alert py-2 small mb-3" style="background:#f0f7ff;border:1px solid #bfdbfe;color:#1e4d8c;">
-                <i class="bi bi-pencil-square me-1"></i>
-                Editing criteria for <strong><?= htmlspecialchars($active_position) ?></strong>. Changes only affect this position in this cycle.
-            </div>
-
-            <div class="accordion mb-4" id="criteriaAccordion">
-            <?php foreach ($kra_list as $kra):
-                $items = $grouped[$kra] ?? [];
-                $slug  = strtolower(str_replace([' ','/'],['-',''], $kra));
-                $is_editable = ($criteria_source === 'cycle_position');
-            ?>
-            <div class="accordion-item border mb-2" style="border-color:#e2e8f0 !important;border-radius:8px !important;overflow:hidden;">
-                <h2 class="accordion-header" id="head-<?= $slug ?>">
-                    <button class="accordion-button collapsed fw-semibold" type="button"
-                            data-bs-toggle="collapse" data-bs-target="#kra-<?= $slug ?>"
-                            style="background:#f8fafc;color:#1a3a6b;font-size:0.875rem;">
-                        <i class="bi bi-sliders2 me-2 text-primary"></i><?= $kra ?>
-                        <span class="badge bg-primary ms-2" style="font-size:0.65rem;"><?= count($items) ?></span>
-                    </button>
-                </h2>
-                <div id="kra-<?= $slug ?>" class="accordion-collapse collapse">
-                    <div class="accordion-body p-0" style="background:#fff;">
-                        <?php foreach ($items as $c): ?>
-                        <form method="POST" class="px-3 py-3 border-bottom" style="border-color:#f0f4fb !important;"
-                              id="cForm_<?= $c['criteria_id'] ?>">
-                            <input type="hidden" name="action" value="update_criterion">
-                            <input type="hidden" name="criteria_id" value="<?= $c['criteria_id'] ?>">
-                            <input type="hidden" name="back_cycle_id" value="<?= $active_cycle_id ?>">
-                            <input type="hidden" name="back_position" value="<?= htmlspecialchars($active_position) ?>">
-                            <div class="row g-2 align-items-end">
-                                <div class="col-12 col-md-1">
-                                    <label class="form-label small fw-semibold" style="color:#94a3b8;">Key</label>
-                                    <input type="text" class="form-control form-control-sm"
-                                           value="<?= sanitize($c['criterion_key']) ?>" disabled
-                                           style="background:#f8fafc;color:#94a3b8;font-size:0.75rem;">
-                                </div>
-                                <div class="col-12 col-md-4">
-                                    <label class="form-label small fw-semibold" style="color:#475569;">Label</label>
-                                    <input type="text" name="criterion_label" class="form-control form-control-sm"
-                                           value="<?= sanitize($c['criterion_label']) ?>"
-                                           <?= !$is_editable ? 'disabled' : 'required' ?>>
-                                </div>
-                                <div class="col-6 col-md-2">
-                                    <label class="form-label small fw-semibold" style="color:#475569;">Max Pts</label>
-                                    <input type="number" name="max_points" class="form-control form-control-sm"
-                                           value="<?= $c['max_points'] ?>" step="0.01" min="0"
-                                           <?= !$is_editable ? 'disabled' : 'required' ?>>
-                                </div>
-                                <div class="col-6 col-md-2">
-                                    <label class="form-label small fw-semibold" style="color:#475569;">Weight %</label>
-                                    <input type="number" name="weight_pct" class="form-control form-control-sm"
-                                           value="<?= $c['weight_pct'] ?>" step="0.01" min="0" max="100"
-                                           <?= !$is_editable ? 'disabled' : '' ?>>
-                                </div>
-                                <div class="col-12 col-md-2">
-                                    <label class="form-label small fw-semibold" style="color:#475569;">Description</label>
-                                    <input type="text" name="description" class="form-control form-control-sm"
-                                           value="<?= sanitize($c['description'] ?? '') ?>"
-                                           <?= !$is_editable ? 'disabled' : '' ?>>
-                                </div>
-                                <?php if ($is_editable): ?>
-                                <div class="col-6 col-md-1 d-flex flex-column align-items-center">
-                                    <label class="form-label small fw-semibold" style="color:#475569;">Active</label>
-                                    <div class="form-check form-switch mt-1">
-                                        <input class="form-check-input" type="checkbox" name="is_active"
-                                               <?= $c['is_active'] ? 'checked' : '' ?>>
-                                    </div>
-                                </div>
-                                <div class="col-6 col-md-auto d-flex gap-1 align-items-end">
-                                    <button type="button" class="btn btn-sm btn-primary"
-                                            onclick="confirmDelete('Save changes to this criterion?','cForm_<?= $c['criteria_id'] ?>','Save','bi-save')">
-                                        <i class="bi bi-save me-1"></i>Save
-                                    </button>
-                                    <button type="button" class="btn btn-sm"
-                                            style="background:#fef2f2;color:#dc2626;border:1px solid #fecaca;"
-                                            onclick="showDelCrit(<?= $c['criteria_id'] ?>,<?= $active_cycle_id ?>,'<?= addslashes(htmlspecialchars($c['criterion_label'])) ?>')">
-                                        <i class="bi bi-trash"></i>
-                                    </button>
-                                </div>
-                                <?php endif; ?>
-                            </div>
-                        </form>
-                        <form method="POST" id="delCritForm_<?= $c['criteria_id'] ?>" style="display:none;">
-                            <input type="hidden" name="action" value="delete_criterion">
-                            <input type="hidden" name="criteria_id" value="<?= $c['criteria_id'] ?>">
-                            <input type="hidden" name="back_cycle_id" value="<?= $active_cycle_id ?>">
-                            <input type="hidden" name="back_position" value="<?= htmlspecialchars($active_position) ?>">
-                        </form>
-                        <?php endforeach; ?>
-                        <?php if (empty($items)): ?>
-                        <div class="p-4 text-muted small text-center">
-                            <i class="bi bi-inbox me-1"></i>No criteria for this KRA yet.
-                        </div>
-                        <?php endif; ?>
-                    </div>
-                </div>
-            </div>
-            <?php endforeach; ?>
-            </div>
-
-            <!-- Add criterion -->
-            <?php if ($is_editable): ?>
-            <div class="pt-2" style="border-top:1px solid #f0f4fb;">
-                <div class="d-flex justify-content-between align-items-center mb-2">
-                    <span class="fw-semibold small" style="color:#1a3a6b;">
-                        <i class="bi bi-plus-circle me-1"></i>Add Criterion
-                        <?php if ($active_position): ?>
-                        <span class="badge ms-1" style="background:#dbeafe;color:#1e4d8c;font-size:0.7rem;"><?= htmlspecialchars($active_position) ?></span>
-                        <?php endif; ?>
-                    </span>
-                    <button class="btn btn-sm btn-primary" type="button"
-                            data-bs-toggle="collapse" data-bs-target="#addCritCollapse">
-                        <i class="bi bi-plus-lg me-1"></i>Add
-                    </button>
-                </div>
-                <div class="collapse" id="addCritCollapse">
-                <div class="p-3 rounded" style="background:#f8fafc;border:1px solid #e2e8f0;">
-                <form method="POST" id="addCritForm">
-                    <input type="hidden" name="action" value="add_criterion">
-                    <input type="hidden" name="cycle_id" value="<?= $active_cycle_id ?>">
-                    <input type="hidden" name="position_rank" value="<?= htmlspecialchars($active_position) ?>">
-                    <div class="row g-2 align-items-end">
-                        <div class="col-md-2">
-                            <label class="form-label small fw-semibold" style="color:#475569;">KRA <span class="text-danger">*</span></label>
-                            <select name="kra_category" class="form-select form-select-sm" required>
-                                <?php foreach ($kra_list as $k): ?>
-                                <option value="<?= $k ?>"><?= $k ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                        <div class="col-md-2">
-                            <label class="form-label small fw-semibold" style="color:#475569;">Key <span class="text-danger">*</span></label>
-                            <input type="text" name="criterion_key" class="form-control form-control-sm"
-                                   placeholder="e.g. kra1_patent" required>
-                        </div>
-                        <div class="col-md-3">
-                            <label class="form-label small fw-semibold" style="color:#475569;">Label <span class="text-danger">*</span></label>
-                            <input type="text" name="criterion_label" class="form-control form-control-sm"
-                                   placeholder="e.g. Patent / Utility Model" required>
-                        </div>
-                        <div class="col-md-1">
-                            <label class="form-label small fw-semibold" style="color:#475569;">Max Pts <span class="text-danger">*</span></label>
-                            <input type="number" name="max_points" class="form-control form-control-sm"
-                                   step="0.01" min="0.01" placeholder="0.00" required>
-                        </div>
-                        <div class="col-md-1">
-                            <label class="form-label small fw-semibold" style="color:#475569;">Weight %</label>
-                            <input type="number" name="weight_pct" class="form-control form-control-sm"
-                                   step="1" min="0" max="100" value="100">
-                        </div>
-                        <div class="col-md-2">
-                            <label class="form-label small fw-semibold" style="color:#475569;">Description</label>
-                            <input type="text" name="description" class="form-control form-control-sm" placeholder="Optional">
-                        </div>
-                        <div class="col-md-1">
-                            <button type="button" class="btn btn-sm btn-primary w-100"
-                                    onclick="confirmDelete('Add this criterion?','addCritForm','Add','bi-plus-circle')">
-                                <i class="bi bi-plus-lg"></i>
-                            </button>
-                        </div>
-                    </div>
-                </form>
-                </div>
-                </div>
-            </div>
-            <?php endif; ?>
-            <?php endif; // criteria_source ?>
-
-            </div><!-- card-body -->
-        </div><!-- criteria card -->
-
     <?php else: ?>
-    <div class="neon-card d-flex flex-column align-items-center justify-content-center py-5 text-center" style="min-height:300px;">
+    <div style="border:1px solid #e2e8f0;background:#fff;min-height:300px;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:3rem;text-align:center;">
         <i class="bi bi-calendar-range" style="font-size:2.5rem;color:#dbeafe;display:block;margin-bottom:0.75rem;"></i>
-        <p class="fw-semibold mb-1" style="color:#475569;">Select a cycle to manage it</p>
-        <p class="text-muted small">Or create a new cycle using the button above.</p>
+        <p style="font-weight:600;color:#475569;margin-bottom:0.25rem;">Select a cycle to manage it</p>
+        <p style="color:#94a3b8;font-size:0.82rem;">Or create a new cycle using the button above.</p>
     </div>
     <?php endif; ?>
     </div><!-- col-lg-9 -->
@@ -1024,169 +748,110 @@ $positions_missing = array_keys(array_filter($position_counts, fn($c) => $c === 
 <div id="cycleReviewModal"
      style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.5);
             align-items:center;justify-content:center;padding:1rem;">
-    <div style="background:#fff;border-radius:14px;width:100%;max-width:520px;
-                box-shadow:0 20px 60px rgba(0,0,0,0.2);overflow:hidden;">
+    <div style="background:#fff;border:1px solid #e2e8f0;width:100%;max-width:500px;
+                box-shadow:0 16px 48px rgba(0,0,0,0.18);overflow:hidden;">
 
         <!-- Header -->
-        <div style="background:linear-gradient(135deg,#1a3a6b,#1e4d8c);padding:1.25rem 1.5rem;
+        <div style="background:#1a3a6b;padding:0.8rem 1.1rem;
                     display:flex;align-items:center;justify-content:space-between;">
-            <div style="display:flex;align-items:center;gap:0.75rem;">
-                <div style="width:36px;height:36px;border-radius:8px;background:rgba(255,255,255,0.12);
-                            display:flex;align-items:center;justify-content:center;">
-                    <i class="bi bi-calendar-check" style="color:#fff;font-size:1rem;"></i>
-                </div>
-                <div>
-                    <div style="color:#fff;font-weight:700;font-size:0.95rem;">Review New Cycle</div>
-                    <div style="color:rgba(255,255,255,0.6);font-size:0.72rem;">Please confirm the details before opening</div>
-                </div>
+            <div>
+                <div style="font-weight:700;color:#fff;font-size:0.88rem;">Review New Cycle</div>
+                <div style="color:rgba(255,255,255,0.55);font-size:0.68rem;margin-top:2px;">Confirm the details before opening</div>
             </div>
             <button onclick="document.getElementById('cycleReviewModal').style.display='none'"
-                    style="background:none;border:none;color:rgba(255,255,255,0.7);
-                           font-size:1.3rem;cursor:pointer;line-height:1;padding:0;"
-                    onmouseover="this.style.color='#fff'" onmouseout="this.style.color='rgba(255,255,255,0.7)'">
-                &times;
+                    style="background:none;border:none;color:rgba(255,255,255,0.7);font-size:1.1rem;
+                           cursor:pointer;line-height:1;padding:0;"
+                    onmouseover="this.style.color='#fff'"
+                    onmouseout="this.style.color='rgba(255,255,255,0.7)'">
+                <i class="bi bi-x-lg"></i>
             </button>
         </div>
 
         <!-- Warning if open cycle exists -->
         <?php if ($open_cycle): ?>
-        <div style="background:#fffbeb;border-bottom:1px solid #fde68a;padding:0.65rem 1.5rem;
-                    display:flex;align-items:flex-start;gap:0.6rem;font-size:0.8rem;color:#92400e;">
-            <i class="bi bi-exclamation-triangle-fill" style="color:#d97706;flex-shrink:0;margin-top:1px;"></i>
-            <div>
-                Opening this cycle will <strong>automatically close</strong> the currently open cycle:
-                <strong><?= sanitize($open_cycle['cycle_name']) ?></strong>.
-            </div>
+        <div style="background:#fffbeb;border-bottom:1px solid #fde68a;padding:0.55rem 1.1rem;
+                    font-size:0.78rem;color:#92400e;">
+            Creating this cycle will <strong>automatically close</strong> the currently open cycle: <strong><?= sanitize($open_cycle['cycle_name']) ?></strong>.
         </div>
         <?php endif; ?>
 
-        <!-- Summary -->
-        <div style="padding:1.5rem;">
+        <!-- Body -->
+        <div style="padding:1.1rem;">
 
-            <p style="font-size:0.78rem;color:#64748b;margin-bottom:1.25rem;">
-                Review the details below. Once confirmed, the cycle will open immediately and faculty can begin submitting applications.
-            </p>
+            <!-- Summary table -->
+            <div style="border:1px solid #e2e8f0;overflow:hidden;margin-bottom:0.85rem;">
 
-            <div style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:1.25rem;">
-
-                <!-- Cycle name -->
-                <div style="display:flex;align-items:center;padding:0.75rem 1rem;border-bottom:1px solid #f1f5f9;background:#fafbff;">
-                    <div style="width:28px;height:28px;border-radius:7px;background:#eff6ff;
-                                display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-right:0.75rem;">
-                        <i class="bi bi-tag" style="color:#1e4d8c;font-size:0.8rem;"></i>
+                <!-- Cycle name row -->
+                <div style="padding:0.65rem 1rem;border-bottom:1px solid #f1f5f9;">
+                    <div style="font-size:0.62rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:2px;">Cycle Name</div>
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;">
+                        <div id="rv_name" style="font-size:0.88rem;font-weight:700;color:#0f172a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></div>
+                        <span style="font-size:0.65rem;font-weight:600;color:#475569;background:#f1f5f9;
+                                     border:1px solid #e2e8f0;padding:2px 9px;white-space:nowrap;flex-shrink:0;">
+                            Opens immediately
+                        </span>
                     </div>
-                    <div style="flex:1;">
-                        <div style="font-size:0.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">Cycle Name</div>
-                        <div id="rv_name" style="font-size:0.88rem;font-weight:700;color:#0f172a;margin-top:1px;"></div>
-                    </div>
-                    <span style="font-size:0.65rem;font-weight:700;color:#16a34a;background:#f0fdf4;
-                                 border:1px solid #bbf7d0;border-radius:20px;padding:2px 8px;">
-                        Opens immediately
-                    </span>
                 </div>
 
-                <!-- Dates row -->
+                <!-- 2-col date grid -->
                 <div style="display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid #f1f5f9;">
-                    <div style="padding:0.75rem 1rem;border-right:1px solid #f1f5f9;">
-                        <div style="font-size:0.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:2px;">
-                            <i class="bi bi-calendar-event me-1 text-primary"></i>Start Date
-                        </div>
-                        <div id="rv_start" style="font-size:0.85rem;font-weight:600;color:#1e293b;"></div>
+                    <div style="padding:0.65rem 1rem;border-right:1px solid #f1f5f9;">
+                        <div style="font-size:0.62rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px;">Start Date</div>
+                        <div id="rv_start" style="font-size:0.82rem;font-weight:600;color:#1e293b;"></div>
                     </div>
-                    <div style="padding:0.75rem 1rem;">
-                        <div style="font-size:0.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:2px;">
-                            <i class="bi bi-calendar-x me-1 text-danger"></i>End Date
-                        </div>
-                        <div id="rv_end" style="font-size:0.85rem;font-weight:600;color:#1e293b;"></div>
+                    <div style="padding:0.65rem 1rem;">
+                        <div style="font-size:0.62rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px;">End Date</div>
+                        <div id="rv_end" style="font-size:0.82rem;font-weight:600;color:#1e293b;"></div>
                     </div>
                 </div>
 
-                <!-- Submission window -->
                 <div style="display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid #f1f5f9;">
-                    <div style="padding:0.75rem 1rem;border-right:1px solid #f1f5f9;">
-                        <div style="font-size:0.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:2px;">
-                            <i class="bi bi-upload me-1 text-primary"></i>Submission Start
-                        </div>
-                        <div id="rv_sub_start" style="font-size:0.85rem;font-weight:600;color:#1e293b;"></div>
+                    <div style="padding:0.65rem 1rem;border-right:1px solid #f1f5f9;">
+                        <div style="font-size:0.62rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px;">Submission Start</div>
+                        <div id="rv_sub_start" style="font-size:0.82rem;font-weight:600;color:#1e293b;"></div>
                     </div>
-                    <div style="padding:0.75rem 1rem;">
-                        <div style="font-size:0.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:2px;">
-                            <i class="bi bi-alarm me-1 text-warning"></i>Submission Deadline
-                        </div>
-                        <div id="rv_deadline" style="font-size:0.85rem;font-weight:600;color:#1e293b;"></div>
+                    <div style="padding:0.65rem 1rem;">
+                        <div style="font-size:0.62rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px;">Submission Deadline</div>
+                        <div id="rv_deadline" style="font-size:0.82rem;font-weight:600;color:#1e293b;"></div>
                     </div>
                 </div>
 
-                <!-- Evaluation deadline -->
-                <div style="padding:0.75rem 1rem;background:#fffbeb;">
-                    <div style="display:flex;align-items:center;gap:0.75rem;">
-                        <div style="width:28px;height:28px;border-radius:7px;background:#fef3c7;
-                                    display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-                            <i class="bi bi-clipboard-check" style="color:#d97706;font-size:0.8rem;"></i>
-                        </div>
-                        <div style="flex:1;">
-                            <div style="font-size:0.65rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">Evaluation Deadline</div>
-                            <div style="display:flex;align-items:center;gap:0.75rem;margin-top:2px;flex-wrap:wrap;">
-                                <span id="rv_eval_deadline" style="font-size:0.88rem;font-weight:700;color:#0f172a;"></span>
-                                <span id="rv_deadline_note" style="font-size:0.72rem;font-weight:600;"></span>
-                            </div>
-                            <div style="font-size:0.68rem;color:#92400e;margin-top:3px;">
-                                Evaluators and trackers use this date for due status labels.
-                            </div>
-                        </div>
+                <!-- Evaluation deadline row -->
+                <div style="padding:0.65rem 1rem;">
+                    <div style="font-size:0.62rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px;">Evaluation Deadline</div>
+                    <div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap;">
+                        <span id="rv_eval_deadline" style="font-size:0.82rem;font-weight:600;color:#1e293b;"></span>
+                        <span id="rv_deadline_note" style="font-size:0.72rem;color:#64748b;"></span>
                     </div>
                 </div>
-
             </div>
 
             <!-- Criteria note -->
-            <div style="background:#f0f4fb;border:1px solid #dbeafe;border-radius:8px;
-                        padding:0.65rem 0.9rem;font-size:0.78rem;color:#1e4d8c;margin-bottom:1.25rem;
-                        display:flex;align-items:flex-start;gap:0.5rem;">
-                <i class="bi bi-info-circle-fill flex-shrink-0" style="margin-top:1px;"></i>
-                <div>
-                    Scoring criteria from global defaults will be <strong>automatically seeded</strong> for all 19 position ranks.
-                    You can customise them per position after the cycle is created.
-                </div>
+            <div style="background:#f8fafc;border:1px solid #e2e8f0;border-left:3px solid #1a3a6b;
+                        padding:0.6rem 0.85rem;font-size:0.78rem;color:#475569;margin-bottom:1rem;">
+                Scoring criteria from global defaults will be <strong>automatically seeded</strong> for all 19 position ranks. You can customise them per position after the cycle is created.
             </div>
 
             <!-- Action buttons -->
-            <div style="display:flex;gap:0.75rem;">
+            <div style="display:flex;gap:0.5rem;">
                 <button type="button"
                         onclick="document.getElementById('cycleReviewModal').style.display='none'"
-                        style="flex:1;padding:0.6rem 1rem;border:1px solid #e2e8f0;border-radius:8px;
-                               background:#fff;color:#475569;font-size:0.875rem;font-weight:600;
-                               cursor:pointer;transition:all 0.15s;"
+                        style="flex:1;padding:0.45rem 1rem;border:1px solid #e2e8f0;background:#fff;color:#475569;font-size:0.82rem;font-weight:600;cursor:pointer;"
                         onmouseover="this.style.background='#f8fafc'"
                         onmouseout="this.style.background='#fff'">
-                    <i class="bi bi-arrow-left me-1"></i>Go Back
+                    &larr; Go Back
                 </button>
                 <button type="button" onclick="confirmCreateCycle()"
-                        style="flex:2;padding:0.6rem 1rem;border:none;border-radius:8px;
-                               background:#1a3a6b;color:#fff;font-size:0.875rem;font-weight:700;
-                               cursor:pointer;transition:background 0.15s;
-                               display:flex;align-items:center;justify-content:center;gap:0.5rem;"
-                        onmouseover="this.style.background='#1e4d8c'"
+                        style="flex:2;padding:0.45rem 1rem;border:none;
+                               background:#1a3a6b;color:#fff;font-size:0.82rem;font-weight:700;
+                               cursor:pointer;"
+                        onmouseover="this.style.background='#152d54'"
                         onmouseout="this.style.background='#1a3a6b'">
-                    <i class="bi bi-check-circle-fill"></i>Confirm &amp; Open Cycle
+                    Confirm &amp; Open Cycle
                 </button>
             </div>
         </div>
 
-    </div>
-</div>
-
-<!-- Delete criterion confirmation modal -->
-<div id="delCritModal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.45);align-items:center;justify-content:center;">
-    <div style="background:#fff;border-radius:10px;padding:1.75rem 2rem;max-width:420px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,0.2);">
-        <h6 style="color:#1a3a6b;margin-bottom:0.5rem;font-weight:700;"><i class="bi bi-exclamation-triangle-fill me-2"></i>Delete Criterion</h6>
-        <p style="color:#475569;font-size:0.88rem;" class="mb-1">Permanently delete:</p>
-        <p id="delCritName" style="color:#1e293b;font-weight:600;background:#f8fafc;border:1px solid #94a3b8;border-radius:6px;padding:0.5rem 0.75rem;font-size:0.88rem;" class="mb-3"></p>
-        <p style="color:#64748b;font-size:0.8rem;" class="mb-3">This action cannot be undone.</p>
-        <div class="d-flex gap-2 justify-content-end">
-            <button type="button" class="btn btn-sm btn-secondary" onclick="document.getElementById('delCritModal').style.display='none'">Cancel</button>
-            <button type="button" id="delCritConfirmBtn" class="btn btn-sm" style="background:#dc2626;color:#fff;border:1px solid #dc2626;"><i class="bi bi-trash me-1"></i>Delete</button>
-        </div>
     </div>
 </div>
 
@@ -1194,15 +859,16 @@ $positions_missing = array_keys(array_filter($position_counts, fn($c) => $c === 
 <div id="editCycleModal"
      style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.5);
             align-items:center;justify-content:center;padding:1rem;">
-    <div style="background:#fff;border-radius:14px;width:100%;max-width:540px;
-                box-shadow:0 20px 60px rgba(0,0,0,0.2);overflow:hidden;">
-        <div style="background:linear-gradient(135deg,#1a3a6b,#1e4d8c);padding:1.1rem 1.5rem;
+    <div style="background:#fff;border:1px solid #e2e8f0;width:100%;max-width:540px;
+                box-shadow:0 16px 48px rgba(0,0,0,0.18);overflow:hidden;">
+        <div style="background:#1a3a6b;padding:0.8rem 1.1rem;
                     display:flex;align-items:center;justify-content:space-between;">
-            <div style="color:#fff;font-weight:700;font-size:0.95rem;">
-                <i class="bi bi-pencil-square me-2"></i>Edit Cycle
+            <div style="display:flex;align-items:center;gap:0.5rem;">
+                <i class="bi bi-pencil-square" style="color:#fff;font-size:0.85rem;"></i>
+                <span style="color:#fff;font-weight:700;font-size:0.88rem;">Edit Cycle</span>
             </div>
             <button onclick="document.getElementById('editCycleModal').style.display='none'"
-                    style="background:none;border:none;color:rgba(255,255,255,0.7);font-size:1.3rem;cursor:pointer;line-height:1;"
+                    style="background:none;border:none;color:rgba(255,255,255,0.7);font-size:1.1rem;cursor:pointer;line-height:1;padding:0;"
                     onmouseover="this.style.color='#fff'" onmouseout="this.style.color='rgba(255,255,255,0.7)'">&times;</button>
         </div>
         <form method="POST" style="padding:1.5rem;">
@@ -1246,18 +912,18 @@ $positions_missing = array_keys(array_filter($position_counts, fn($c) => $c === 
                 </div>
             </div>
             <div id="ec_error" style="display:none;margin-bottom:0.75rem;padding:0.5rem 0.85rem;
-                 background:#fef2f2;border:1px solid #fecaca;border-radius:7px;font-size:0.8rem;color:#dc2626;"></div>
-            <div style="display:flex;gap:0.75rem;justify-content:flex-end;">
+                 background:#fef2f2;border:1px solid #fecaca;border-left:3px solid #dc2626;font-size:0.8rem;color:#dc2626;"></div>
+            <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
                 <button type="button"
                         onclick="document.getElementById('editCycleModal').style.display='none'"
-                        style="padding:0.45rem 1.1rem;border:1px solid #cbd5e1;border-radius:7px;
-                               background:#fff;font-size:0.85rem;cursor:pointer;">
+                        style="padding:0.42rem 1rem;border:1px solid #e2e8f0;background:#fff;color:#475569;font-size:0.8rem;font-weight:600;cursor:pointer;"
+                        onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='#fff'">
                     Cancel
                 </button>
                 <button type="button" onclick="submitEditCycle()"
-                        style="padding:0.45rem 1.3rem;border:none;border-radius:7px;
-                               background:#1a3a6b;color:#fff;font-size:0.85rem;font-weight:600;cursor:pointer;">
-                    <i class="bi bi-save me-1"></i>Save Changes
+                        style="padding:0.42rem 1.15rem;border:none;background:#1a3a6b;color:#fff;font-size:0.8rem;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:5px;"
+                        onmouseover="this.style.background='#152d54'" onmouseout="this.style.background='#1a3a6b'">
+                    <i class="bi bi-save" style="font-size:0.75rem;"></i> Save Changes
                 </button>
             </div>
         </form>
@@ -1269,15 +935,16 @@ $positions_missing = array_keys(array_filter($position_counts, fn($c) => $c === 
 <div id="extendSubmissionModal"
      style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.5);
             align-items:center;justify-content:center;padding:1rem;">
-    <div style="background:#fff;border-radius:14px;width:100%;max-width:620px;
-                box-shadow:0 20px 60px rgba(0,0,0,0.2);overflow:hidden;">
-        <div style="background:linear-gradient(135deg,#1a3a6b,#1e4d8c);padding:1.1rem 1.5rem;
+    <div style="background:#fff;border:1px solid #e2e8f0;width:100%;max-width:620px;
+                box-shadow:0 16px 48px rgba(0,0,0,0.18);overflow:hidden;">
+        <div style="background:#1a3a6b;padding:0.8rem 1.1rem;
                     display:flex;align-items:center;justify-content:space-between;">
-            <div style="color:#fff;font-weight:700;font-size:0.95rem;">
-                <i class="bi bi-clock-history me-2"></i>Extend Faculty Submission
+            <div style="display:flex;align-items:center;gap:0.5rem;">
+                <i class="bi bi-clock-history" style="color:#fff;font-size:0.85rem;"></i>
+                <span style="color:#fff;font-weight:700;font-size:0.88rem;">Extend Faculty Submission</span>
             </div>
             <button onclick="document.getElementById('extendSubmissionModal').style.display='none'"
-                    style="background:none;border:none;color:rgba(255,255,255,0.7);font-size:1.3rem;cursor:pointer;line-height:1;"
+                    style="background:none;border:none;color:rgba(255,255,255,0.7);font-size:1.1rem;cursor:pointer;line-height:1;padding:0;"
                     onmouseover="this.style.color='#fff'" onmouseout="this.style.color='rgba(255,255,255,0.7)'">&times;</button>
         </div>
         <form method="POST" id="extendSubmissionForm" style="padding:1.5rem;">
@@ -1318,18 +985,18 @@ $positions_missing = array_keys(array_filter($position_counts, fn($c) => $c === 
                 </div>
             </div>
             <div id="ext_error" style="display:none;margin-top:0.85rem;padding:0.5rem 0.85rem;
-                 background:#fef2f2;border:1px solid #fecaca;border-radius:7px;font-size:0.8rem;color:#dc2626;"></div>
-            <div style="display:flex;gap:0.75rem;justify-content:flex-end;margin-top:1.25rem;">
+                 background:#fef2f2;border:1px solid #fecaca;border-left:3px solid #dc2626;font-size:0.8rem;color:#dc2626;"></div>
+            <div style="display:flex;gap:0.5rem;justify-content:flex-end;margin-top:1.25rem;">
                 <button type="button"
                         onclick="document.getElementById('extendSubmissionModal').style.display='none'"
-                        style="padding:0.45rem 1.1rem;border:1px solid #cbd5e1;border-radius:7px;
-                               background:#fff;font-size:0.85rem;cursor:pointer;">
+                        style="padding:0.42rem 1rem;border:1px solid #e2e8f0;background:#fff;color:#475569;font-size:0.8rem;font-weight:600;cursor:pointer;"
+                        onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='#fff'">
                     Cancel
                 </button>
                 <button type="button" onclick="submitExtension()"
-                        style="padding:0.45rem 1.3rem;border:none;border-radius:7px;
-                               background:#1a3a6b;color:#fff;font-size:0.85rem;font-weight:600;cursor:pointer;">
-                    <i class="bi bi-check-circle me-1"></i>Save Extension
+                        style="padding:0.42rem 1.15rem;border:none;background:#1a3a6b;color:#fff;font-size:0.8rem;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:5px;"
+                        onmouseover="this.style.background='#152d54'" onmouseout="this.style.background='#1a3a6b'">
+                    <i class="bi bi-check-circle" style="font-size:0.75rem;"></i> Save Extension
                 </button>
             </div>
         </form>
@@ -1518,13 +1185,189 @@ function submitExtension() {
     errEl.style.display = 'none';
     document.getElementById('extendSubmissionForm').submit();
 }
+</script>
 
-function showDelCrit(critId, cycleId, label) {
-    document.getElementById('delCritName').textContent = label;
-    document.getElementById('delCritModal').style.display = 'flex';
-    document.getElementById('delCritConfirmBtn').onclick = function() {
-        document.getElementById('delCritModal').style.display = 'none';
-        document.getElementById('delCritForm_' + critId).submit();
-    };
+<!-- ── Delete Cycle Verification Modal ──────────────────────────────── -->
+<div id="deleteCycleModal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,0.6);
+     z-index:99999;align-items:center;justify-content:center;padding:1rem;">
+    <div style="background:#fff;width:100%;max-width:500px;border:1px solid #e2e8f0;box-shadow:0 20px 60px rgba(0,0,0,0.25);overflow:hidden;">
+
+        <!-- Header -->
+        <div style="background:#dc2626;padding:0.85rem 1.1rem;display:flex;align-items:center;justify-content:space-between;">
+            <div style="display:flex;align-items:center;gap:0.5rem;">
+                <i class="bi bi-exclamation-triangle-fill" style="color:#fff;font-size:0.9rem;"></i>
+                <div>
+                    <div style="color:#fff;font-weight:700;font-size:0.88rem;">Delete Cycle</div>
+                    <div style="color:rgba(255,255,255,0.6);font-size:0.65rem;margin-top:1px;">This action is permanent and cannot be undone.</div>
+                </div>
+            </div>
+            <button type="button" onclick="closeDeleteCycleModal()"
+                    style="background:none;border:none;color:rgba(255,255,255,0.7);font-size:1.1rem;cursor:pointer;line-height:1;padding:0;"
+                    onmouseover="this.style.color='#fff'" onmouseout="this.style.color='rgba(255,255,255,0.7)'">
+                <i class="bi bi-x-lg"></i>
+            </button>
+        </div>
+
+        <form method="POST" id="deleteCycleForm" onsubmit="return validateDeleteCycle()">
+            <input type="hidden" name="action" value="delete_cycle">
+            <input type="hidden" name="cycle_id" id="dcCycleId">
+
+            <div style="padding:1.1rem 1.25rem;">
+
+                <!-- Cycle being deleted -->
+                <div style="background:#f8fafc;border:1px solid #e2e8f0;border-left:3px solid #dc2626;padding:0.65rem 0.9rem;margin-bottom:1rem;">
+                    <div style="font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#94a3b8;margin-bottom:2px;">Cycle to be deleted</div>
+                    <div id="dcCycleName" style="font-weight:700;color:#0f172a;font-size:0.88rem;"></div>
+                </div>
+
+                <!-- Warning: applications exist -->
+                <div id="dcAppsWarning" style="display:none;background:#fffbeb;border:1px solid #fde68a;border-left:3px solid #d97706;padding:0.65rem 0.9rem;margin-bottom:1rem;font-size:0.78rem;color:#92400e;">
+                    <i class="bi bi-exclamation-triangle-fill" style="margin-right:5px;"></i>
+                    <span id="dcAppsWarningText"></span>
+                </div>
+
+                <!-- Terms -->
+                <div style="margin-bottom:1rem;">
+                    <div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#64748b;margin-bottom:0.5rem;">What will be permanently deleted:</div>
+                    <div style="display:flex;flex-direction:column;gap:4px;">
+                        <?php foreach ([
+                            'The cycle and all its configuration',
+                            'All scoring criteria for every faculty position in this cycle',
+                            'All KRA assignments for evaluators in this cycle',
+                            'All submitted applications and their KRA entries',
+                            'All evidence files linked to this cycle',
+                            'All evaluator reviews, decisions, and appeal threads',
+                        ] as $term): ?>
+                        <div style="display:flex;align-items:flex-start;gap:0.5rem;font-size:0.76rem;color:#475569;">
+                            <i class="bi bi-x-circle-fill" style="color:#dc2626;flex-shrink:0;margin-top:1px;font-size:0.72rem;"></i>
+                            <?= $term ?>
+                        </div>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+
+                <!-- Confirm cycle name -->
+                <div style="margin-bottom:0.75rem;">
+                    <label style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#64748b;display:block;margin-bottom:4px;">
+                        Type the cycle name to confirm <span style="color:#dc2626;">*</span>
+                    </label>
+                    <input type="text" name="confirm_name" id="dcConfirmName"
+                           placeholder="Type exact cycle name..."
+                           autocomplete="off"
+                           style="width:100%;border:1px solid #e2e8f0;padding:0.42rem 0.6rem;font-size:0.82rem;outline:none;box-sizing:border-box;"
+                           onfocus="this.style.borderColor='#dc2626'" onblur="this.style.borderColor='#e2e8f0'">
+                    <div id="dcNameError" style="display:none;font-size:0.68rem;color:#dc2626;margin-top:3px;">Name does not match.</div>
+                </div>
+
+                <!-- Password -->
+                <div style="margin-bottom:0.85rem;">
+                    <label style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#64748b;display:block;margin-bottom:4px;">
+                        Your account password <span style="color:#dc2626;">*</span>
+                    </label>
+                    <div style="display:flex;">
+                        <input type="password" name="confirm_password" id="dcPassword"
+                               placeholder="Enter your password..."
+                               style="flex:1;border:1px solid #e2e8f0;border-right:none;padding:0.42rem 0.6rem;font-size:0.82rem;outline:none;"
+                               onfocus="this.style.borderColor='#dc2626'" onblur="this.style.borderColor='#e2e8f0'">
+                        <button type="button"
+                                onclick="var el=document.getElementById('dcPassword');el.type=el.type==='password'?'text':'password';"
+                                style="padding:0 0.65rem;border:1px solid #e2e8f0;background:#f8fafc;color:#475569;cursor:pointer;font-size:0.78rem;"
+                                onmouseover="this.style.background='#1a3a6b';this.style.color='#fff'" onmouseout="this.style.background='#f8fafc';this.style.color='#475569'">
+                            <i class="bi bi-eye"></i>
+                        </button>
+                    </div>
+                    <div id="dcPassError" style="display:none;font-size:0.68rem;color:#dc2626;margin-top:3px;">Password is required.</div>
+                </div>
+
+                <!-- I understand checkbox -->
+                <label style="display:flex;align-items:flex-start;gap:0.5rem;cursor:pointer;font-size:0.76rem;color:#475569;">
+                    <input type="checkbox" id="dcAgree" style="margin-top:2px;cursor:pointer;accent-color:#dc2626;">
+                    I understand that this deletion is <strong>permanent</strong> and all associated data will be lost. This action cannot be reversed.
+                </label>
+                <div id="dcAgreeError" style="display:none;font-size:0.68rem;color:#dc2626;margin-top:3px;">You must acknowledge the terms.</div>
+            </div>
+
+            <!-- Footer -->
+            <div style="padding:0.75rem 1.25rem;border-top:1px solid #e2e8f0;background:#f8fafc;display:flex;gap:0.5rem;justify-content:flex-end;">
+                <button type="button" onclick="closeDeleteCycleModal()"
+                        style="padding:0.42rem 1rem;border:1px solid #e2e8f0;background:#fff;color:#475569;font-size:0.78rem;font-weight:600;cursor:pointer;"
+                        onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='#fff'">Cancel</button>
+                <button type="submit" id="dcSubmitBtn"
+                        style="padding:0.42rem 1.1rem;background:#dc2626;color:#fff;border:none;font-size:0.78rem;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:5px;"
+                        onmouseover="this.style.background='#b91c1c'" onmouseout="this.style.background='#dc2626'">
+                    <i class="bi bi-trash" style="font-size:0.72rem;"></i> Permanently Delete
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+// ── Cycle UI helpers ─────────────────────────────────────────────────────
+
+function openDeleteCycleModalFromBtn(btn) {
+    var cycleId     = btn.getAttribute('data-cycle-id');
+    var cycleName   = btn.getAttribute('data-cycle-name');
+    var appliedCount = parseInt(btn.getAttribute('data-applied'), 10);
+    openDeleteCycleModal(cycleId, cycleName, appliedCount);
 }
+
+function openDeleteCycleModal(cycleId, cycleName, appliedCount) {
+    _dcCycleName = cycleName;
+    document.getElementById('dcCycleId').value    = cycleId;
+    document.getElementById('dcCycleName').textContent = cycleName;
+    document.getElementById('dcConfirmName').value = '';
+    document.getElementById('dcPassword').value    = '';
+    document.getElementById('dcAgree').checked     = false;
+    document.getElementById('dcNameError').style.display  = 'none';
+    document.getElementById('dcPassError').style.display  = 'none';
+    document.getElementById('dcAgreeError').style.display = 'none';
+
+    var warn = document.getElementById('dcAppsWarning');
+    if (appliedCount > 0) {
+        document.getElementById('dcAppsWarningText').textContent =
+            appliedCount + ' submitted application' + (appliedCount !== 1 ? 's' : '') +
+            ' will be permanently deleted along with all their entries, files, and reviews.';
+        warn.style.display = 'block';
+    } else {
+        warn.style.display = 'none';
+    }
+
+    document.getElementById('deleteCycleModal').style.display = 'flex';
+}
+
+function closeDeleteCycleModal() {
+    document.getElementById('deleteCycleModal').style.display = 'none';
+}
+
+function validateDeleteCycle() {
+    var name  = document.getElementById('dcConfirmName').value.trim();
+    var pass  = document.getElementById('dcPassword').value;
+    var agree = document.getElementById('dcAgree').checked;
+    var ok    = true;
+
+    document.getElementById('dcNameError').style.display  = 'none';
+    document.getElementById('dcPassError').style.display  = 'none';
+    document.getElementById('dcAgreeError').style.display = 'none';
+
+    if (name.toLowerCase() !== _dcCycleName.toLowerCase()) {
+        document.getElementById('dcNameError').style.display = 'block';
+        document.getElementById('dcConfirmName').style.borderColor = '#dc2626';
+        ok = false;
+    }
+    if (!pass) {
+        document.getElementById('dcPassError').style.display = 'block';
+        ok = false;
+    }
+    if (!agree) {
+        document.getElementById('dcAgreeError').style.display = 'block';
+        ok = false;
+    }
+    return ok;
+}
+
+// Close on backdrop click
+document.getElementById('deleteCycleModal').addEventListener('click', function(e) {
+    if (e.target === this) closeDeleteCycleModal();
+});
 </script>

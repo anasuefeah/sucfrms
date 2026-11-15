@@ -9,7 +9,7 @@ require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../fpdf/fpdf.php';
 
 requireLogin();
-if (!isAdmin() && !isChecker()) { http_response_code(403); die('Access denied.'); }
+if (!isAdmin() && !isEvaluator()) { http_response_code(403); die('Access denied.'); }
 
 // -- Filters --------------------------------------------------
 $cycle_id  = intval($_GET['cycle_id']  ?? 0);
@@ -38,7 +38,7 @@ if ($status && in_array($status, ['submitted','under_review','approved','rejecte
 }
 
 $rows = $pdo->prepare("
-    SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, u.employee_id, u.rank,
+    SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, u.employee_id, u.`rank`,
            COALESCE(camp.campus_name,'N/A') as campus_name,
            chk.user_id as checker_uid,
            chk.checker_label as checker_label

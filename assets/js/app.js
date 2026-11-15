@@ -174,3 +174,92 @@
         if (alertEl) alertEl.remove();
     });
 })();
+
+
+/* =====================================================================
+   SUCFRMS  -  showToast(message, type)
+   Replaces browser alert() with a professional in-page toast.
+   type: 'error' | 'warning' | 'success' | 'info'  (default: 'error')
+   ===================================================================== */
+window.showToast = (function () {
+    var container;
+
+    function getContainer() {
+        if (!container || !document.body.contains(container)) {
+            container = document.createElement('div');
+            container.id = 'sucfrms-toast-container';
+            container.style.cssText = [
+                'position:fixed',
+                'top:1.25rem',
+                'right:1.25rem',
+                'z-index:999999',
+                'display:flex',
+                'flex-direction:column',
+                'gap:0.5rem',
+                'pointer-events:none',
+            ].join(';');
+            document.body.appendChild(container);
+        }
+        return container;
+    }
+
+    var palettes = {
+        error:   { bg:'#fef2f2', border:'#fca5a5', icon:'#dc2626', iconCls:'bi-x-circle-fill',        text:'#7f1d1d' },
+        warning: { bg:'#fffbeb', border:'#fde68a', icon:'#d97706', iconCls:'bi-exclamation-triangle-fill', text:'#78350f' },
+        success: { bg:'#f0fdf4', border:'#86efac', icon:'#16a34a', iconCls:'bi-check-circle-fill',     text:'#14532d' },
+        info:    { bg:'#eff6ff', border:'#93c5fd', icon:'#1e4d8c', iconCls:'bi-info-circle-fill',      text:'#1e3a5f' },
+    };
+
+    return function showToast(message, type) {
+        type = type || 'error';
+        var p = palettes[type] || palettes.error;
+        var c = getContainer();
+
+        var toast = document.createElement('div');
+        toast.style.cssText = [
+            'display:flex',
+            'align-items:flex-start',
+            'gap:0.6rem',
+            'background:' + p.bg,
+            'border:1px solid ' + p.border,
+            'border-left:4px solid ' + p.icon,
+            'border-radius:0',
+            'padding:0.75rem 1rem',
+            'min-width:280px',
+            'max-width:400px',
+            'box-shadow:0 4px 20px rgba(0,0,0,0.14)',
+            'pointer-events:all',
+            'opacity:0',
+            'transform:translateX(1rem)',
+            'transition:opacity 0.25s ease, transform 0.25s ease',
+        ].join(';');
+
+        toast.innerHTML =
+            '<i class="bi ' + p.iconCls + '" style="color:' + p.icon + ';font-size:1rem;flex-shrink:0;margin-top:2px;"></i>' +
+            '<div style="flex:1;font-size:0.82rem;color:' + p.text + ';line-height:1.5;font-family:\'Segoe UI\',sans-serif;">' + message + '</div>' +
+            '<button style="background:none;border:none;cursor:pointer;color:' + p.icon + ';font-size:1rem;padding:0;flex-shrink:0;line-height:1;" aria-label="Close">' +
+            '<i class="bi bi-x"></i></button>';
+
+        toast.querySelector('button').addEventListener('click', function () { dismiss(toast); });
+        c.appendChild(toast);
+
+        // Animate in
+        requestAnimationFrame(function () {
+            requestAnimationFrame(function () {
+                toast.style.opacity = '1';
+                toast.style.transform = 'translateX(0)';
+            });
+        });
+
+        // Auto-dismiss after 4.5 s
+        var timer = setTimeout(function () { dismiss(toast); }, 4500);
+        toast.addEventListener('mouseenter', function () { clearTimeout(timer); });
+        toast.addEventListener('mouseleave', function () { timer = setTimeout(function () { dismiss(toast); }, 2000); });
+
+        function dismiss(el) {
+            el.style.opacity = '0';
+            el.style.transform = 'translateX(1rem)';
+            setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 280);
+        }
+    };
+}());

@@ -19,7 +19,7 @@ require_once __DIR__ . '/../includes/scoring/orchestrator.php';
 
 // Target user determination
 $target_uid = $_SESSION['user_id'];
-if ((isAdmin() || isChecker()) && !empty($_GET['uid'])) {
+if ((isAdmin() || isEvaluator()) && !empty($_GET['uid'])) {
     $target_uid = intval($_GET['uid']);
 }
 

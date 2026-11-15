@@ -1,7 +1,12 @@
 <?php
-$active_tab = $_GET['tab'] ?? 'instruction';
+require_once __DIR__ . '/kra_entry_matching.php';
+KraRevisionWorkflow::ensureSchema($pdo);
+$category_tabs = ['Instruction'=>'instruction', 'Research'=>'research', 'Extension'=>'extension', 'Professional Development'=>'profdev'];
+$active_tab = $_GET['tab'] ?? ($category_tabs[$_POST['kra_category'] ?? ''] ?? 'instruction');
 $valid_tabs = ['instruction','research','extension','profdev','autosubrank','posreq'];
 if (!in_array($active_tab, $valid_tabs)) $active_tab = 'instruction';
+$return_criterion = (string)($_GET['criterion'] ?? '');
+$criterion_query = $return_criterion !== '' ? '&criterion=' . rawurlencode($return_criterion) : '';
 
 // -- Runtime migration: create kra_evidence_files if missing --
 try { $pdo->query("SELECT evidence_id FROM kra_evidence_files LIMIT 1"); }
@@ -61,13 +66,44 @@ catch (\Exception $e) {
     )");
 }
 
+function kraApplyEffectiveComputedPoints(array $submission): float {
+    $points = (float)($submission['computed_points'] ?? 0);
+    $parts = array_map('trim', explode('|||', (string)($submission['remarks'] ?? '')));
+    if (($parts[0] ?? '') === 'CUSTOM') {
+        return max($points, max(0.0, (float)($parts[4] ?? 0)));
+    }
+    return $points;
+}
+
 function step2OfficialKraTotals(PDO $pdo, int $application_id): array {
     $scoring_dir = __DIR__ . '/../scoring/';
     foreach (['kra1_scorer.php','kra2_scorer.php','kra3_scorer.php','kra4_scorer.php'] as $f) {
         if (file_exists($scoring_dir . $f)) require_once $scoring_dir . $f;
     }
     if (class_exists('\Scoring\KRA1Scorer')) {
+        $ctx = $pdo->prepare("
+            SELECT a.cycle_id, COALESCE(a.position_title, u.`rank`) AS position_rank
+            FROM applications a
+            JOIN users u ON u.user_id = a.user_id
+            WHERE a.application_id = ?
+            LIMIT 1
+        ");
+        $ctx->execute([$application_id]);
+        $ctx_row = $ctx->fetch(PDO::FETCH_ASSOC) ?: [];
         \Scoring\KRA1Scorer::setPdo($pdo);
+        \Scoring\KRA1Scorer::setCriteriaContext((int)($ctx_row['cycle_id'] ?? 0), $ctx_row['position_rank'] ?? null);
+        if (class_exists('\Scoring\KRA2Scorer')) {
+            \Scoring\KRA2Scorer::setPdo($pdo);
+            \Scoring\KRA2Scorer::setCriteriaContext((int)($ctx_row['cycle_id'] ?? 0), $ctx_row['position_rank'] ?? null);
+        }
+        if (class_exists('\Scoring\KRA3Scorer')) {
+            \Scoring\KRA3Scorer::setPdo($pdo);
+            \Scoring\KRA3Scorer::setCriteriaContext((int)($ctx_row['cycle_id'] ?? 0), $ctx_row['position_rank'] ?? null);
+        }
+        if (class_exists('\Scoring\KRA4Scorer')) {
+            \Scoring\KRA4Scorer::setPdo($pdo);
+            \Scoring\KRA4Scorer::setCriteriaContext((int)($ctx_row['cycle_id'] ?? 0), $ctx_row['position_rank'] ?? null);
+        }
     }
 
     $stmt = $pdo->prepare("
@@ -87,7 +123,7 @@ function step2OfficialKraTotals(PDO $pdo, int $application_id): array {
     }
 
     $fallback = fn($cat) => min(100, array_sum(array_map(
-        fn($s) => (float)($s['computed_points'] ?? 0),
+        fn($s) => kraApplyEffectiveComputedPoints($s),
         $by_cat[$cat] ?? []
     )));
 
@@ -108,14 +144,19 @@ function step2OfficialKraTotals(PDO $pdo, int $application_id): array {
 }
 
 // -- AJAX: return entries as JSON ------------------------------
+require_once __DIR__ . '/../scoring/entry_scores.php';
+\Scoring\EntryScores::refreshDraft($pdo, (int)$app_id);
+
 if (isset($_GET['ajax_entries'])) {
     $cat = $_GET['cat'] ?? '';
     $valid_cats = ['Instruction','Research','Extension','Professional Development'];
     if (in_array($cat, $valid_cats)) {
-        $rows = $pdo->prepare("SELECT submission_id, computed_points, remarks, document_path FROM kra_submissions WHERE application_id=? AND kra_category=? ORDER BY submitted_at ASC");
+        $rows = $pdo->prepare("SELECT submission_id, computed_points, remarks, document_path, verified, revision_status FROM kra_submissions WHERE application_id=? AND kra_category=? ORDER BY submitted_at ASC");
         $rows->execute([$app_id, $cat]);
         $entries = $rows->fetchAll(PDO::FETCH_ASSOC);
         foreach ($entries as &$entry) {
+            $entry['editable'] = KraRevisionWorkflow::canEdit($app['status'], $entry);
+            $entry['computed_points'] = kraApplyEffectiveComputedPoints($entry);
             $ef = $pdo->prepare("SELECT evidence_id, file_path, original_filename, file_size_bytes FROM kra_evidence_files WHERE submission_id=? ORDER BY uploaded_at ASC");
             $ef->execute([$entry['submission_id']]);
             $entry['evidence_files'] = $ef->fetchAll(PDO::FETCH_ASSOC);
@@ -179,11 +220,21 @@ $can_edit = !$locked
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $can_edit) {
     $kra_action = $_POST['kra_action'] ?? '';
+    if ($app['status'] === 'needs_revision' && !in_array($kra_action, ['save_kra', 'submit_application'], true)) {
+        flashMessage('danger', 'Only the entries flagged for revision can be changed.');
+        echo "<script>window.location.href='index.php?page=my_application';</script>"; exit;
+    }
 
     if ($kra_action === 'save_kra') {
         $category = $_POST['kra_category'] ?? '';
         $remarks  = trim($_POST['remarks'] ?? '');
         $edit_id  = intval($_POST['edit_submission_id'] ?? 0);
+        try {
+            KraRevisionWorkflow::requireEditable($pdo, (int)$app_id, $edit_id, $category);
+        } catch (RuntimeException $e) {
+            flashMessage('danger', $e->getMessage());
+            echo "<script>window.location.href='index.php?page=my_application';</script>"; exit;
+        }
 
         $valid_cats = ['Instruction','Research','Extension','Professional Development'];
         if (in_array($category, $valid_cats)) {
@@ -191,7 +242,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $can_edit) {
             $remarks_type = $remarks_parts[0] ?? '';
             $meaningful_remarks = $remarks_type !== '';
             if ($meaningful_remarks && $category === 'Instruction') {
-                if ($remarks_type === 'A-set-sef') {
+                if ($remarks_type === 'CUSTOM') {
+                    $meaningful_remarks = ($remarks_parts[1] ?? '') !== '' && ($remarks_parts[2] ?? '') !== ''
+                        && ($remarks_parts[3] ?? '') !== '' && (float)($remarks_parts[4] ?? 0) > 0;
+                } elseif ($remarks_type === 'A-set-sef') {
                     $meaningful_remarks = ($remarks_parts[1] ?? '') !== '' && ($remarks_parts[2] ?? '') !== '';
                 } elseif ($remarks_type === 'A-set-sef-sem') {
                     $meaningful_remarks = ($remarks_parts[3] ?? '') !== '' && ($remarks_parts[4] ?? '') !== '';
@@ -202,7 +256,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $can_edit) {
                         || in_array($remarks_type, ['B-material', 'C-thesis', 'C-mentor'], true);
                 }
             } elseif ($meaningful_remarks && $category === 'Extension') {
-                $allowed_extension = [
+                if ($remarks_type === 'CUSTOM') {
+                    $meaningful_remarks = ($remarks_parts[1] ?? '') !== '' && ($remarks_parts[2] ?? '') !== ''
+                        && ($remarks_parts[3] ?? '') !== '' && (float)($remarks_parts[4] ?? 0) > 0;
+                } else {
+                    $allowed_extension = [
                     'moa-linkage', 'income', 'accredit-local', 'accredit-intl',
                     'judge-research', 'judge-other', 'consultant-local', 'consultant-intl',
                     'media-column-regular', 'media-column-occasional', 'media-tv-radio-host', 'media-guest',
@@ -210,8 +268,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $can_edit) {
                     'csr-satisfaction', 'president', 'vice-president', 'chancellor', 'vice-chancellor',
                     'campus director', 'office director', 'dean', 'associate dean', 'dept head',
                     'program chair', 'committee chair', 'committee member', 'coordinator',
-                ];
-                $meaningful_remarks = in_array($remarks_type, $allowed_extension, true);
+                    ];
+                    $meaningful_remarks = in_array($remarks_type, $allowed_extension, true);
+                }
+            } elseif ($meaningful_remarks && in_array($category, ['Research','Professional Development'], true) && $remarks_type === 'CUSTOM') {
+                $meaningful_remarks = ($remarks_parts[1] ?? '') !== '' && ($remarks_parts[2] ?? '') !== ''
+                    && ($remarks_parts[3] ?? '') !== '' && (float)($remarks_parts[4] ?? 0) > 0;
             }
             if (!$meaningful_remarks) {
                 if (isset($_POST['ajax']) || (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && $_SERVER['HTTP_X_REQUESTED_WITH'] === 'XMLHttpRequest')) {
@@ -221,25 +283,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $can_edit) {
                     exit;
                 }
                 flashMessage('danger', 'Please select a valid criterion and fill the required score fields before saving.');
-                echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}';</script>"; exit;
+                echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}{$criterion_query}';</script>"; exit;
             }
 
-            // Server-side score recomputation via JC01 s.2026 scorer modules
-            // Load scorers (kra_ajax.php now routes to them; we use the same entry point)
-            if (!function_exists('computeKraScore')) {
-                require_once __DIR__ . '/kra_ajax.php';
-            }
-            $points        = computeKraScore($category, $remarks);
-            $client_points = max(0.0, (float)($_POST['computed_points'] ?? 0));
-
-            // Fallback: if server returns 0 but client sent positive, trust client
-            // (edge case: label format unrecognised by server-side pattern matching)
-            if ($points <= 0 && $client_points > 0) {
-                $points = $client_points;
-            }
-            if ($points <= 0 && $client_points <= 0) {
-                error_log("SUCFRMS KRA SAVE: Both server and client score are 0. Category={$category}, Remarks=" . substr($remarks, 0, 200));
-            }
+            $points = \Scoring\EntryScores::compute($pdo, $category, $remarks,
+                (int)($app['cycle_id'] ?? 0), $app['position_title'] ?: ($faculty['rank'] ?? null));
 
             // -- Normalise uploaded files (single or multi) ------------------
             $uploaded_files = [];
@@ -298,6 +346,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $can_edit) {
                 if ($existing_row && $revision_edit_ok) {
                     $pdo->prepare("UPDATE kra_submissions SET computed_points=?, remarks=?, verified=0, submitted_at=NOW() WHERE submission_id=?")
                         ->execute([$points, $remarks, $edit_id]);
+                    KraRevisionWorkflow::markSaved($pdo, (int)$app_id, $edit_id);
                     $ins_ef = $pdo->prepare("INSERT INTO kra_evidence_files (submission_id, file_path, original_filename, file_size_bytes, uploaded_by) VALUES (?,?,?,?,?)");
                     foreach ($files_to_insert as $fi) {
                         $ins_ef->execute([$edit_id, $fi['path'], $fi['name'], $fi['size'], $uid]);
@@ -314,7 +363,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $can_edit) {
             }
 
             recalcApplicationScore($pdo, $app_id);
-            logAudit($pdo, $uid, 'KRA Saved', "{$category}: {$points} pts (client_sent: {$client_points}, remarks: " . substr($remarks,0,80) . ")");
+            logAudit($pdo, $uid, 'KRA Saved', "{$category}: {$points} pts (remarks: " . substr($remarks,0,80) . ")");
         }
         // Return JSON for AJAX calls - check POST flag OR custom header
         if (isset($_POST['ajax']) || (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && $_SERVER['HTTP_X_REQUESTED_WITH'] === 'XMLHttpRequest')) {
@@ -327,10 +376,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $can_edit) {
             exit;
         }
         flashMessage('success', sanitize($category) . " score saved.");
-        echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}';</script>"; exit;
+        echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}{$criterion_query}';</script>"; exit;
     }
 
     if ($kra_action === 'delete_kra') {
+        if ($app['status'] === 'needs_revision') {
+            flashMessage('danger', 'Edit the flagged entry and its evidence, then resubmit it.');
+            echo "<script>window.location.href='index.php?page=my_application';</script>"; exit;
+        }
         $del_id = intval($_POST['submission_id'] ?? 0);
         if ($del_id) {
             // For needs_revision: only allow deleting revision-flagged entries
@@ -343,7 +396,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $can_edit) {
             );
             if (!$del_allowed) {
                 flashMessage('error', 'This entry cannot be deleted in the current application status.');
-                echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}';</script>"; exit;
+                echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}{$criterion_query}';</script>"; exit;
             }
             // Delete all evidence files for this submission
             $ef_rows = $pdo->prepare("SELECT file_path FROM kra_evidence_files WHERE submission_id=?");
@@ -373,7 +426,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $can_edit) {
             echo json_encode(['ok' => true]);
             exit;
         }
-        echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}';</script>"; exit;
+        echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}{$criterion_query}';</script>"; exit;
     }
 
     if ($kra_action === 'save_auto_sub_rank') {
@@ -437,14 +490,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $can_edit) {
     }
 
     if ($kra_action === 'submit_application') {
+        if ($app['status'] === 'needs_revision') {
+            try {
+                KraRevisionWorkflow::resubmit($pdo, (int)$app_id);
+                recalcApplicationScore($pdo, (int)$app_id);
+                logAudit($pdo, $uid, 'Revision Resubmitted', "Revised entries resubmitted for Application #{$app_id}");
+                flashMessage('success', 'Revised entries submitted. Your evaluator will review the corrections.');
+            } catch (RuntimeException $e) {
+                flashMessage('danger', $e->getMessage());
+            }
+            echo "<script>window.location.href='index.php?page=dashboard';</script>"; exit;
+        }
         if ($_submission_not_open) {
             flashMessage('danger', 'The faculty submission period is not open yet.');
-            echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}';</script>"; exit;
+            echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}{$criterion_query}';</script>"; exit;
         }
         // Block if deadline has passed
         if ($_deadline_passed) {
             flashMessage('danger', 'The submission deadline has passed. You can no longer submit for this cycle.');
-            echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}';</script>"; exit;
+            echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}{$criterion_query}';</script>"; exit;
         }
 
         try { recalcApplicationScore($pdo, $app_id); } catch (\Exception $e) {}
@@ -454,7 +518,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $can_edit) {
         $score_check = getApplicationScoreSummary($pdo, (int)$app_id);
         if ($score_check['weighted_score'] < 41) {
             flashMessage('danger', 'Your weighted score (' . number_format($score_check['weighted_score'], 2) . ') is below the minimum of <strong>41.00</strong> required for reclassification. Improve your KRA scores before submitting.');
-            echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}';</script>"; exit;
+            echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}{$criterion_query}';</script>"; exit;
         }
         // If checker already assigned, go straight back to under_review
         $new_status = !empty($app['checker_id']) ? 'under_review' : 'submitted';
@@ -467,7 +531,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $can_edit) {
             ->execute([$app_id]);
         logAudit($pdo, $uid, 'Application Submitted', "Application {$app_id} submitted. Status: {$new_status}");
         // Notify all active Subcommittee reviewers
-        $campus_checkers = $pdo->query("SELECT user_id FROM users WHERE role = 'checker' AND status='active'")->fetchAll(PDO::FETCH_COLUMN);
+        $campus_checkers = $pdo->query("SELECT user_id FROM users WHERE role = 'evaluator' AND status='active'")->fetchAll(PDO::FETCH_COLUMN);
         $faculty_name = $_SESSION['full_name'] ?? "Faculty #{$uid}";
         foreach ($campus_checkers as $cid) {
             createNotif($pdo, (int)$cid, 'new_submission',
@@ -516,25 +580,45 @@ if (!$target_position && !empty($app['position_title'])) {
 }
 $cycle_id_for_criteria = $app['cycle_id'] ?? null;
 
-$criteria_list = [];
-if ($cycle_id_for_criteria && $target_position) {
-    // Position-specific criteria for this cycle
-    $cs = $pdo->prepare("SELECT * FROM scoring_criteria WHERE cycle_id=? AND position_rank=? AND kra_category=? AND is_active=1 ORDER BY CASE WHEN criterion_label LIKE 'Criterion A%' THEN 1 WHEN criterion_label LIKE 'Criterion B%' THEN 2 WHEN criterion_label LIKE 'Criterion C%' THEN 3 WHEN criterion_label LIKE 'Criterion D%' THEN 4 ELSE 5 END ASC, max_points DESC");
-    $cs->execute([$cycle_id_for_criteria, $target_position, $cur_cat]);
-    $criteria_list = $cs->fetchAll();
-}
-if (empty($criteria_list) && $cycle_id_for_criteria) {
-    // Fallback: cycle-wide (no position) - for cycles created before position-specific seeding
-    $cs = $pdo->prepare("SELECT * FROM scoring_criteria WHERE cycle_id=? AND position_rank IS NULL AND kra_category=? AND is_active=1 ORDER BY CASE WHEN criterion_label LIKE 'Criterion A%' THEN 1 WHEN criterion_label LIKE 'Criterion B%' THEN 2 WHEN criterion_label LIKE 'Criterion C%' THEN 3 WHEN criterion_label LIKE 'Criterion D%' THEN 4 ELSE 5 END ASC, max_points DESC");
+$criteria_order_sql = "CASE WHEN criterion_label LIKE 'Criterion A%' THEN 1 WHEN criterion_label LIKE 'Criterion B%' THEN 2 WHEN criterion_label LIKE 'Criterion C%' THEN 3 WHEN criterion_label LIKE 'Criterion D%' THEN 4 ELSE 5 END ASC, max_points DESC";
+$criteria_by_key = [];
+$criteria_order = [];
+$mergeCriteriaRows = function (array $rows) use (&$criteria_by_key, &$criteria_order): void {
+    foreach ($rows as $row) {
+        $key = trim((string)($row['criterion_key'] ?? ''));
+        if ($key === '') {
+            $key = 'label:' . trim((string)($row['criterion_label'] ?? ''));
+        }
+        if (!isset($criteria_by_key[$key])) {
+            $criteria_order[] = $key;
+        }
+        $criteria_by_key[$key] = $row;
+    }
+};
+
+// Load least-specific first, then let cycle/position rows override by key.
+// This keeps newly added global criteria visible on existing seeded cycles,
+// while preserving cycle/position customisations where they exist.
+$cs = $pdo->prepare("SELECT * FROM scoring_criteria WHERE cycle_id IS NULL AND position_rank IS NULL AND kra_category=? AND is_active=1 ORDER BY {$criteria_order_sql}");
+$cs->execute([$cur_cat]);
+$mergeCriteriaRows($cs->fetchAll());
+
+if ($cycle_id_for_criteria) {
+    $cs = $pdo->prepare("SELECT * FROM scoring_criteria WHERE cycle_id=? AND position_rank IS NULL AND kra_category=? AND is_active=1 ORDER BY {$criteria_order_sql}");
     $cs->execute([$cycle_id_for_criteria, $cur_cat]);
-    $criteria_list = $cs->fetchAll();
+    $mergeCriteriaRows($cs->fetchAll());
 }
-if (empty($criteria_list)) {
-    // Final fallback: global defaults
-    $cs = $pdo->prepare("SELECT * FROM scoring_criteria WHERE cycle_id IS NULL AND position_rank IS NULL AND kra_category=? AND is_active=1 ORDER BY CASE WHEN criterion_label LIKE 'Criterion A%' THEN 1 WHEN criterion_label LIKE 'Criterion B%' THEN 2 WHEN criterion_label LIKE 'Criterion C%' THEN 3 WHEN criterion_label LIKE 'Criterion D%' THEN 4 ELSE 5 END ASC, max_points DESC");
-    $cs->execute([$cur_cat]);
-    $criteria_list = $cs->fetchAll();
+
+if ($cycle_id_for_criteria && $target_position) {
+    $cs = $pdo->prepare("SELECT * FROM scoring_criteria WHERE cycle_id=? AND position_rank=? AND kra_category=? AND is_active=1 ORDER BY {$criteria_order_sql}");
+    $cs->execute([$cycle_id_for_criteria, $target_position, $cur_cat]);
+    $mergeCriteriaRows($cs->fetchAll());
 }
+
+$criteria_list = array_values(array_filter(array_map(
+    fn($key) => $criteria_by_key[$key] ?? null,
+    $criteria_order
+)));
 
 // Defensive cleanup for duplicated criteria configuration rows. Older MySQL
 // unique keys allowed repeated NULL cycle/position scopes, so a repeated seed
@@ -551,10 +635,57 @@ $criteria_list = array_values(array_filter($criteria_list, function ($c) use (&$
     $criteria_seen[$key] = true;
     return true;
 }));
+usort($criteria_list, function ($a, $b) {
+    $normaliseNumbering = function ($row): array {
+        $numbering = kraNumberingEntryByKey((string)($row['criterion_key'] ?? ''));
+        if (!is_array($numbering)) {
+            $numbering = [];
+        }
+        $label = (string)($row['criterion_label'] ?? '');
+        $fallback_criterion = '';
+        if (preg_match('/Criterion\s+([A-Z])[\.:\s]/i', $label, $m)) {
+            $fallback_criterion = strtoupper($m[1]);
+        }
+        return [
+            'criterion' => (string)($numbering['criterion'] ?? $fallback_criterion),
+            'group_no'  => isset($numbering['group_no']) ? (int)$numbering['group_no'] : 99,
+            'item_no'   => isset($numbering['item_no']) && $numbering['item_no'] !== null ? (int)$numbering['item_no'] : 0,
+            'label'     => $label,
+        ];
+    };
+    $na = $normaliseNumbering(is_array($a) ? $a : []);
+    $nb = $normaliseNumbering(is_array($b) ? $b : []);
+    $letterOrder = ['A' => 1, 'B' => 2, 'C' => 3, 'D' => 4];
+    $oa = [
+        $letterOrder[$na['criterion']] ?? 9,
+        $na['group_no'],
+        $na['item_no'],
+        $na['label'],
+    ];
+    $ob = [
+        $letterOrder[$nb['criterion']] ?? 9,
+        $nb['group_no'],
+        $nb['item_no'],
+        $nb['label'],
+    ];
+    return $oa <=> $ob;
+});
+
+$kra1_a_caps = ['set' => 36.0, 'sef' => 24.0];
+if ($cur_cat === 'Instruction') {
+    foreach ($criteria_list as $criterion_row) {
+        if (($criterion_row['criterion_key'] ?? '') === 'kra1_a_set' && (float)$criterion_row['max_points'] > 0) {
+            $kra1_a_caps['set'] = (float)$criterion_row['max_points'];
+        } elseif (($criterion_row['criterion_key'] ?? '') === 'kra1_a_sef' && (float)$criterion_row['max_points'] > 0) {
+            $kra1_a_caps['sef'] = (float)$criterion_row['max_points'];
+        }
+    }
+}
 
 // Pre-define cur_entries here so it's available throughout the template
 $cur_entries = $subs_by_cat[$cur_cat] ?? [];
 ?>
+
 
 <!-- -- KRA Entries Card -------------------------------------- -->
 <div class="neon-card p-0 mb-3" style="overflow:hidden;">
@@ -643,7 +774,11 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
   <?php elseif ($app['status'] === 'needs_revision'): ?>
   <div style="margin-top:0.85rem;padding:0.65rem 1rem;background:#f8fafc;border:1px solid #e2e8f0;border-left:4px solid #475569;border-radius:8px;font-size:0.82rem;color:#334155;">
     <i class="bi bi-exclamation-triangle-fill me-2" style="color:#475569;"></i>
-    <strong>Revision requested by evaluator.</strong> Only flagged entries can be edited. Fix the highlighted entries and submit your revision from the Dashboard.
+    <strong>Revision requested by evaluator.</strong> Edit and save the flagged entries, then resubmit the corrections. Other entries remain locked.
+    <form method="POST" action="index.php?page=dashboard" style="margin-top:0.65rem;">
+      <input type="hidden" name="action" value="resubmit_revision">
+      <button type="submit" class="btn btn-primary btn-sm">Resubmit corrected entries</button>
+    </form>
   </div>
   <?php elseif ($app['status'] === 'rejected'): ?>
   <div style="margin-top:0.85rem;padding:0.65rem 1rem;background:#f8fafc;border:1px solid #e2e8f0;border-left:4px solid #475569;border-radius:8px;font-size:0.82rem;color:#334155;">
@@ -653,12 +788,14 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
   <?php endif; ?>
 
   <?php
-  // -- STEP 7 Self-Assessment Advisory (JC01 s.2026) ---------------------------
+  // -- Self-assessment advisory: show only concrete detected issues.
   $app_pending  = json_decode($app['pending_documentation'] ?? '[]', true) ?: [];
   $app_config   = json_decode($app['config_incomplete'] ?? '[]', true) ?: [];
-  $app_double   = json_decode($app['double_counting_flags'] ?? '[]', true) ?: [];
+  $app_double_raw = json_decode($app['double_counting_flags'] ?? '[]', true) ?: [];
+  $app_previous_reuse = array_values(array_filter($app_double_raw, fn($d) => ($d['type'] ?? '') === 'previous_unsuccessful_reuse'));
+  $app_double = array_values(array_filter($app_double_raw, fn($d) => ($d['type'] ?? '') !== 'previous_unsuccessful_reuse'));
   $eval_period_ok = isset($app['evaluation_period_ok']) ? (bool)$app['evaluation_period_ok'] : true;
-  $has_advisory = !$eval_period_ok || !empty($app_pending) || !empty($app_config) || !empty($app_double);
+  $has_advisory = !$eval_period_ok || !empty($app_pending) || !empty($app_config) || !empty($app_double) || !empty($app_previous_reuse);
 
   if ($has_advisory && !$locked):
   ?>
@@ -671,6 +808,9 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
       <?php if (!$eval_period_ok): ?>
       <div style="color:#dc2626;margin-bottom:0.35rem;"><i class="bi bi-calendar-x me-1"></i>Application is linked to an archived cycle. Contact your administrator.</div>
       <?php endif; ?>
+      <?php foreach (array_slice($app_previous_reuse, 0, 5) as $reuse): ?>
+      <div style="color:#dc2626;margin-bottom:0.25rem;"><i class="bi bi-file-earmark-x me-1"></i><strong>Previous unsuccessful application reuse:</strong> <?= htmlspecialchars($reuse['message'] ?? ($reuse['title'] ?? 'Evidence file')) ?></div>
+      <?php endforeach; ?>
       <?php foreach (array_slice($app_double, 0, 3) as $d): ?>
       <div style="color:#c2410c;margin-bottom:0.25rem;"><i class="bi bi-copy me-1"></i><strong>Double-counting flagged:</strong> "<?= htmlspecialchars($d['title'] ?? '') ?>"</div>
       <?php endforeach; ?>
@@ -680,16 +820,14 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
       <?php foreach (array_slice($app_config, 0, 3) as $ci): ?>
       <div style="color:#7c3aed;margin-bottom:0.2rem;"><i class="bi bi-wrench me-1"></i><?= htmlspecialchars($ci) ?></div>
       <?php endforeach; ?>
-      <?php $total_items = count($app_pending) + count($app_config) + count($app_double); ?>
-      <?php if ($total_items > 11): ?>
+      <?php $total_items = count($app_pending) + count($app_config) + count($app_double) + count($app_previous_reuse); ?>
+      <?php if ($total_items > 16): ?>
       <div style="color:#94a3b8;font-size:0.72rem;margin-top:0.25rem;">+ more items ... full details visible to your evaluator.</div>
       <?php endif; ?>
-      <div style="margin-top:0.4rem;padding:0.35rem 0.6rem;background:#fef9c3;border-radius:5px;color:#713f12;font-size:0.74rem;">
-        <i class="bi bi-info-circle me-1"></i>Documents from an unsuccessful previous application cannot be reused in this cycle (JC01 s.2026 evaluation-period rule).
-      </div>
     </div>
   </div>
   <?php endif; ?>
+
   </div>
 
   <!-- KRA Tabs -->
@@ -1076,7 +1214,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
         ?>
       </div>
 
-      <?php if (!$locked): ?>
+      <?php if (!$locked && $app['status'] !== 'needs_revision'): ?>
       <button type="submit" class="btn btn-primary" style="border-radius:8px;padding:0.55rem 1.25rem;font-weight:600;">
         <i class="bi bi-upload me-2"></i>Save Requirements
       </button>
@@ -1139,7 +1277,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
         ?>
       </div>
 
-      <?php if (!$locked): ?>
+      <?php if (!$locked && $app['status'] !== 'needs_revision'): ?>
       <button type="submit" class="btn btn-primary" style="border-radius:8px;padding:0.55rem 1.25rem;font-weight:600;">
         <i class="bi bi-upload me-2"></i>Save Requirements
       </button>
@@ -1238,30 +1376,62 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
     <?php else: ?>
 
     <?php
-    // Group criteria by Criterion letter (A, B, C, D) for the dark blocks
-    $dark_groups = [];  // key = letter (A/B/C/D/?), value = ['header'=>string, 'max'=>float, 'items'=>[], '_seen'=>[]]
+    // Group criteria into dark blocks. Built-in Criterion A/B/C/D rows share a
+    // letter group; custom/unmapped rows use the stable DB criterion_key so new
+    // criteria don't collapse into the same "?" bucket.
+    $dark_groups = [];  // key = display group id, value = ['letter'=>string, 'header'=>string, 'max'=>float, 'items'=>[], '_seen'=>[]]
+    $criterion_title_map = [
+        'Instruction' => [
+            'A' => 'Teaching Effectiveness',
+            'B' => 'Curriculum and Instructional Materials Developed',
+            'C' => 'Special Projects, Capstone Projects, Thesis, Dissertation and Mentorship Services',
+        ],
+        'Research' => [
+            'A' => 'Research Outputs Published',
+            'B' => 'Inventions',
+            'C' => 'Creative Works',
+        ],
+        'Extension' => [
+            'A' => 'Service to the Institution',
+            'B' => 'Service to the Community',
+            'C' => 'Quality of Extension Services',
+            'D' => 'Bonus Criterion',
+        ],
+        'Professional Development' => [
+            'A' => 'Involvement in Professional Organization',
+            'B' => 'Continuing Development',
+            'C' => 'Awards and Recognition',
+            'D' => 'Bonus Indicators for Newly Hired Faculty',
+        ],
+    ];
     foreach ($criteria_list as $c) {
         $lbl = $c['criterion_label'];
+        $criterion_key = trim((string)($c['criterion_key'] ?? ''));
         // Extract letter: "Criterion A. Teaching..." or "Criterion B ..."
         if (preg_match('/Criterion\s+([A-Z])[\.:\s]/i', $lbl, $m)) {
             $letter = strtoupper($m[1]);
+            $group_key = $letter;
             // Build a clean header: everything up to the first ( or end
             preg_match('/^(Criterion\s+[A-Z][^(]*)/i', $lbl, $hm);
             $header = trim($hm[1] ?? $lbl);
         } else {
             $letter = '?';
+            $group_key = 'custom:' . ($criterion_key !== '' ? $criterion_key : md5((string)$lbl));
             $header = $lbl;
         }
-        if (!isset($dark_groups[$letter])) {
-            $dark_groups[$letter] = ['header' => $header, 'max' => 0.0, 'items' => [], '_seen' => []];
+        if (isset($criterion_title_map[$cur_cat][$letter])) {
+            $header = 'Criterion ' . $letter . '. ' . $criterion_title_map[$cur_cat][$letter];
         }
-        $item_key = trim((string)($c['criterion_key'] ?? '')) ?: trim((string)$lbl);
-        if (isset($dark_groups[$letter]['_seen'][$item_key])) {
+        if (!isset($dark_groups[$group_key])) {
+            $dark_groups[$group_key] = ['letter' => $letter, 'header' => $header, 'max' => 0.0, 'items' => [], '_seen' => []];
+        }
+        $item_key = $criterion_key !== '' ? $criterion_key : trim((string)$lbl);
+        if (isset($dark_groups[$group_key]['_seen'][$item_key])) {
             continue;
         }
-        $dark_groups[$letter]['_seen'][$item_key] = true;
-        $dark_groups[$letter]['items'][] = $c;
-        $dark_groups[$letter]['max'] += (float)$c['max_points'];
+        $dark_groups[$group_key]['_seen'][$item_key] = true;
+        $dark_groups[$group_key]['items'][] = $c;
+        $dark_groups[$group_key]['max'] += (float)$c['max_points'];
     }
 
     // Build a flat list of all entries with their evidence
@@ -1277,55 +1447,43 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
         $entries_with_ev[] = $s;
     }
 
-    // Prefix map used for matching entries to criterion letters (KRA I and KRA IV only).
-    // KRA II and KRA III use free-form key names that don't follow A-/B-/C- conventions,
-    // so for those KRAs we fall back to showing all entries under the first group.
-    $letter_to_prefixes = [
-        'A' => ['A-set-sef', 'A-set-sef-sem', 'A-set-sem', 'A-sef-sem', 'A-org'],
-        'B' => ['B|', 'B-material', 'B-training', 'B-paper', 'B-degree'],
-        'C' => ['C|', 'C-thesis', 'C-mentor', 'C-award'],
-        'D' => ['D-bonus', 'D-prior-academic', 'D-prior-industry', 'D-industry', 'D-'],
-    ];
-
-    // Check if ANY entry matches any known prefix at all (true for KRA I & IV)
-    $any_prefix_match = false;
-    foreach ($entries_with_ev as $s) {
-        $ct = explode('|||', $s['remarks'] ?? '')[0] ?? '';
-        foreach ($letter_to_prefixes as $prefixes) {
-            foreach ($prefixes as $prefix) {
-                if ($prefix === $ct || strpos($ct, rtrim($prefix, '-')) === 0) {
-                    $any_prefix_match = true;
-                    break 3;
-                }
-            }
-        }
-    }
-
-    $first_group_key = array_key_first($dark_groups);
-
     // -- Key -> pre-select value maps (declared once, used in every sub-item row) --
     // KRA I - Instruction flat crit value
     $key_to_flat = [
-        'kra1_b_textbook_sole'    => "B|30|Textbook \u{2014} Sole Author",
-        'kra1_b_textbook_co'      => "B|30co|Textbook \u{2014} Co-Author",
-        'kra1_b_chapter_sole'     => "B|10|Textbook Chapter \u{2014} Sole Author",
-        'kra1_b_chapter_co'       => "B|10co|Textbook Chapter \u{2014} Co-Author",
-        'kra1_b_manual_sole'      => "B|16|Manual/Module \u{2014} Sole Author",
-        'kra1_b_manual_co'        => "B|16co|Manual/Module \u{2014} Co-Author",
+        'kra1_b_textbook_sole'    => "B|30|Textbook, Sole Author",
+        'kra1_b_textbook_co'      => "B|30co|Textbook, Co-Author",
+        'kra1_b_chapter_sole'     => "B|0|Textbook Chapter, Sole Author",
+        'kra1_b_chapter_co'       => "B|0|Textbook Chapter, Co-Author",
+        'kra1_b_manual_sole'      => "B|16|Manual / Module, Sole Author",
+        'kra1_b_manual_co'        => "B|16co|Manual / Module, Co-Author",
         'kra1_b_multimedia'       => 'B|16|Multimedia Teaching Materials',
-        'kra1_b_testing'          => 'B|10|Validated Testing Materials',
-        'kra1_b_program_lead'     => "B|10|Academic Program \u{2014} Lead",
-        'kra1_b_program_contrib'  => "B|5|Academic Program \u{2014} Contributor",
-        'kra1_c_adviser_special'  => "C|3|Adviser \u{2014} Special/Capstone Project",
-        'kra1_c_adviser_undergrad'=> "C|5|Adviser \u{2014} Undergraduate Thesis",
-        'kra1_c_adviser_masters'  => "C|8|Adviser \u{2014} Master's Thesis",
-        'kra1_c_adviser_doctoral' => "C|10|Adviser \u{2014} Doctoral Dissertation",
-        'kra1_c_panel_special'    => "C|1|Panel \u{2014} Special/Capstone Project",
-        'kra1_c_panel_undergrad'  => "C|2|Panel \u{2014} Undergraduate Thesis",
-        'kra1_c_panel_masters'    => "C|4|Panel \u{2014} Master's Thesis",
-        'kra1_c_panel_doctoral'   => "C|6|Panel \u{2014} Doctoral Dissertation",
-        'kra1_c_mentor_competition'=> "C|0|Mentor \u{2014} Competition Winner",
+        'kra1_b_testing'          => 'B|0|Validated Testing Materials',
+        'kra1_b_program_lead'     => "B|10|Academic Program Dev/Revision, Lead",
+        'kra1_b_program_contrib'  => "B|5|Academic Program Dev/Revision, Contributor",
+        'kra1_c_adviser_special'  => "C|3|Adviser: Special Project / Capstone",
+        'kra1_c_adviser_undergrad'=> "C|5|Adviser: Undergraduate Thesis",
+        'kra1_c_adviser_masters'  => "C|8|Adviser: Master's Thesis",
+        'kra1_c_adviser_doctoral' => "C|10|Adviser: Doctoral Dissertation",
+        'kra1_c_panel_special'    => "C|1|Panel Member: Special Project / Capstone",
+        'kra1_c_panel_undergrad'  => "C|2|Panel Member: Undergraduate Thesis",
+        'kra1_c_panel_masters'    => "C|4|Panel Member: Master's Thesis",
+        'kra1_c_panel_doctoral'   => "C|6|Panel Member: Doctoral Dissertation",
+        'kra1_c_mentor_competition'=> "C|0|Mentor: Student/Team Competition Winner",
     ];
+    foreach ($criteria_list as $_crit_for_flat) {
+        $_key = (string)($_crit_for_flat['criterion_key'] ?? '');
+        if (!isset($key_to_flat[$_key])) {
+            continue;
+        }
+        $_parts = explode('|', $key_to_flat[$_key], 3);
+        if (count($_parts) < 3) {
+            continue;
+        }
+        $_is_co = str_ends_with($_parts[1], 'co');
+        $_points = rtrim(rtrim(number_format((float)$_crit_for_flat['max_points'], 2, '.', ''), '0'), '.');
+        if ($_points === '') $_points = '0';
+        $key_to_flat[$_key] = $_parts[0] . '|' . $_points . ($_is_co ? 'co' : '') . '|' . $_parts[2];
+    }
     // KRA III - Extension subtype string
     $key_to_ext = [
         'kra3_a_moa'                   => 'moa-linkage',
@@ -1352,20 +1510,67 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
         'kra3_d_chancellor'            => 'chancellor',
         'kra3_d_vice_chancellor'       => 'vice-chancellor',
         'kra3_d_campus_director'       => 'campus director',
-        'kra3_d_faculty_regent'        => 'campus director',
+        'kra3_d_faculty_regent'        => 'faculty regent',
         'kra3_d_office_director'       => 'office director',
-        'kra3_d_univ_secretary'        => 'office director',
+        'kra3_d_univ_secretary'        => 'university secretary',
         'kra3_d_dean'                  => 'dean',
         'kra3_d_assoc_dean'            => 'associate dean',
-        'kra3_d_college_secretary'     => 'associate dean',
+        'kra3_d_college_secretary'     => 'college secretary',
         'kra3_d_dept_head'             => 'dept head',
         'kra3_d_program_chair'         => 'program chair',
-        'kra3_d_project_head_inst'     => 'program chair',
+        'kra3_d_project_head_inst'     => 'project head inst',
         'kra3_d_committee_chair_dept'  => 'committee chair',
-        'kra3_d_committee_chair_inst'  => 'committee chair',
+        'kra3_d_committee_chair_inst'  => 'committee chair inst',
         'kra3_d_committee_member_dept' => 'committee member',
-        'kra3_d_committee_member_inst' => 'committee member',
+        'kra3_d_committee_member_inst' => 'committee member inst',
     ];
+    $key_to_ext_default_max = [
+        'kra3_a_moa' => 5.00,
+        'kra3_a_income_below6m' => 6.00,
+        'kra3_a_income_6to12m' => 12.00,
+        'kra3_a_income_above12m' => 18.00,
+        'kra3_b_accreditation_local' => 8.00,
+        'kra3_b_accreditation_intl' => 10.00,
+        'kra3_b_judge_research' => 2.00,
+        'kra3_b_judge_competition' => 1.00,
+        'kra3_b_consultant_local' => 8.00,
+        'kra3_b_consultant_intl' => 10.00,
+        'kra3_b_column_occasional' => 2.00,
+        'kra3_b_column_regular' => 10.00,
+        'kra3_b_tv_radio_host' => 10.00,
+        'kra3_b_technical_guest' => 1.00,
+        'kra3_b_resource_local' => 2.00,
+        'kra3_b_resource_intl' => 3.00,
+        'kra3_b_outreach_head' => 5.00,
+        'kra3_b_outreach_participant' => 2.00,
+        'kra3_c_satisfaction' => 20.00,
+        'kra3_d_president' => 20.00,
+        'kra3_d_vp' => 15.00,
+        'kra3_d_chancellor' => 10.00,
+        'kra3_d_vice_chancellor' => 8.00,
+        'kra3_d_campus_director' => 8.00,
+        'kra3_d_faculty_regent' => 8.00,
+        'kra3_d_office_director' => 6.00,
+        'kra3_d_univ_secretary' => 6.00,
+        'kra3_d_project_head_inst' => 4.00,
+        'kra3_d_committee_chair_inst' => 3.00,
+        'kra3_d_committee_member_inst' => 2.00,
+        'kra3_d_dean' => 6.00,
+        'kra3_d_assoc_dean' => 5.00,
+        'kra3_d_college_secretary' => 3.00,
+        'kra3_d_dept_head' => 4.00,
+        'kra3_d_program_chair' => 3.00,
+        'kra3_d_committee_chair_dept' => 2.00,
+        'kra3_d_committee_member_dept' => 1.00,
+    ];
+    $legacy_key_to_ext = $key_to_ext;
+    foreach ($criteria_list as $_crit_for_ext) {
+        $_key = (string)($_crit_for_ext['criterion_key'] ?? '');
+        if (isset($key_to_ext[$_key], $key_to_ext_default_max[$_key])
+            && abs((float)$_crit_for_ext['max_points'] - (float)$key_to_ext_default_max[$_key]) > 0.001) {
+            unset($key_to_ext[$_key]);
+        }
+    }
     // KRA IV - Professional Development {type, sub}
     $key_to_pd = [
         'kra4_a_org_membership'    => ['type'=>'A-org',      'sub'=>''],
@@ -1379,41 +1584,105 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
         'kra4_b_paper_intl'        => ['type'=>'B-paper',    'sub'=>'5'],
         'kra4_c_award_institutional'=> ['type'=>'C-award',   'sub'=>'2'],
         'kra4_c_award_local'       => ['type'=>'C-award',    'sub'=>'3'],
-        'kra4_c_award_regional'    => ['type'=>'C-award',    'sub'=>'4'],
-        'kra4_c_award_national'    => ['type'=>'C-award',    'sub'=>'0'],
-        'kra4_c_award_international'=> ['type'=>'C-award',   'sub'=>'0'],
+        'kra4_c_award_national'    => ['type'=>'C-award',    'sub'=>'4'],
+        'kra4_c_award_international'=> ['type'=>'C-award',   'sub'=>'5'],
+        'kra4_c_award_prestigious' => ['type'=>'C-award',    'sub'=>'0'],
     ];
+    $key_to_pd_default_max = [
+        'kra4_a_org_membership' => 5.00,
+        'kra4_b_postmaster_cert' => 10.00,
+        'kra4_b_postdoc_cert' => 10.00,
+        'kra4_b_additional_masters' => 20.00,
+        'kra4_b_doctorate' => 40.00,
+        'kra4_b_training_local' => 1.00,
+        'kra4_b_training_intl' => 2.00,
+        'kra4_b_paper_local' => 3.00,
+        'kra4_b_paper_intl' => 5.00,
+        'kra4_c_award_institutional' => 2.00,
+        'kra4_c_award_local' => 3.00,
+        'kra4_c_award_national' => 4.00,
+        'kra4_c_award_international' => 0.00,
+        'kra4_c_award_prestigious' => 0.00,
+    ];
+    $legacy_key_to_pd = $key_to_pd;
+    foreach ($criteria_list as $_crit_for_pd) {
+        $_key = (string)($_crit_for_pd['criterion_key'] ?? '');
+        if (isset($key_to_pd[$_key], $key_to_pd_default_max[$_key])
+            && abs((float)$_crit_for_pd['max_points'] - (float)$key_to_pd_default_max[$_key]) > 0.001) {
+            unset($key_to_pd[$_key]);
+        }
+    }
     ?>
 
-    <?php foreach ($dark_groups as $letter => $group): ?>
     <?php
-    // Collect entries for this criterion group
-    if ($any_prefix_match) {
-        // KRA I / KRA IV: match by critType prefix
-        $group_entries = [];
-        foreach ($entries_with_ev as $s) {
-            $critType = explode('|||', $s['remarks'] ?? '')[0] ?? '';
-            foreach (($letter_to_prefixes[$letter] ?? []) as $prefix) {
-                if ($prefix === $critType || strpos($critType, rtrim($prefix, '-')) === 0) {
-                    $group_entries[] = $s;
-                    break;
+    // Build step index for the stepper nav
+    $group_keys = array_keys($dark_groups);
+    $group_count = count($group_keys);
+    $initial_criterion_index = array_search($return_criterion, $group_keys, true);
+    if ($initial_criterion_index === false) $initial_criterion_index = 0;
+    ?>
+
+    <?php if ($group_count > 1): ?>
+    <!-- Criterion stepper nav -->
+    <div id="criterionStepperNav"
+         style="display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap;margin-bottom:1rem;padding:0.65rem 0.85rem;
+                background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;">
+        <span style="font-size:0.68rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;margin-right:0.25rem;">Criterion:</span>
+        <?php foreach ($dark_groups as $gk => $g): $gi = array_search($gk, $group_keys); ?>
+        <button type="button"
+                onclick="goCriterion(<?= $gi ?>)"
+                id="criterionPill_<?= $gi ?>"
+                style="padding:0.3rem 0.85rem;border-radius:20px;font-size:0.75rem;font-weight:700;cursor:pointer;transition:all 0.15s;
+                       <?= $gi === $initial_criterion_index ? 'background:#1e3a5f;color:#fff;border:1px solid #1e3a5f;' : 'background:#fff;color:#64748b;border:1px solid #e2e8f0;' ?>">
+            <?= htmlspecialchars($g['letter']) ?>
+        </button>
+        <?php if ($gi < $group_count - 1): ?>
+        <span style="color:#cbd5e1;font-size:0.7rem;">›</span>
+        <?php endif; ?>
+        <?php endforeach; ?>
+        <span id="criterionStepLabel"
+              style="margin-left:auto;font-size:0.75rem;font-weight:600;color:#1e3a5f;">
+            <?= htmlspecialchars($dark_groups[$group_keys[$initial_criterion_index]]['header']) ?>
+        </span>
+    </div>
+    <?php endif; ?>
+
+    <?php foreach ($dark_groups as $group_key => $group):
+        $gi = array_search($group_key, $group_keys);
+    ?>
+    <?php
+    $letter = (string)($group['letter'] ?? $group_key);
+    // Assign each saved entry to one specific row before computing group totals.
+    $group_entries = [];
+    foreach ($entries_with_ev as $s) {
+        $parts = explode('|||', $s['remarks'] ?? '');
+        $matched_group = null;
+        foreach ($dark_groups as $_candidate_group_key => $_candidate_group) {
+            foreach ($_candidate_group['items'] as $_candidate_item) {
+                if (kraEntryMatchesCriterion($cur_cat, $parts, $_candidate_item, $key_to_flat, $legacy_key_to_ext, $legacy_key_to_pd)) {
+                    $s['_matched_criterion_key'] = (string)$_candidate_item['criterion_key'];
+                    $matched_group = $_candidate_group_key;
+                    break 2;
                 }
             }
         }
-    } else {
-        // KRA II / KRA III: no prefix conventions ... show all entries under the first group only
-        $group_entries = ($letter === $first_group_key) ? $entries_with_ev : [];
+        // Semester ratings have separate SET/SEF calculations below.
+        if ($cur_cat === 'Instruction' && in_array($parts[0] ?? '', ['A-set-sef', 'A-set-sef-sem', 'A-set-sem', 'A-sef-sem'], true)) {
+            $matched_group = 'A';
+        }
+        if ($matched_group === $group_key) $group_entries[] = $s;
     }
-
     // Compute group score from the already-collected entries
     $group_score = 0;
     foreach ($group_entries as $s) {
-        $group_score += (float)$s['computed_points'];
+        $group_score += kraApplyEffectiveComputedPoints($s);
     }
     if ($cur_cat === 'Instruction' && $letter === 'A') {
         if (!class_exists('\Scoring\KRA1Scorer')) {
             require_once __DIR__ . '/../scoring/kra1_scorer.php';
         }
+        \Scoring\KRA1Scorer::setPdo($pdo);
+        \Scoring\KRA1Scorer::setCriteriaContext((int)($cycle_id_for_criteria ?? 0), $target_position ?? null);
         $kra1_group_score = \Scoring\KRA1Scorer::score($group_entries);
         $group_score = (float)($kra1_group_score['criterion_a'] ?? $group_score);
     }
@@ -1451,11 +1720,12 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
         }
         $avg_set = $set_ratings ? array_sum($set_ratings) / count($set_ratings) : 0;
         $avg_sef = $sef_ratings ? array_sum($sef_ratings) / count($sef_ratings) : 0;
-        $ci_scores['set'] = round(($avg_set / 100) * 36, 2);
-        $ci_scores['sef'] = round(($avg_sef / 100) * 24, 2);
+        $ci_scores['set'] = round(($avg_set / 100) * $kra1_a_caps['set'], 2);
+        $ci_scores['sef'] = round(($avg_sef / 100) * $kra1_a_caps['sef'], 2);
     }
     ?>
-    <div style="background:#ffffff;border:1px solid #dde3ee;border-radius:8px;margin-bottom:1rem;overflow:hidden;">
+    <div <?= $group_count > 1 ? 'class="criterion-step" data-step="' . $gi . '" style="display:' . ($gi === $initial_criterion_index ? 'block' : 'none') . ';"' : '' ?>
+         style="background:#ffffff;border:1px solid #dde3ee;border-radius:8px;margin-bottom:1rem;overflow:hidden;">
 
       <!-- Criterion group header -->
       <div style="background:#1e3a5f;padding:0.55rem 1rem;display:flex;justify-content:space-between;align-items:center;">
@@ -1465,12 +1735,18 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
       <?php
       // -- Sub-item rows ------------------------------------------------------
       // For Instruction Criterion A: sub-items map 1-to-1 to SET/SEF with their
-      // own scores. For all other criteria: sub-items are listed with the group
-      // aggregate score shown once on the last item (or the only item).
+      // own scores. Other rows sum only entries matching that specific sub-item.
       $ci_idx = 0;
+      $last_numbering_group = null;
+      $last_numbering_slot = null;
       foreach ($group['items'] as $ci):
           $ci_idx++;
           $ci_key        = $ci['criterion_key'] ?? '';
+          $ci_numbering  = kraNumberingEntryByKey((string)$ci_key) ?: [];
+          $ci_group_no   = $ci_numbering['group_no'] ?? null;
+          $ci_item_no    = $ci_numbering['item_no'] ?? null;
+          $ci_item_label = kraCleanEntryDisplayTitle((string)$ci['criterion_label']);
+          $ci_number     = $ci_numbering ? '' : $ci_idx . '.';
           $ci_entry_type = '';   // 'set', 'sef', or '' (non-A criteria)
           if ($cur_cat === 'Instruction' && $letter === 'A') {
               if (str_contains($ci_key, '_a_set') || str_contains(strtolower($ci['criterion_label']), '(set)')) {
@@ -1480,11 +1756,21 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
               }
           }
 
+          // Build per-button values from the pre-declared maps. These are also
+          // used to attach saved entries back to the correct displayed row.
+          $flat_crit_value = $key_to_flat[$ci_key] ?? '';
+          $ext_subtype     = $key_to_ext[$ci_key]  ?? '';
+          $pd_entry        = $key_to_pd[$ci_key]   ?? null;
+
           // Score to display on this row  -  also collect matched entries for edit buttons
           $ci_entries = []; // entries that belong to this specific sub-item
           if ($ci_entry_type !== '') {
               // Instruction Criterion A  -  SET/SEF have their own subtotals
               $row_score = $ci_scores[$ci_entry_type] ?? 0.0;
+              $ci_entries = array_values(array_filter($group_entries, static function ($entry) use ($ci_entry_type) {
+                  $type = explode('|||', $entry['remarks'] ?? '')[0];
+                  return in_array($type, ['A-set-sef', 'A-set-sef-sem', $ci_entry_type === 'sef' ? 'A-sef-sem' : 'A-set-sem'], true);
+              }));
           } else {
               $row_score = 0.0;
               foreach ($group_entries as $_se) {
@@ -1492,26 +1778,13 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
                   $_p0    = $_parts[0] ?? '';
                   $_match = false;
 
-                  if ($cur_cat === 'Research') {
-                      $_stored_label = preg_replace('/\s*\(\d+(?:\.\d+)?\s*pts?\)\s*$/i', '', $_p0);
-                      $_match = trim($_stored_label) === trim($ci['criterion_label']);
-                  } elseif ($cur_cat === 'Extension') {
-                      $_match = isset($key_to_ext[$ci_key]) && $_p0 === $key_to_ext[$ci_key];
-                  } elseif ($cur_cat === 'Professional Development') {
-                      if (isset($pd_entry)) {
-                          $_sub_match = ($pd_entry['sub'] === '' || ($_parts[2] ?? '') === $pd_entry['sub']);
-                          $_match = $_p0 === $pd_entry['type'] && $_sub_match;
-                      }
-                  } else {
-                      $_match = ($ci_idx === count($group['items']));
-                  }
+                  $_match = (($_se['_matched_criterion_key'] ?? '') === (string)$ci_key);
 
                   if ($_match) {
                       $ci_entries[] = $_se;
-                      $row_score += (float)$_se['computed_points'];
+                      $row_score += kraApplyEffectiveComputedPoints($_se);
                   }
               }
-              $row_score = ($row_score > 0 || !empty($group_entries)) ? $row_score : null;
           }
 
           // Description (filter out dev/admin notes)
@@ -1522,11 +1795,6 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
                      || str_contains($desc_clean, 'JC01 s.2026, Section 15');
           $show_desc  = !empty($desc_clean) && !$hide_desc;
 
-          // Build per-button values from the pre-declared maps
-          $flat_crit_value = $key_to_flat[$ci_key] ?? '';
-          $ext_subtype     = $key_to_ext[$ci_key]  ?? '';
-          $pd_entry        = $key_to_pd[$ci_key]   ?? null;
-
           // For Research pass the full criterion_label so JS can match it in CRIT
           $res_label = ($cur_cat === 'Research') ? ($ci['criterion_label'] ?? '') : '';
 
@@ -1536,35 +1804,60 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
               $btn_onclick = "openCriterionEntryType('A', '{$ci_entry_type}')";
           } elseif ($cur_cat === 'Instruction' && $flat_crit_value !== '') {
               // Instruction B/C sub-item -> pre-select and lock
-              $btn_onclick = htmlspecialchars("openCriterionEntryWithCrit(" . json_encode($letter) . ", " . json_encode(['kra'=>'instruction','flat'=>$flat_crit_value]) . ")", ENT_QUOTES);
+              $btn_onclick = htmlspecialchars("openCriterionEntryWithCrit(" . json_encode($letter) . ", " . json_encode(['key'=>$ci_key,'kra'=>'instruction','flat'=>$flat_crit_value]) . ")", ENT_QUOTES);
           } elseif ($cur_cat === 'Research' && $res_label !== '') {
               // Research sub-item -> pre-select by label
-              $btn_onclick = htmlspecialchars("openCriterionEntryWithCrit(" . json_encode($letter) . ", " . json_encode(['kra'=>'research','label'=>$res_label,'pts'=>(float)$ci['max_points']]) . ")", ENT_QUOTES);
+              $btn_onclick = htmlspecialchars("openCriterionEntryWithCrit(" . json_encode($letter) . ", " . json_encode(['key'=>$ci_key,'kra'=>'research','label'=>$res_label,'pts'=>(float)$ci['max_points']]) . ")", ENT_QUOTES);
           } elseif ($cur_cat === 'Extension' && $ext_subtype !== '') {
               // Extension sub-item -> pre-select by subtype
-              $btn_onclick = htmlspecialchars("openCriterionEntryWithCrit(" . json_encode($letter) . ", " . json_encode(['kra'=>'extension','subtype'=>$ext_subtype]) . ")", ENT_QUOTES);
+              $btn_onclick = htmlspecialchars("openCriterionEntryWithCrit(" . json_encode($letter) . ", " . json_encode(['key'=>$ci_key,'kra'=>'extension','subtype'=>$ext_subtype]) . ")", ENT_QUOTES);
           } elseif ($cur_cat === 'Professional Development' && $pd_entry !== null) {
               // PD sub-item -> pre-select type + sub-value
-              $btn_onclick = htmlspecialchars("openCriterionEntryWithCrit(" . json_encode($letter) . ", " . json_encode(['kra'=>'pd','type'=>$pd_entry['type'],'sub'=>$pd_entry['sub']]) . ")", ENT_QUOTES);
+              $btn_onclick = htmlspecialchars("openCriterionEntryWithCrit(" . json_encode($letter) . ", " . json_encode(['key'=>$ci_key,'kra'=>'pd','type'=>$pd_entry['type'],'sub'=>$pd_entry['sub']]) . ")", ENT_QUOTES);
           } else {
-              $btn_onclick = "openCriterionEntry(" . json_encode($letter) . ")";
+              $btn_onclick = htmlspecialchars("openCriterionEntryWithCrit(" . json_encode($letter) . ", " . json_encode(['kra'=>'custom','letter'=>$letter,'key'=>$ci_key,'label'=>$ci['criterion_label'] ?? '', 'pts'=>(float)$ci['max_points']]) . ")", ENT_QUOTES);
           }
       ?>
-      <div style="display:grid;grid-template-columns:28px 1fr auto auto;align-items:start;gap:0;padding:0;border-top:1px solid #e8edf4;<?= $ci_idx % 2 === 0 ? 'background:#fafbfd;' : 'background:#fff;' ?>">
+      <?php if (!empty($ci_numbering) && $ci_group_no !== $last_numbering_group): ?>
+      <?php $last_numbering_group = $ci_group_no; ?>
+      <div style="background:#f1f5f9;border-top:1px solid #dbe3ee;padding:0.55rem 1rem;color:#1e3a5f;font-size:0.8rem;font-weight:800;">
+        <?= htmlspecialchars((int)$ci_numbering['group_no'] . '. ' . $ci_numbering['group_title']) ?>
+      </div>
+      <?php endif; ?>
+      <?php if (!empty($ci_numbering) && $ci_item_no !== null):
+          $slot_key = (int)$ci_group_no . '.' . (int)$ci_item_no;
+          if ($slot_key !== $last_numbering_slot):
+              $last_numbering_slot = $slot_key;
+      ?>
+      <div style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:0.48rem 1rem 0.48rem 2.75rem;color:#334155;font-size:0.76rem;font-weight:800;">
+        <?= htmlspecialchars(kraNumberingPrefix($ci_numbering) . ' ' . kraNumberingSubLabel($ci_numbering)) ?>
+      </div>
+      <?php endif; endif; ?>
+      <div <?= $ci_key !== '' ? 'id="criterion-' . htmlspecialchars(rawurlencode((string)$ci_key), ENT_QUOTES) . '"' : '' ?>
+           style="display:grid;grid-template-columns:28px 1fr auto auto;align-items:start;gap:0;padding:0;border-top:1px solid #e8edf4;<?= $ci_idx % 2 === 0 ? 'background:#fafbfd;' : 'background:#fff;' ?>">
 
         <!-- Number badge -->
-        <div style="padding:0.65rem 0 0.65rem 1rem;color:#94a3b8;font-size:0.72rem;font-weight:700;padding-top:0.78rem;"><?= $ci_idx ?>.</div>
+        <div style="padding:0.65rem 0 0.65rem 1rem;color:#94a3b8;font-size:0.72rem;font-weight:700;padding-top:0.78rem;"><?= htmlspecialchars($ci_number) ?></div>
 
         <!-- Label + description -->
         <div style="padding:0.6rem 0.75rem 0.6rem 0.5rem;min-width:0;">
-          <div style="color:#1a2e4a;font-size:0.82rem;font-weight:600;line-height:1.3;"><?= htmlspecialchars($ci['criterion_label']) ?></div>
+          <div style="color:#1a2e4a;font-size:0.82rem;font-weight:600;line-height:1.3;"><?= htmlspecialchars($ci_item_label) ?></div>
           <?php if ($show_desc): ?>
           <div style="color:#64748b;font-size:0.72rem;margin-top:0.2rem;line-height:1.4;"><?= htmlspecialchars($desc_clean) ?></div>
           <?php endif; ?>
           <?php if (!empty($ci_entries)): ?>
           <!-- Existing entries list under the label -->
-          <div style="margin-top:0.45rem;display:flex;flex-direction:column;gap:0.25rem;">
+            <div style="margin-top:0.45rem;display:flex;flex-direction:column;gap:0.25rem;">
             <?php foreach ($ci_entries as $_ce):
+                $_ce_parts = explode('|||', $_ce['remarks'] ?? '');
+                $_ce_title = trim($_ce_parts[1] ?? '');
+                $_ce_value = trim($_ce_parts[2] ?? '');
+                $_ce_meta = '';
+                if ($cur_cat === 'Extension' && ($_ce_parts[0] ?? '') === 'income' && $_ce_value !== '') {
+                    $_ce_meta = 'PHP ' . number_format((float)$_ce_value, 2);
+                } elseif ($cur_cat === 'Extension' && in_array(($_ce_parts[0] ?? ''), ['resource-speaker-local', 'resource-speaker-intl'], true) && $_ce_value !== '') {
+                    $_ce_meta = rtrim(rtrim(number_format((float)$_ce_value, 2), '0'), '.') . ' hour(s)';
+                }
                 $_ce_needs_rev = (($_ce['revision_status'] ?? '') === 'needs_revision');
                 $_ce_rev_ok    = ($app['status'] !== 'needs_revision') || $_ce_needs_rev;
                 $_ce_verified  = (!empty($_ce['verified']) && !$_ce_needs_rev);
@@ -1574,17 +1867,27 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
                     'file_path'         => $f['file_path'],
                     'original_filename' => $f['original_filename'],
                 ], $_ce['_ev_files'] ?? []);
+                $_ce_points = kraApplyEffectiveComputedPoints($_ce);
                 $_entry_json = htmlspecialchars(json_encode([
                     'submission_id'   => $_ce['submission_id'],
-                    'computed_points' => $_ce['computed_points'],
+                    'computed_points' => $_ce_points,
                     'remarks'         => $_ce['remarks'],
+                    'criterion_key'   => $_ce['_matched_criterion_key'] ?? '',
                     'document_path'   => $_ce['document_path'] ?? '',
                     'verified'        => $_ce['verified'] ?? 0,
+                    'revision_status' => $_ce['revision_status'] ?? 'ok',
+                    'editable'        => $_ce_can_edit,
                     'evidence_files'  => $_ev_files_btn,
                 ]), ENT_QUOTES);
             ?>
             <div style="display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap;">
-              <span style="color:#475569;font-size:0.72rem;font-weight:600;"><?= number_format((float)$_ce['computed_points'], 2) ?> pts</span>
+              <?php if ($_ce_title !== ''): ?>
+              <span style="color:#1e293b;font-size:0.72rem;font-weight:700;"><?= htmlspecialchars($_ce_title) ?></span>
+              <?php endif; ?>
+              <?php if ($_ce_meta !== ''): ?>
+              <span style="color:#64748b;font-size:0.7rem;"><?= htmlspecialchars($_ce_meta) ?></span>
+              <?php endif; ?>
+              <span style="color:#475569;font-size:0.72rem;font-weight:600;"><?= number_format($_ce_points, 2) ?> pts</span>
               <?php if (!empty($_ce['_ev_files'])): ?>
               <span style="color:#64748b;font-size:0.7rem;">
                 <i class="bi bi-file-earmark" style="font-size:0.65rem;"></i>
@@ -1604,7 +1907,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
                       onmouseover="this.style.background='#e2e8f0'" onmouseout="this.style.background='#f1f5f9'">
                 <i class="bi bi-pencil" style="font-size:0.6rem;"></i> Edit
               </button>
-              <?php if (!$locked): ?>
+              <?php if (!$locked && $app['status'] !== 'needs_revision'): ?>
               <form method="POST" id="delEntry_<?= (int)$_ce['submission_id'] ?>" style="display:inline;">
                 <input type="hidden" name="kra_action" value="delete_kra">
                 <input type="hidden" name="submission_id" value="<?= (int)$_ce['submission_id'] ?>">
@@ -1620,6 +1923,13 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
               <span style="color:#94a3b8;font-size:0.7rem;font-style:italic;">Submitted</span>
               <?php endif; ?>
             </div>
+            <?php foreach (($_ce['_ev_files'] ?? []) as $_ce_file): ?>
+            <a href="pages/view_file.php?file=<?= htmlspecialchars(rawurlencode($_ce_file['file_path']), ENT_QUOTES) ?>"
+               target="_blank" rel="noopener"
+               style="color:#1e4d8c;font-size:0.7rem;overflow-wrap:anywhere;">
+              <i class="bi bi-paperclip"></i> <?= htmlspecialchars($_ce_file['original_filename']) ?>
+            </a>
+            <?php endforeach; ?>
             <?php endforeach; ?>
           </div>
           <?php endif; ?>
@@ -1634,7 +1944,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
 
         <!-- Add Entry button -->
         <div style="padding:0.5rem 0.85rem 0.5rem 0;">
-          <?php if ($can_edit): ?>
+          <?php if ($can_edit && $app['status'] !== 'needs_revision'): ?>
           <button type="button"
                   onclick="<?= $btn_onclick ?>"
                   style="height:28px;padding:0 12px;background:#1e3a5f;border:none;border-radius:5px;color:#fff;
@@ -1656,11 +1966,41 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
       <?php endforeach; // end group items ?>
 
       <!-- Group total row -->
-      <div style="background:#1e3a5f;padding:0.45rem 0.85rem;display:flex;justify-content:flex-end;align-items:center;gap:2rem;">
-        <span style="color:rgba(255,255,255,0.55);font-size:0.72rem;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;">Total criterion</span>
-        <span style="color:#fff;font-weight:800;font-size:0.92rem;min-width:80px;text-align:right;">
-          <?= number_format($group_score, 2) ?> &nbsp;/&nbsp; <?= number_format($group_max, 2) ?>
-        </span>
+      <div style="background:#1e3a5f;padding:0.45rem 0.85rem;display:flex;justify-content:space-between;align-items:center;gap:1rem;">
+        <!-- Prev / Next navigation -->
+        <?php if ($group_count > 1): ?>
+        <div style="display:flex;gap:0.4rem;">
+            <?php if ($gi > 0): ?>
+            <button type="button" onclick="goCriterion(<?= $gi - 1 ?>)"
+                    style="height:26px;padding:0 10px;background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.25);
+                           border-radius:5px;color:#fff;font-size:0.72rem;font-weight:600;cursor:pointer;
+                           display:inline-flex;align-items:center;gap:4px;"
+                    onmouseover="this.style.background='rgba(255,255,255,0.2)'"
+                    onmouseout="this.style.background='rgba(255,255,255,0.12)'">
+                <i class="bi bi-chevron-left"></i> Prev
+            </button>
+            <?php endif; ?>
+            <?php if ($gi < $group_count - 1): ?>
+            <button type="button" onclick="goCriterion(<?= $gi + 1 ?>)"
+                    style="height:26px;padding:0 10px;background:#fff;border:1px solid rgba(255,255,255,0.4);
+                           border-radius:5px;color:#1e293b;font-size:0.72rem;font-weight:700;cursor:pointer;
+                           display:inline-flex;align-items:center;gap:4px;"
+                    onmouseover="this.style.background='#f1f5f9'"
+                    onmouseout="this.style.background='#fff'">
+                Next <i class="bi bi-chevron-right"></i>
+            </button>
+            <?php endif; ?>
+        </div>
+        <?php else: ?>
+        <div></div>
+        <?php endif; ?>
+        <!-- Total -->
+        <div style="display:flex;align-items:center;gap:2rem;">
+            <span style="color:rgba(255,255,255,0.55);font-size:0.72rem;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;">Total criterion</span>
+            <span style="color:#fff;font-weight:800;font-size:0.92rem;min-width:80px;text-align:right;">
+                <?= number_format($group_score, 2) ?> &nbsp;/&nbsp; <?= number_format($group_max, 2) ?>
+            </span>
+        </div>
       </div>
 
       <?php // Note: editBtn_{id} elements are now rendered inline in each sub-item row above ?>
@@ -1778,11 +2118,13 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
               <tr style="background:#1e4d8c;">
                 <th style="width:56px;padding:0.7rem 1rem;">
                   <button type="button" onclick="addKraRow()" title="Add new row"
-                          style="width:30px;height:30px;padding:0;background:#1e4d8c;border:none;border-radius:6px;
-                                 color:#fff;font-size:1.1rem;font-weight:700;cursor:pointer;
+                          style="width:36px;height:36px;padding:0;background:#16a34a;border:2px solid rgba(255,255,255,0.3);border-radius:8px;
+                                 color:#fff;font-size:1.3rem;font-weight:900;cursor:pointer;
                                  display:flex;align-items:center;justify-content:center;
-                                 transition:background 0.15s;position:relative;z-index:10;"
-                          onmouseover="this.style.background='#1a3a6b'" onmouseout="this.style.background='#1e4d8c'">
+                                 box-shadow:0 2px 6px rgba(0,0,0,0.25);
+                                 transition:background 0.15s,transform 0.1s;position:relative;z-index:10;"
+                          onmouseover="this.style.background='#15803d';this.style.transform='scale(1.08)'"
+                          onmouseout="this.style.background='#16a34a';this.style.transform='scale(1)'">
                     <i class="bi bi-plus-lg"></i>
                   </button>
                 </th>
@@ -1824,72 +2166,92 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
           </table>
         </div>
         <div id="criteriaASections" style="display:none;padding:1rem;background:#f8fafc;">
-          <div class="criteria-a-section" data-section-type="set" style="background:#fff;border:1px solid #dbeafe;border-radius:8px;overflow:hidden;margin-bottom:1rem;">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:0.75rem 1rem;background:#eff6ff;border-bottom:1px solid #dbeafe;">
-              <div style="display:flex;align-items:center;gap:0.65rem;min-width:0;">
-                <div style="color:#1e4d8c;font-size:0.82rem;font-weight:800;text-transform:uppercase;letter-spacing:0.04em;">Student Evaluation of Teaching (SET)</div>
-                <span style="display:inline-flex;align-items:center;padding:0.18rem 0.5rem;border-radius:999px;background:#dbeafe;color:#1e4d8c;font-size:0.68rem;font-weight:800;">36.00 pts max</span>
+          <div class="criteria-a-section" data-section-type="set" style="background:#fff;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:1rem;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:0.65rem 1rem;background:#f8fafc;border-bottom:1px solid #e2e8f0;">
+              <div style="display:flex;align-items:center;gap:0.6rem;min-width:0;">
+                <span style="font-size:0.8rem;font-weight:700;color:#1a3a6b;">Student Evaluation of Teaching (SET)</span>
+                <span style="background:#eff6ff;color:#1e4d8c;font-size:0.65rem;font-weight:700;padding:2px 8px;border-radius:4px;border:1px solid #bfdbfe;"><?= number_format($kra1_a_caps['set'], 2) ?> pts max</span>
               </div>
               <button type="button" data-add-type="set" onclick="addKraRow('set')" title="Add SET entry"
-                      style="height:30px;padding:0 9px;background:#1e4d8c;border:none;border-radius:6px;color:#fff;font-size:0.72rem;font-weight:800;cursor:pointer;display:inline-flex;align-items:center;gap:5px;justify-content:center;transition:background 0.15s;position:relative;z-index:10;"
-                      onmouseover="this.style.background='#1a3a6b'" onmouseout="this.style.background='#1e4d8c'">
+                      style="height:28px;padding:0 10px;background:#1a3a6b;border:none;border-radius:5px;color:#fff;font-size:0.72rem;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:4px;white-space:nowrap;"
+                      onmouseover="this.style.background='#1e4d8c'" onmouseout="this.style.background='#1a3a6b'">
                 <i class="bi bi-plus-lg"></i> Add Entry
               </button>
             </div>
             <div class="table-responsive">
-              <table class="kra-entry-table kra-entry-table-instruction" style="width:100%;border-collapse:collapse;font-size:0.82rem;">
-                <thead><tr style="background:#1e4d8c;">
-                  <th style="width:56px;padding:0.7rem 1rem;"></th>
-                  <th style="padding:0.7rem 0.5rem;color:rgba(255,255,255,0.65);font-size:0.68rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;width:58px;">No.</th>
-                  <th style="padding:0.7rem 0.75rem;color:rgba(255,255,255,0.65);font-size:0.68rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;min-width:170px;">Evaluation Period</th>
-                  <th style="padding:0.7rem 0.55rem;color:rgba(255,255,255,0.65);font-size:0.68rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;min-width:168px;text-align:center;">1st Semester</th>
-                  <th style="padding:0.7rem 0.45rem;color:rgba(255,255,255,0.65);font-size:0.68rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;width:108px;text-align:center;">Evidence</th>
-                  <th style="padding:0.7rem 0.55rem;color:rgba(255,255,255,0.65);font-size:0.68rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;min-width:168px;text-align:center;">2nd Semester</th>
-                  <th style="padding:0.7rem 0.45rem;color:rgba(255,255,255,0.65);font-size:0.68rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;width:108px;text-align:center;">Evidence</th>
-                  <th style="width:96px;padding:0.7rem 0.75rem;color:rgba(255,255,255,0.65);font-size:0.68rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;text-align:center;">Actions</th>
+              <table class="kra-entry-table kra-entry-table-instruction" style="width:100%;border-collapse:collapse;font-size:0.82rem;table-layout:fixed;">
+                <colgroup>
+                  <col style="width:44px;">
+                  <col style="width:40px;">
+                  <col style="min-width:140px;">
+                  <col style="width:150px;">
+                  <col style="width:80px;">
+                  <col style="width:150px;">
+                  <col style="width:80px;">
+                  <col style="width:88px;">
+                </colgroup>
+                <thead><tr style="background:#1a3a6b;">
+                  <th style="padding:0.55rem 0.5rem;"></th>
+                  <th style="padding:0.55rem 0.4rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">No.</th>
+                  <th style="padding:0.55rem 0.75rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">Evaluation Period</th>
+                  <th style="padding:0.55rem 0.5rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;text-align:center;">1st Semester</th>
+                  <th style="padding:0.55rem 0.4rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;text-align:center;">Evidence</th>
+                  <th style="padding:0.55rem 0.5rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;text-align:center;">2nd Semester</th>
+                  <th style="padding:0.55rem 0.4rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;text-align:center;">Evidence</th>
+                  <th style="padding:0.55rem 0.5rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;text-align:center;">Actions</th>
                 </tr></thead>
                 <tbody id="criteriaASetBody"></tbody>
-                <tfoot><tr style="background:#eff6ff;border-top:2px solid #1a3a6b;">
-                  <td colspan="6" style="padding:0.75rem 1rem;font-size:0.78rem;font-weight:700;color:#1a3a6b;text-align:right;">SET AVG: <span id="kraSetAverage" style="color:#1e4d8c;font-size:1rem;font-weight:800;">0.00</span></td>
-                  <td colspan="2" style="padding:0.75rem 1rem;font-size:0.78rem;font-weight:700;color:#1a3a6b;text-align:right;">SET SUBTOTAL: <span id="kraSetSubtotal" style="color:#1e4d8c;font-size:1.05rem;font-weight:800;">0.00</span></td>
+                <tfoot><tr style="background:#f8fafc;border-top:1px solid #e2e8f0;">
+                  <td colspan="6" style="padding:0.6rem 0.75rem;font-size:0.75rem;font-weight:700;color:#475569;text-align:right;">SET AVG: <span id="kraSetAverage" style="color:#1a3a6b;font-size:0.95rem;font-weight:800;">0.00</span></td>
+                  <td colspan="2" style="padding:0.6rem 0.75rem;font-size:0.75rem;font-weight:700;color:#475569;text-align:right;">SET SUBTOTAL: <span id="kraSetSubtotal" style="color:#1a3a6b;font-size:0.95rem;font-weight:800;">0.00</span></td>
                 </tr></tfoot>
               </table>
             </div>
           </div>
-          <div class="criteria-a-section" data-section-type="sef" style="background:#fff;border:1px solid #ccfbf1;border-radius:8px;overflow:hidden;margin-bottom:1rem;">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:0.75rem 1rem;background:#f0fdfa;border-bottom:1px solid #ccfbf1;">
-              <div style="display:flex;align-items:center;gap:0.65rem;min-width:0;">
-                <div style="color:#0f766e;font-size:0.82rem;font-weight:800;text-transform:uppercase;letter-spacing:0.04em;">Supervisor Evaluation Form (SEF)</div>
-                <span style="display:inline-flex;align-items:center;padding:0.18rem 0.5rem;border-radius:999px;background:#ccfbf1;color:#0f766e;font-size:0.68rem;font-weight:800;">24.00 pts max</span>
+          <div class="criteria-a-section" data-section-type="sef" style="background:#fff;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:1rem;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:0.65rem 1rem;background:#f8fafc;border-bottom:1px solid #e2e8f0;">
+              <div style="display:flex;align-items:center;gap:0.6rem;min-width:0;">
+                <span style="font-size:0.8rem;font-weight:700;color:#1a3a6b;">Supervisor Evaluation Form (SEF)</span>
+                <span style="background:#f0fdfa;color:#0f766e;font-size:0.65rem;font-weight:700;padding:2px 8px;border-radius:4px;border:1px solid #99f6e4;"><?= number_format($kra1_a_caps['sef'], 2) ?> pts max</span>
               </div>
               <button type="button" data-add-type="sef" onclick="addKraRow('sef')" title="Add SEF entry"
-                      style="height:30px;padding:0 9px;background:#0f766e;border:none;border-radius:6px;color:#fff;font-size:0.72rem;font-weight:800;cursor:pointer;display:inline-flex;align-items:center;gap:5px;justify-content:center;transition:background 0.15s;position:relative;z-index:10;"
+                      style="height:28px;padding:0 10px;background:#0f766e;border:none;border-radius:5px;color:#fff;font-size:0.72rem;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:4px;white-space:nowrap;"
                       onmouseover="this.style.background='#115e59'" onmouseout="this.style.background='#0f766e'">
                 <i class="bi bi-plus-lg"></i> Add Entry
               </button>
             </div>
             <div class="table-responsive">
-              <table class="kra-entry-table kra-entry-table-instruction" style="width:100%;border-collapse:collapse;font-size:0.82rem;">
-                <thead><tr style="background:#1e4d8c;">
-                  <th style="width:56px;padding:0.7rem 1rem;"></th>
-                  <th style="padding:0.7rem 0.5rem;color:rgba(255,255,255,0.65);font-size:0.68rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;width:58px;">No.</th>
-                  <th style="padding:0.7rem 0.75rem;color:rgba(255,255,255,0.65);font-size:0.68rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;min-width:170px;">Evaluation Period</th>
-                  <th style="padding:0.7rem 0.55rem;color:rgba(255,255,255,0.65);font-size:0.68rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;min-width:168px;text-align:center;">1st Semester</th>
-                  <th style="padding:0.7rem 0.45rem;color:rgba(255,255,255,0.65);font-size:0.68rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;width:108px;text-align:center;">Evidence</th>
-                  <th style="padding:0.7rem 0.55rem;color:rgba(255,255,255,0.65);font-size:0.68rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;min-width:168px;text-align:center;">2nd Semester</th>
-                  <th style="padding:0.7rem 0.45rem;color:rgba(255,255,255,0.65);font-size:0.68rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;width:108px;text-align:center;">Evidence</th>
-                  <th style="width:96px;padding:0.7rem 0.75rem;color:rgba(255,255,255,0.65);font-size:0.68rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;text-align:center;">Actions</th>
+              <table class="kra-entry-table kra-entry-table-instruction" style="width:100%;border-collapse:collapse;font-size:0.82rem;table-layout:fixed;">
+                <colgroup>
+                  <col style="width:44px;">
+                  <col style="width:40px;">
+                  <col style="min-width:140px;">
+                  <col style="width:150px;">
+                  <col style="width:80px;">
+                  <col style="width:150px;">
+                  <col style="width:80px;">
+                  <col style="width:88px;">
+                </colgroup>
+                <thead><tr style="background:#1a3a6b;">
+                  <th style="padding:0.55rem 0.5rem;"></th>
+                  <th style="padding:0.55rem 0.4rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">No.</th>
+                  <th style="padding:0.55rem 0.75rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;">Evaluation Period</th>
+                  <th style="padding:0.55rem 0.5rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;text-align:center;">1st Semester</th>
+                  <th style="padding:0.55rem 0.4rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;text-align:center;">Evidence</th>
+                  <th style="padding:0.55rem 0.5rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;text-align:center;">2nd Semester</th>
+                  <th style="padding:0.55rem 0.4rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;text-align:center;">Evidence</th>
+                  <th style="padding:0.55rem 0.5rem;color:rgba(255,255,255,0.6);font-size:0.62rem;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;text-align:center;">Actions</th>
                 </tr></thead>
                 <tbody id="criteriaASefBody"></tbody>
-                <tfoot><tr style="background:#eff6ff;border-top:2px solid #1a3a6b;">
-                  <td colspan="6" style="padding:0.75rem 1rem;font-size:0.78rem;font-weight:700;color:#1a3a6b;text-align:right;">SEF AVG: <span id="kraSefAverage" style="color:#0f766e;font-size:1rem;font-weight:800;">0.00</span></td>
-                  <td colspan="2" style="padding:0.75rem 1rem;font-size:0.78rem;font-weight:700;color:#1a3a6b;text-align:right;">SEF SUBTOTAL: <span id="kraSefSubtotal" style="color:#0f766e;font-size:1.05rem;font-weight:800;">0.00</span></td>
+                <tfoot><tr style="background:#f8fafc;border-top:1px solid #e2e8f0;">
+                  <td colspan="6" style="padding:0.6rem 0.75rem;font-size:0.75rem;font-weight:700;color:#475569;text-align:right;">SEF AVG: <span id="kraSefAverage" style="color:#0f766e;font-size:0.95rem;font-weight:800;">0.00</span></td>
+                  <td colspan="2" style="padding:0.6rem 0.75rem;font-size:0.75rem;font-weight:700;color:#475569;text-align:right;">SEF SUBTOTAL: <span id="kraSefSubtotal" style="color:#0f766e;font-size:0.95rem;font-weight:800;">0.00</span></td>
                 </tr></tfoot>
               </table>
             </div>
           </div>
-          <div style="background:#eff6ff;border-top:2px solid #1a3a6b;padding:0.75rem 1rem;text-align:right;font-size:0.78rem;font-weight:700;color:#1a3a6b;">
-            CRITERION A TOTAL: <span id="kraGrandTotalCriteriaA" style="color:#1e4d8c;font-size:1.15rem;font-weight:800;">0.00</span>
+          <div style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:0.65rem 0.75rem;text-align:right;font-size:0.75rem;font-weight:700;color:#475569;">
+            Criterion A Total: <span id="kraGrandTotalCriteriaA" style="color:#1a3a6b;font-size:1rem;font-weight:800;">0.00</span>
           </div>
         </div>
       </div>
@@ -1920,107 +2282,235 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
 </div>
 
 <!-- Upload Sub-Modal -->
-<div class="modal fade" id="uploadModal" tabindex="-1" style="z-index:10060;">
-  <div class="modal-dialog modal-dialog-centered" style="max-width:520px;">
-    <div class="modal-content" style="border-radius:10px;">
-      <div class="modal-header" style="background:#1e4d8c;border:none;">
-        <h6 class="modal-title text-white fw-bold"><i class="bi bi-cloud-upload me-2"></i>Upload Evidence Files</h6>
-        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+<div class="modal fade" id="uploadModal" tabindex="-1" style="z-index:10060;" data-bs-focus="false">
+  <div class="modal-dialog modal-dialog-centered" style="max-width:500px;">
+    <div class="modal-content" style="border-radius:12px;overflow:hidden;border:none;box-shadow:0 20px 60px rgba(0,0,0,0.18);">
+
+      <!-- Header -->
+      <div style="background:#1a3a6b;padding:1rem 1.25rem;display:flex;align-items:center;justify-content:space-between;">
+        <div style="display:flex;align-items:center;gap:0.6rem;">
+          <div style="width:30px;height:30px;border-radius:7px;background:rgba(255,255,255,0.12);
+                      display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+            <i class="bi bi-cloud-arrow-up" style="color:#fff;font-size:0.9rem;"></i>
+          </div>
+          <div>
+            <div style="color:#fff;font-weight:700;font-size:0.9rem;line-height:1.2;">Upload Evidence</div>
+            <div id="uploadContext" style="color:#93c5fd;font-size:0.68rem;margin-top:1px;"></div>
+          </div>
+        </div>
+        <button type="button" data-bs-dismiss="modal"
+                style="background:rgba(255,255,255,0.1);border:none;border-radius:6px;
+                       width:28px;height:28px;color:#fff;font-size:0.85rem;cursor:pointer;
+                       display:flex;align-items:center;justify-content:center;"
+                onmouseover="this.style.background='rgba(255,255,255,0.2)'"
+                onmouseout="this.style.background='rgba(255,255,255,0.1)'">
+          <i class="bi bi-x-lg"></i>
+        </button>
       </div>
-      <div class="modal-body">
-        <div id="uploadContext" class="mb-2 p-2 rounded" style="background:#f0f4fb;font-size:0.8rem;color:#1a3a6b;"></div>
-        <div id="uploadCapInfo" class="mb-3 p-2 rounded d-flex align-items-center gap-2" style="background:#f0f4fb;font-size:0.8rem;color:#1a3a6b;border:1px solid #93c5fd;">
-          <i class="bi bi-info-circle-fill"></i>
-          <span id="uploadCapText">0 / 10 files uploaded</span>
+
+      <div class="modal-body" style="padding:1.1rem 1.25rem;">
+
+        <!-- Disclaimer -->
+        <div style="display:flex;align-items:flex-start;gap:0.5rem;padding:0.55rem 0.75rem;
+                    background:#fffbeb;border:1px solid #fde68a;border-radius:7px;margin-bottom:1rem;">
+          <i class="bi bi-exclamation-triangle-fill" style="color:#d97706;font-size:0.75rem;flex-shrink:0;margin-top:2px;"></i>
+          <span style="font-size:0.72rem;color:#92400e;line-height:1.5;">
+            <strong>Before uploading —</strong> select a criterion and fill all required score fields first.
+            Evidence on an incomplete entry may not count during evaluation.
+          </span>
         </div>
 
+        <!-- Cap indicator -->
+        <div id="uploadCapInfo" style="display:flex;align-items:center;justify-content:space-between;
+                    padding:0.5rem 0.75rem;background:#f0f4fb;border:1px solid #dbeafe;
+                    border-radius:7px;margin-bottom:0.9rem;">
+          <div style="display:flex;align-items:center;gap:0.4rem;">
+            <i class="bi bi-paperclip" style="color:#1a3a6b;font-size:0.75rem;"></i>
+            <span id="uploadCapText" style="font-size:0.75rem;color:#1a3a6b;font-weight:600;">0 / 10 files</span>
+          </div>
+          <span style="font-size:0.68rem;color:#64748b;">PDF, JPG, PNG · max 50 MB each</span>
+        </div>
+
+        <!-- File input (outside drop zone — prevents Bootstrap focus re-trigger) -->
+        <input type="file" id="uploadFileInput" class="d-none" accept=".pdf,.jpg,.jpeg,.png" multiple onchange="handleFileSelect(this)">
+
         <!-- Drop zone -->
-        <div id="uploadDropZone" style="border:2px dashed #cbd5e1;border-radius:10px;padding:1.5rem;text-align:center;cursor:pointer;transition:all 0.2s;background:#f8fafc;"
+        <div id="uploadDropZone"
+             style="border:2px dashed #cbd5e1;border-radius:10px;padding:1.2rem;
+                    text-align:center;cursor:pointer;transition:all 0.2s;background:#f8fafc;
+                    margin-bottom:0.9rem;"
              onclick="document.getElementById('uploadFileInput').click()"
              ondragover="event.preventDefault();this.style.borderColor='#1a3a6b';this.style.background='#f0f4fb';"
              ondragleave="this.style.borderColor='#cbd5e1';this.style.background='#f8fafc';"
              ondrop="handleDrop(event)">
-          <i class="bi bi-cloud-arrow-up" style="font-size:2rem;color:#94a3b8;" id="uploadDropIcon"></i>
-          <p class="mb-1 mt-2" style="font-size:0.85rem;color:#475569;" id="uploadDropText">Click or drag files here</p>
-          <small class="text-muted">PDF, JPG, PNG - Max 50MB each - Multiple files allowed</small>
-          <input type="file" id="uploadFileInput" class="d-none" accept=".pdf,.jpg,.jpeg,.png" multiple onchange="handleFileSelect(this)">
+          <i class="bi bi-cloud-arrow-up" id="uploadDropIcon"
+             style="font-size:1.75rem;color:#94a3b8;display:block;margin-bottom:6px;"></i>
+          <div id="uploadDropText" style="font-size:0.8rem;color:#475569;font-weight:500;">
+            Click or drag &amp; drop files here
+          </div>
+          <div style="font-size:0.7rem;color:#94a3b8;margin-top:3px;">Multiple files allowed</div>
         </div>
 
         <!-- Upload progress -->
-        <div id="uploadProgress" class="mt-3" style="display:none;">
-          <div class="d-flex align-items-center gap-2 mb-1">
-            <div class="spinner-border spinner-border-sm text-primary"></div>
-            <span style="font-size:0.82rem;color:#475569;">Uploading...</span>
+        <div id="uploadProgress" style="display:none;margin-bottom:0.75rem;">
+          <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:5px;">
+            <div class="spinner-border spinner-border-sm" style="color:#1a3a6b;width:14px;height:14px;border-width:2px;"></div>
+            <span id="batchStatusText" style="font-size:0.78rem;color:#475569;">Uploading…</span>
           </div>
-          <div class="progress" style="height:6px;">
-            <div class="progress-bar progress-bar-striped progress-bar-animated" style="width:100%;"></div>
+          <div style="height:5px;background:#e2e8f0;border-radius:99px;overflow:hidden;">
+            <div id="batchProgressBar" class="progress-bar"
+                 style="height:100%;width:0%;background:#1a3a6b;border-radius:99px;transition:width 0.3s;"></div>
           </div>
         </div>
 
-        <!-- File list -->
-        <div class="mt-3">
-          <div class="d-flex justify-content-between align-items-center mb-1">
-            <span style="font-size:0.8rem;font-weight:600;color:#374151;">Uploaded Files</span>
-            <span id="uploadFileCount" class="badge bg-primary">0</span>
+        <!-- Uploaded files list -->
+        <div>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5rem;">
+            <span style="font-size:0.75rem;font-weight:700;color:#374151;text-transform:uppercase;letter-spacing:0.04em;">
+              Uploaded Files
+            </span>
+            <span id="uploadFileCount"
+                  style="background:#1a3a6b;color:#fff;font-size:0.65rem;font-weight:700;
+                         border-radius:20px;padding:1px 8px;">0</span>
           </div>
-          <table style="width:100%;border-collapse:collapse;font-size:0.8rem;">
-            <thead style="background:#f1f5f9;">
-              <tr>
-                <th style="padding:0.4rem 0.6rem;width:30px;">#</th>
-                <th style="padding:0.4rem 0.6rem;">File</th>
-                <th style="padding:0.4rem 0.6rem;width:50px;text-align:center;">View</th>
-                <th style="padding:0.4rem 0.6rem;width:50px;text-align:center;">Del</th>
-              </tr>
-            </thead>
-            <tbody id="uploadFileList">
-              <tr><td colspan="4" class="text-center text-muted py-2">No files uploaded</td></tr>
-            </tbody>
-          </table>
+          <div id="uploadFileList"
+               style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;min-height:48px;">
+            <!-- populated by renderUploadFileList() -->
+          </div>
         </div>
+
       </div>
-      <div class="modal-footer py-2">
-        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+
+      <!-- Footer -->
+      <div style="padding:0.75rem 1.25rem;border-top:1px solid #f1f5f9;display:flex;justify-content:flex-end;">
+        <button type="button" data-bs-dismiss="modal"
+                style="padding:0.4rem 1.1rem;border:1px solid #cbd5e1;border-radius:7px;
+                       background:#fff;color:#475569;font-size:0.8rem;font-weight:600;cursor:pointer;"
+                onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='#fff'">
+          Close
+        </button>
       </div>
+
     </div>
   </div>
 </div>
 
 <!-- Submit Confirm Modal -->
 <div id="submitConfirmModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:99999;align-items:center;justify-content:center;">
-  <div id="submitModalBox" style="background:#fff;border-radius:0;width:100%;max-width:420px;margin:1rem;box-shadow:0 20px 60px rgba(0,0,0,0.2);overflow:hidden;">
+  <div id="submitModalBox" style="background:#fff;border-radius:0;width:100%;max-width:520px;margin:1rem;box-shadow:0 20px 60px rgba(0,0,0,0.2);overflow:hidden;">
 
     <!-- Header -->
-    <div style="background:#1e4d8c;padding:1.25rem 1.5rem;display:flex;align-items:center;gap:0.875rem;">
+    <div style="background:#1e4d8c;padding:1.1rem 1.5rem;display:flex;align-items:center;gap:0.875rem;">
       <img src="assets/images/logo.jpg" alt="SUCFRMS Logo"
-           style="width:40px;height:40px;border-radius:50%;object-fit:cover;border:2px solid #475569;clip-path:circle(50%);flex-shrink:0;">
+           style="width:36px;height:36px;border-radius:50%;object-fit:cover;border:2px solid rgba(255,255,255,0.3);flex-shrink:0;">
       <div>
-        <div style="color:#fff;font-weight:700;font-size:0.95rem;">SUCFRMS</div>
-        <div style="color:#bfdbfe;font-size:0.75rem;margin-top:2px;">SUC Faculty Reclassification Management System</div>
+        <div style="color:#fff;font-weight:700;font-size:0.9rem;line-height:1.2;">Submit Application</div>
+        <div style="color:#bfdbfe;font-size:0.7rem;margin-top:1px;">SUCFRMS — Faculty Reclassification</div>
+      </div>
+      <button onclick="document.getElementById('submitConfirmModal').style.display='none'"
+              style="margin-left:auto;background:rgba(255,255,255,0.1);border:none;border-radius:6px;
+                     width:26px;height:26px;color:#fff;font-size:0.8rem;cursor:pointer;
+                     display:flex;align-items:center;justify-content:center;"
+              onmouseover="this.style.background='rgba(255,255,255,0.2)'"
+              onmouseout="this.style.background='rgba(255,255,255,0.1)'">
+        <i class="bi bi-x-lg"></i>
+      </button>
+    </div>
+
+    <!-- Step 1: Review -->
+    <div id="submitStateReview">
+      <div style="padding:1.1rem 1.5rem 0.5rem;">
+        <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem;">
+          <div style="width:22px;height:22px;border-radius:50%;background:#1e4d8c;color:#fff;
+                      font-size:0.65rem;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;">1</div>
+          <span style="font-weight:700;color:#1e293b;font-size:0.88rem;">Review Your Application</span>
+          <span style="font-size:0.7rem;color:#94a3b8;margin-left:auto;">Check before submitting</span>
+        </div>
+
+        <!-- KRA summary table -->
+        <div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:0.85rem;">
+          <div style="background:#f8fafc;padding:0.45rem 0.85rem;display:grid;
+                      grid-template-columns:1fr 46px;gap:0.5rem;
+                      font-size:0.62rem;font-weight:700;text-transform:uppercase;
+                      letter-spacing:0.06em;color:#94a3b8;border-bottom:1px solid #e2e8f0;">
+            <span>KRA / Entry</span><span style="text-align:center;">Evidence</span>
+          </div>
+          <div id="submitReviewBody" style="max-height:260px;overflow-y:auto;">
+            <div style="padding:1rem;text-align:center;color:#94a3b8;font-size:0.8rem;">
+              <div class="spinner-border spinner-border-sm" style="width:14px;height:14px;border-width:2px;"></div>
+              Loading…
+            </div>
+          </div>
+        </div>
+
+        <!-- Weighted score summary -->
+        <div id="submitScoreSummary" style="display:flex;align-items:center;justify-content:space-between;
+                    padding:0.65rem 0.85rem;background:#f0f4fb;border:1px solid #dbeafe;
+                    border-radius:8px;margin-bottom:0.85rem;">
+          <span style="font-size:0.78rem;color:#1a3a6b;font-weight:600;">Current Weighted Score</span>
+          <span id="submitScoreVal" style="font-size:1rem;font-weight:800;color:#1a3a6b;">—</span>
+        </div>
+
+        <!-- Warning if issues found -->
+        <div id="submitReviewWarning" style="display:none;align-items:flex-start;gap:0.5rem;
+                    padding:0.6rem 0.85rem;background:#fffbeb;border:1px solid #fde68a;
+                    border-radius:7px;margin-bottom:0.85rem;font-size:0.75rem;color:#92400e;">
+          <i class="bi bi-exclamation-triangle-fill" style="flex-shrink:0;margin-top:2px;"></i>
+          <span id="submitReviewWarningText"></span>
+        </div>
+      </div>
+
+      <div style="height:1px;background:#e2e8f0;"></div>
+      <div style="padding:0.9rem 1.5rem;display:flex;gap:0.6rem;justify-content:flex-end;">
+        <button onclick="document.getElementById('submitConfirmModal').style.display='none'"
+                style="padding:0.5rem 1rem;border:1px solid #cbd5e1;border-radius:7px;
+                       background:#fff;color:#475569;font-size:0.82rem;font-weight:600;cursor:pointer;">
+          Cancel
+        </button>
+        <button id="submitReviewContinue" onclick="goToSubmitConfirm()" disabled
+                style="padding:0.5rem 1.2rem;border:none;border-radius:7px;
+                       background:#1e4d8c;color:#fff;font-size:0.82rem;font-weight:700;cursor:pointer;
+                       display:inline-flex;align-items:center;gap:0.4rem;"
+                onmouseover="this.style.background='#1a3a6b'" onmouseout="this.style.background='#1e4d8c'">
+          Continue <i class="bi bi-arrow-right"></i>
+        </button>
       </div>
     </div>
 
-    <!-- Confirm State -->
-    <div id="submitStateConfirm">
-      <div style="padding:2rem 1.75rem 1.5rem;">
-        <h5 style="font-weight:700;color:#1e293b;margin-bottom:0.5rem;font-size:1.1rem;">Submit Application</h5>
-        <p style="color:#64748b;font-size:0.875rem;margin:0;line-height:1.6;">
-          Are you sure you want to submit your application for evaluator review?
+    <!-- Step 2: Confirm -->
+    <div id="submitStateConfirm" style="display:none;">
+      <div style="padding:1.25rem 1.5rem 1rem;">
+        <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem;">
+          <div style="width:22px;height:22px;border-radius:50%;background:#1e4d8c;color:#fff;
+                      font-size:0.65rem;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;">2</div>
+          <span style="font-weight:700;color:#1e293b;font-size:0.88rem;">Confirm Submission</span>
+        </div>
+        <p style="color:#64748b;font-size:0.82rem;margin:0 0 0.5rem;line-height:1.6;">
+          You are about to submit your application for evaluator review.
+        </p>
+        <p style="font-size:0.75rem;color:#94a3b8;margin:0;">
+          The evaluation result is a recommendation only, not a final decision.
         </p>
       </div>
       <div style="height:1px;background:#e2e8f0;"></div>
-      <div style="padding:1.25rem 1.75rem 1.75rem;display:flex;gap:0.75rem;">
-        <button onclick="document.getElementById('submitConfirmModal').style.display='none'"
-                style="flex:1;padding:0.65rem 1rem;border:1px solid #cbd5e1;border-radius:0 !important;background:#fff;color:#475569;font-weight:600;cursor:pointer;font-size:0.875rem;">
-          Cancel
+      <div style="padding:0.9rem 1.5rem;display:flex;gap:0.6rem;justify-content:flex-end;">
+        <button onclick="goBackToReview()"
+                style="padding:0.5rem 0.9rem;border:1px solid #cbd5e1;border-radius:7px;
+                       background:#fff;color:#475569;font-size:0.82rem;font-weight:600;cursor:pointer;
+                       display:inline-flex;align-items:center;gap:0.4rem;">
+          <i class="bi bi-arrow-left"></i> Back
         </button>
         <button onclick="doSubmitWithAnimation()"
-                style="flex:1;padding:0.65rem 1rem;border:none;border-radius:0 !important;background:#1e4d8c;color:#fff;font-weight:600;cursor:pointer;font-size:0.875rem;">
-          Confirm &amp; Submit
+                style="padding:0.5rem 1.2rem;border:none;border-radius:7px;
+                       background:#1e4d8c;color:#fff;font-size:0.82rem;font-weight:700;cursor:pointer;
+                       display:inline-flex;align-items:center;gap:0.4rem;"
+                onmouseover="this.style.background='#1a3a6b'" onmouseout="this.style.background='#1e4d8c'">
+          <i class="bi bi-send"></i> Confirm &amp; Submit
         </button>
       </div>
     </div>
 
-    <!-- Submitting State -->
+    <!-- Step 3: Submitting -->
     <div id="submitStateProgress" style="display:none;padding:2.5rem 1.75rem;text-align:center;">
       <div style="width:72px;height:72px;background:#f0f4fb;display:flex;align-items:center;justify-content:center;margin:0 auto 1.5rem;border-radius:50%;overflow:hidden;">
         <svg id="submitCheckSvg" viewBox="0 0 52 52" width="52" height="52" style="display:block;">
@@ -2047,56 +2537,247 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
 
 
 <script>
+const APP_ID = <?= (int)$app_id ?>;
+const AJAX_URL = 'includes/apply/kra_ajax.php';
+let submitReviewRequest = null;
+let submitReviewReady = false;
+
 function doSubmitWithAnimation() {
-    // Switch to progress state
     document.getElementById('submitStateConfirm').style.display = 'none';
     document.getElementById('submitStateProgress').style.display = 'block';
-
-    // Animate SVG circle drawing
     setTimeout(() => {
         document.getElementById('submitCircle').style.strokeDashoffset = '0';
         document.getElementById('submitProgressBar').style.width = '85%';
     }, 50);
-
-    // After circle completes (~0.6s), draw the checkmark
-    // (checkmark transition delay is already 0.55s via CSS)
-    setTimeout(() => {
-        document.getElementById('submitCheck').style.strokeDashoffset = '0';
-    }, 100);
-
-    // Complete progress bar and submit
+    setTimeout(() => { document.getElementById('submitCheck').style.strokeDashoffset = '0'; }, 100);
     setTimeout(() => {
         document.getElementById('submitProgressBar').style.width = '100%';
         document.getElementById('submitProgressBar').style.transition = 'width 0.3s ease';
-        setTimeout(() => {
-            document.getElementById('submitAppForm').submit();
-        }, 350);
+        setTimeout(() => { document.getElementById('submitAppForm').submit(); }, 350);
     }, 1200);
 }
 
 function openSubmitModal() {
-    // Reset SVG
+    // Reset all states
     document.getElementById('submitCircle').style.strokeDashoffset = '151';
     document.getElementById('submitCheck').style.strokeDashoffset = '32';
     document.getElementById('submitProgressBar').style.width = '0%';
     document.getElementById('submitProgressBar').style.transition = 'width 1.2s cubic-bezier(0.4,0,0.2,1)';
-    document.getElementById('submitStateConfirm').style.display = 'block';
+    document.getElementById('submitStateReview').style.display  = 'block';
+    document.getElementById('submitStateConfirm').style.display = 'none';
     document.getElementById('submitStateProgress').style.display = 'none';
     document.getElementById('submitModalBox').style.animation = 'none';
     void document.getElementById('submitModalBox').offsetWidth;
     document.getElementById('submitModalBox').style.animation = 'modalFadeIn 0.2s ease forwards';
     document.getElementById('submitConfirmModal').style.display = 'flex';
+    buildSubmitReview();
 }
 
-document.getElementById('submitConfirmModal').addEventListener('click', function(e) {
-    if (e.target === this) this.style.display = 'none';
-});
+function goToSubmitConfirm() {
+    if (!submitReviewReady) return;
+    document.getElementById('submitStateReview').style.display  = 'none';
+    document.getElementById('submitStateConfirm').style.display = 'block';
+}
+
+function goBackToReview() {
+    document.getElementById('submitStateConfirm').style.display = 'none';
+    document.getElementById('submitStateReview').style.display  = 'block';
+}
+
+async function buildSubmitReview() {
+    const body    = document.getElementById('submitReviewBody');
+    const warning = document.getElementById('submitReviewWarning');
+    const warnTxt = document.getElementById('submitReviewWarningText');
+    const scoreEl = document.getElementById('submitScoreVal');
+    const continueButton = document.getElementById('submitReviewContinue');
+    submitReviewRequest?.abort();
+    const request = new AbortController();
+    submitReviewRequest = request;
+    submitReviewReady = false;
+    continueButton.disabled = true;
+    warning.style.display = 'none';
+    scoreEl.textContent = '\u2014';
+    const timeout = setTimeout(() => request.abort(), 15000);
+
+    body.innerHTML = `<div style="padding:1rem;text-align:center;color:#94a3b8;font-size:0.78rem;">
+        <div class="spinner-border spinner-border-sm" style="width:14px;height:14px;border-width:2px;"></div> Loading…</div>`;
+
+    try {
+            const response = await fetch(`${AJAX_URL}?kra_action=get_all_kra_summary&app_id=${APP_ID}`, { signal: request.signal });
+            const data = await response.json();
+            if (submitReviewRequest !== request) return;
+            if (!response.ok || !data.ok || !Array.isArray(data.summary)) {
+                throw new Error('Unable to load entries.');
+            }
+
+            const ws = parseFloat(data.weighted_score) || 0;
+            scoreEl.textContent = ws.toFixed(2);
+            scoreEl.style.color = ws >= 41 ? '#15803d' : (ws > 0 ? '#dc2626' : '#94a3b8');
+
+            const kraOrder = ['Instruction','Research','Extension','Professional Development'];
+            const kraShort = {'Instruction':'KRA I','Research':'KRA II','Extension':'KRA III','Professional Development':'KRA IV'};
+
+            // Group: kra → criterion label → { total_pts, count, all_have_evidence }
+            const grouped = {};
+            data.summary.forEach(e => {
+                const kra   = e.kra_category;
+                const label = cleanRemarkLabel(e.remarks, kra);
+                if (!grouped[kra]) grouped[kra] = {};
+                if (!grouped[kra][label]) grouped[kra][label] = { pts: 0, count: 0, hasEvidence: true };
+                grouped[kra][label].pts         += parseFloat(e.computed_points || 0);
+                grouped[kra][label].count       += 1;
+                grouped[kra][label].hasEvidence  = grouped[kra][label].hasEvidence && !!e.has_evidence;
+            });
+
+            let html = '';
+            let missingEvidence = 0;
+
+            kraOrder.forEach(kra => {
+                if (!grouped[kra]) return;
+                const criterions = grouped[kra];
+                const short      = kraShort[kra] || kra;
+
+                html += `<div style="padding:0.38rem 0.85rem;background:#f0f4fb;
+                                      border-bottom:1px solid #dbeafe;
+                                      display:flex;align-items:center;">
+                    <span style="font-size:0.67rem;font-weight:800;color:#1a3a6b;
+                                 text-transform:uppercase;letter-spacing:0.06em;">${short} — ${kra}</span>
+                </div>`;
+
+                const critKeys = Object.keys(criterions);
+                critKeys.forEach((label, i) => {
+                    const c      = criterions[label];
+                    const isLast = i === critKeys.length - 1;
+                    if (!c.hasEvidence) missingEvidence++;
+
+                    html += `<div style="display:flex;align-items:center;gap:0.5rem;
+                                          padding:0.45rem 0.85rem 0.45rem 1.1rem;
+                                          ${isLast ? '' : 'border-bottom:1px solid #f4f6f9;'}">
+                        <div style="flex:1;min-width:0;">
+                            <div style="font-size:0.75rem;color:#1e293b;font-weight:500;
+                                        overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                                 title="${esc(label)}">${esc(label)}</div>
+                            ${c.count > 1
+                                ? `<div style="font-size:0.65rem;color:#94a3b8;margin-top:1px;">${c.count} entries</div>`
+                                : ''}
+                        </div>
+                        ${c.hasEvidence
+                            ? `<i class="bi bi-check-circle-fill" style="color:#15803d;font-size:0.8rem;flex-shrink:0;" title="Evidence present"></i>`
+                            : `<i class="bi bi-exclamation-circle" style="color:#d97706;font-size:0.8rem;flex-shrink:0;" title="Missing evidence"></i>`}
+                    </div>`;
+                });
+            });
+
+            body.innerHTML = html || `<div style="padding:1rem;text-align:center;color:#94a3b8;font-size:0.78rem;">No entries yet.</div>`;
+
+            if (missingEvidence > 0) {
+                warnTxt.textContent = `${missingEvidence} criterion type${missingEvidence > 1 ? 's' : ''} missing evidence — evaluators may not be able to verify ${missingEvidence > 1 ? 'them' : 'it'}.`;
+                warning.style.display = 'flex';
+            } else {
+                warning.style.display = 'none';
+            }
+            submitReviewReady = true;
+            continueButton.disabled = false;
+    } catch (error) {
+        if (submitReviewRequest !== request) return;
+        body.innerHTML = `<div role="alert" style="padding:1rem;text-align:center;color:#64748b;font-size:0.78rem;">
+            ${error.name === 'AbortError' ? 'The request took too long.' : 'Unable to load your entries.'} Please try again.
+            <button type="button" class="btn btn-sm btn-outline-primary" style="display:block;margin:0.65rem auto 0;" onclick="buildSubmitReview()">Retry</button>
+        </div>`;
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
+// Clean up raw remark type keys into human-readable labels
+function cleanRemarkLabel(remarks, kra) {
+    const parts = String(remarks || '').split('|||');
+    const type  = parts[0] || '';
+
+    // Research: stored as full option text like "Book Chapter (Sole Author) (10pts)"
+    // strip the pts suffix for display
+    if (kra === 'Research') {
+        return type.replace(/\s*\(\d+(?:\.\d+)?\s*pts?\)\s*$/i, '').trim() || type || 'Entry';
+    }
+
+    // Instruction B/C: "B|16|Manual / Module, Sole Author" → "Manual / Module, Sole Author"
+    if (type.startsWith('B|') || type.startsWith('C|')) {
+        return type.split('|').slice(2).join('|') || type;
+    }
+
+    // Instruction A types
+    const instrMap = {
+        'A-set-sef':     'Teaching Effectiveness (SET + SEF)',
+        'A-set-sef-sem': 'Teaching Effectiveness (SET + SEF)',
+        'A-set-sem':     'Teaching Effectiveness (SET)',
+        'A-sef-sem':     'Teaching Effectiveness (SEF)',
+        'B-material':    'Instructional Material',
+        'C-thesis':      'Thesis/Dissertation Adviser',
+        'C-mentor':      'Thesis/Dissertation Co-Adviser',
+    };
+    if (instrMap[type]) return instrMap[type];
+
+    // Extension / PD: use description from parts[1] if available
+    if (parts[1] && parts[1].trim()) return parts[1].trim();
+
+    // Custom entry
+    if (type === 'CUSTOM') return parts[3] || 'Custom Entry';
+
+    // Extension subtypes — strip slug
+    return type.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) || 'Entry';
+}
 </script>
 
 
 <script>
 const KRA_CAT    = '<?= addslashes($cur_cat) ?>';
-const APP_ID     = <?= $app_id ?>;
+const KRA_REVISION_MODE = <?= json_encode($app['status'] === 'needs_revision') ?>;
+if (KRA_REVISION_MODE) {
+    document.querySelectorAll('#kraEntryModal button[onclick^="addKraRow"]').forEach(button => { button.disabled = true; });
+}
+
+// -- Criterion stepper ----------------------------------------
+const _criterionHeaders = <?= json_encode(array_values(array_map(fn($g) => $g['header'], $dark_groups ?? []))) ?>;
+const _criterionKeys = <?= json_encode(array_keys($dark_groups ?? [])) ?>;
+let currentCriterionIndex = <?= (int)($initial_criterion_index ?? 0) ?>;
+function goCriterion(idx, scroll = true) {
+    if (!Number.isInteger(idx) || idx < 0 || idx >= _criterionKeys.length) return;
+    currentCriterionIndex = idx;
+    const steps   = document.querySelectorAll('.criterion-step');
+    const pills   = document.querySelectorAll('[id^="criterionPill_"]');
+    const label   = document.getElementById('criterionStepLabel');
+    steps.forEach((s, i) => s.style.display = i === idx ? 'block' : 'none');
+    pills.forEach((p, i) => {
+        p.style.background   = i === idx ? '#1e3a5f' : '#fff';
+        p.style.color        = i === idx ? '#fff'    : '#64748b';
+        p.style.borderColor  = i === idx ? '#1e3a5f' : '#e2e8f0';
+    });
+    if (label && _criterionHeaders[idx]) label.textContent = _criterionHeaders[idx];
+    // Keep the current section in the URL so saves and reloads restore it.
+    const url = kraEntryReturnUrl();
+    window.history.replaceState(window.history.state, '', url);
+    // Scroll to top of the criteria area
+    const nav = document.getElementById('criterionStepperNav');
+    if (nav && scroll) nav.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function kraEntryReturnUrl() {
+    const url = new URL(window.location.href);
+    url.searchParams.set('page', 'apply');
+    url.searchParams.set('tab', ACTIVE_TAB);
+    const key = _criterionKeys[currentCriterionIndex];
+    if (key) url.searchParams.set('criterion', key);
+    else url.searchParams.delete('criterion');
+    url.searchParams.delete('edit_sid');
+    url.hash = '';
+    return url.toString();
+}
+
+function returnToKraEntry() {
+    const url = kraEntryReturnUrl();
+    rememberKraEntryScroll();
+    window.location.assign(url);
+}
 
 // -- Upload success animation ----------------------------------
 function showUploadSuccess(filename) {
@@ -2122,7 +2803,7 @@ function showUploadSuccess(filename) {
 // -- Done button validation ------------------------------------
 async function handleDone() {
     const tbody = document.getElementById('kraTableBody');
-    if (!tbody) { window.location.href = 'index.php?page=apply&tab=' + ACTIVE_TAB; return; }
+    if (!tbody) { returnToKraEntry(); return; }
 
     const rows = tbody.querySelectorAll('tr[data-sid]');
     const issues = [];
@@ -2137,6 +2818,9 @@ async function handleDone() {
             if (!period) issues.push(`Row ${rowNum}: Evaluation period is required.`);
             [1, 2].forEach(sem => {
                 const scoreEl = tr.querySelector(type === 'sef' ? `.kra-a-sef.sem-${sem}` : `.kra-a-set.sem-${sem}`);
+                // Only the flagged semester is editable during a revision.
+                // Its locked counterpart must not block validation or saving.
+                if (!scoreEl || scoreEl.disabled) return;
                 const upBtn = tr.querySelector(`[data-sem="${sem}"]`);
                 const semName = sem === 1 ? '1st Semester' : '2nd Semester';
                 const existingSid = parseInt(upBtn?.dataset.sid || '0') > 0;
@@ -2245,7 +2929,7 @@ async function handleDone() {
             // "Done" must persist every completed semester before navigating away,
             // otherwise typed ratings would be discarded on reload. persistCriteriaARow
             // writes each semester as its own record, so neither one clears the other.
-            for (const tr of tbody.querySelectorAll('tr.kra-a-row')) {
+            for (const tr of criteriaARows()) {
                 await persistCriteriaARow(tr);
             }
         } catch (err) {
@@ -2263,20 +2947,28 @@ async function handleDone() {
         }
     }
 
-    // All good - close modal and reload staying on current tab
+    // Capture the section before hiding the modal resets its editing state.
+    const returnUrl = kraEntryReturnUrl();
+    rememberKraEntryScroll();
     const modal = bootstrap.Modal.getInstance(document.getElementById('kraEntryModal'));
     if (modal) modal.hide();
-    window.location.href = 'index.php?page=apply&tab=' + ACTIVE_TAB;
+    window.location.assign(returnUrl);
 }
 
 const ACTIVE_TAB  = '<?= $active_tab ?>';
-const AJAX_URL    = 'includes/apply/kra_ajax.php';
 const SCORE_URL   = 'index.php?page=apply&ajax_score=1&app_id=<?= $app_id ?>';
+
+// Backdrop click to close submit modal (needs AJAX_URL in scope for buildSubmitReview)
+document.getElementById('submitConfirmModal').addEventListener('click', function(e) {
+    if (e.target === this) this.style.display = 'none';
+});
 const EDIT_SID    = <?= intval($_GET['edit_sid'] ?? 0) ?>;
 // Cycle-based Evaluation Period generation for KRA I Criterion A
 // Derived from the active cycle's start_date; 0 = no cycle / fallback to current year
 const CYCLE_START_YEAR = <?= !empty($cycle['start_date']) ? (int)date('Y', strtotime($cycle['start_date'])) : date('Y') ?>;
 const CYCLE_ROW_LIMIT  = 3;
+const KRA1_A_SET_CAP   = <?= json_encode((float)$kra1_a_caps['set']) ?>;
+const KRA1_A_SEF_CAP   = <?= json_encode((float)$kra1_a_caps['sef']) ?>;
 <?php
 $cjs = [];
 foreach ($criteria_list as $c) $cjs[] = ['label'=>$c['criterion_label'],'pts'=>(float)$c['max_points']];
@@ -2382,6 +3074,9 @@ function deferUntilKraModalClosed(fn) {
 
 function openCriterionEntry(letter) {
     if (deferUntilKraModalClosed(() => openCriterionEntry(letter))) return;
+    const index = _criterionKeys.indexOf(letter);
+    if (index >= 0) goCriterion(index, false);
+    if (!pendingKraCustomCrit) activeKraCustomCrit = null;
     setKraModalCriterion(letter);
     const modal = document.getElementById('kraEntryModal');
     if (!modal) return;
@@ -2419,6 +3114,12 @@ let pendingKraExtSubtype = null;
 // When set, buildRow() for PD pre-selects this {type, sub} pair.
 let pendingKraPdCrit = null;    // {type: string, sub: string}
 
+// When set, buildRow() renders a generic custom criterion entry.
+let pendingKraCustomCrit = null; // {letter, key, label, pts}
+let activeKraCustomCrit = null;
+let activeKraRowKey = '';
+let activeKraRowCrit = null;
+
 // Like openCriterionEntry but also focuses a specific sub-section ('set' or 'sef')
 // so the modal only shows that one section when it opens.
 function openCriterionEntryType(letter, type) {
@@ -2433,17 +3134,32 @@ function openCriterionEntryType(letter, type) {
 //   {kra:'research',    label: '...', pts: N }
 //   {kra:'extension',   subtype: '...' }
 //   {kra:'pd',          type: '...', sub: '...' }
+//   {kra:'custom',      letter: '...', key: '...', label: '...', pts: N }
 function openCriterionEntryWithCrit(letter, critObj) {
     if (deferUntilKraModalClosed(() => openCriterionEntryWithCrit(letter, critObj))) return;
     if (!critObj) { openCriterionEntry(letter); return; }
+    activeKraRowKey = critObj.key || '';
+    activeKraRowCrit = critObj;
     if (critObj.kra === 'instruction') {
+        activeKraCustomCrit = null;
         pendingKraFlatCrit = critObj.flat || null;
     } else if (critObj.kra === 'research') {
+        activeKraCustomCrit = null;
         pendingKraResCrit = { pts: critObj.pts, label: critObj.label || '' };
     } else if (critObj.kra === 'extension') {
+        activeKraCustomCrit = null;
         pendingKraExtSubtype = critObj.subtype || null;
     } else if (critObj.kra === 'pd') {
+        activeKraCustomCrit = null;
         pendingKraPdCrit = { type: critObj.type || '', sub: String(critObj.sub ?? '') };
+    } else if (critObj.kra === 'custom') {
+        activeKraCustomCrit = {
+            letter: critObj.letter || letter || '',
+            key: critObj.key || '',
+            label: critObj.label || 'Custom criterion',
+            pts: parseFloat(critObj.pts || 0) || 0
+        };
+        pendingKraCustomCrit = activeKraCustomCrit;
     }
     openCriterionEntry(letter);
 }
@@ -2451,6 +3167,8 @@ function openCriterionEntryWithCrit(letter, critObj) {
 function normalizeStoredDisplayText(value) {
     return String(value || '')
         .replace(/\\u2014/g, '-')
+        .replace(/[–—]/g, '-')
+        .replace(/â\s*[€“”]/g, '-')
         .replace(/\\u00d7/gi, 'x');
 }
 
@@ -2460,6 +3178,9 @@ function critTypeFromRemarks(remarks) {
 
 function criterionLetterFromEntry(entry) {
     const ct = critTypeFromRemarks(entry?.remarks || '');
+    if (ct === 'CUSTOM') {
+        return String(entry?.remarks || '').split('|||')[1] || '';
+    }
     if (['A-set-sef', 'A-set-sef-sem', 'A-set-sem', 'A-sef-sem'].includes(ct)) return 'A';
     if (ct === 'B-material' || ct.startsWith('B|')) return 'B';
     if (ct === 'C-thesis' || ct === 'C-mentor' || ct.startsWith('C|')) return 'C';
@@ -2475,12 +3196,16 @@ function isBlankKraEntry(entry) {
 function entryCriterionLetter(entry) {
     const remarks = String(entry?.remarks || '');
     const parts = remarks.split('|||');
+    if ((parts[0] || '') === 'CUSTOM') return (parts[1] || '').toUpperCase();
     if (KRA_CAT === 'Instruction') {
         return criterionLetterFromEntry(entry);
     }
     if (KRA_CAT === 'Research') {
         const m = String(parts[0] || '').match(/^Criterion\s+([A-Z])/i);
-        return m ? m[1].toUpperCase() : '';
+        if (m) return m[1].toUpperCase();
+        const stored = normalizeResearchLabel(parts[0] || '');
+        const criterion = CRIT.find(c => normalizeResearchLabel(c.label) === stored);
+        return String(criterion?.label || '').match(/^Criterion\s+([A-Z])/i)?.[1]?.toUpperCase() || '';
     }
     if (KRA_CAT === 'Extension') {
         const subtype = parts[0] || '';
@@ -2494,7 +3219,8 @@ function entryCriterionLetter(entry) {
 }
 
 function visibleEntriesForActiveCriterion(entries) {
-    const usable = (entries || []).filter(e => !isBlankKraEntry(e));
+    const usable = (entries || []).filter(e => !isBlankKraEntry(e)
+        && (!KRA_REVISION_MODE || e.revision_status === 'needs_revision'));
     if (isCriteriaATableMode()) return usable;
     if (!activeKraCriterion) {
         return KRA_CAT === 'Instruction'
@@ -2674,7 +3400,9 @@ function restoreCriteriaADraft(draft) {
 }
 
 function criteriaASemesterLocked(entry) {
-    return !!(entry && entry.verified && entry.revision_status !== 'needs_revision');
+    return !!(entry && (entry.editable === false
+        || (KRA_REVISION_MODE && entry.revision_status !== 'needs_revision')
+        || (entry.verified && entry.revision_status !== 'needs_revision')));
 }
 
 function criteriaAUploadButton(entry, sem) {
@@ -2759,8 +3487,8 @@ const ALL_EXT_CRIT_OPTS = [
     ['B', 'media-column-occasional',  'Occasional Newspaper/Media Column (2 pts, max 5x)'],
     ['B', 'media-tv-radio-host',      'TV/Radio Program Host (10 pts)'],
     ['B', 'media-guest',              'TV/Radio Guest (1 pt, max 10x)'],
-    ['B', 'resource-speaker-local',   'Resource Speaker/Facilitator - Local (2 pts)'],
-    ['B', 'resource-speaker-intl',    'Resource Speaker/Facilitator - International (3 pts)'],
+    ['B', 'resource-speaker-local',   'Resource Speaker/Facilitator - Local (2 pts/hour)'],
+    ['B', 'resource-speaker-intl',    'Resource Speaker/Facilitator - International (3 pts/hour)'],
     ['B', 'outreach-isr-lead',        'ISR/Outreach Project - Head/Lead (5 pts, ISR cap 30)'],
     ['B', 'outreach-isr-member',      'ISR/Outreach Project - Member (2 pts, ISR cap 30)'],
     ['C', 'csr-satisfaction',         'CSR / Client Satisfaction Rating'],
@@ -2777,6 +3505,12 @@ const ALL_EXT_CRIT_OPTS = [
     ['D', 'committee chair',          'Committee Chair (2 pts/year)'],
     ['D', 'committee member',         'Committee Member (1 pt/year)'],
     ['D', 'coordinator',              'Coordinator (2 pts/year)'],
+    ['D', 'faculty regent',           'Faculty Regent (8 pts/year)'],
+    ['D', 'university secretary',     'University Secretary (6 pts/year)'],
+    ['D', 'college secretary',        'College Secretary (3 pts/year)'],
+    ['D', 'project head inst',        'Project Head, Institutional (4 pts/year)'],
+    ['D', 'committee chair inst',     'Committee Chair, Institutional (3 pts/year)'],
+    ['D', 'committee member inst',    'Committee Member, Institutional (2 pts/year)'],
 ];
 const EXT_D_SUBTYPES = ALL_EXT_CRIT_OPTS.filter(([l]) => l === 'D').map(([,v]) => v);
 
@@ -2791,6 +3525,9 @@ function extExtraFieldsHtml(subtype, val1, val2) {
     if (subtype === 'csr-satisfaction') {
         return `<input type="text" inputmode="decimal" class="re-val1" value="${esc(val1||'')}" placeholder="CSR rating (0-100)" oninput="calcRow(this)" style="margin-top:3px;width:100%;">
                 <div style="font-size:0.68rem;color:#94a3b8;margin-top:2px;">Title must match a Criterion B outreach/ISR entry for credit.</div>`;
+    }
+    if (subtype === 'resource-speaker-local' || subtype === 'resource-speaker-intl') {
+        return `<input type="text" inputmode="decimal" class="re-val1" value="${esc(val1||'1')}" placeholder="Hours conducted" oninput="calcRow(this)" style="margin-top:3px;width:100%;">`;
     }
     if (EXT_D_SUBTYPES.includes(subtype)) {
         return `<input type="text" inputmode="numeric" class="re-val1" value="${esc(val1||'1')}" placeholder="Years served" oninput="calcRow(this)" style="margin-top:3px;width:100%;">`;
@@ -2809,14 +3546,49 @@ function updateExtDetailFields(sel) {
 // -- Build row HTML --------------------------------------------
 function buildRow(e, num) {
     const sid   = e.submission_id || 0;
-    const score = parseFloat(e.computed_points || 0);
+    let score = parseFloat(e.computed_points || 0);
     const rem   = e.remarks || '';
     const doc   = e.document_path || '';
     const parts = rem.split('|||');
 
-    let cells = `<td class="kra-entry-spacer"></td><td class="kra-entry-rownum">${num}</td>`;
+    // Every additional row opened from a category keeps that category selected.
+    if (!parts[0] && activeKraRowCrit) {
+        const crit = activeKraRowCrit;
+        if (crit.kra === 'instruction') pendingKraFlatCrit = crit.flat;
+        if (crit.kra === 'research') pendingKraResCrit = { pts: crit.pts, label: crit.label };
+        if (crit.kra === 'extension') pendingKraExtSubtype = crit.subtype;
+        if (crit.kra === 'pd') pendingKraPdCrit = { type: crit.type, sub: String(crit.sub ?? '') };
+    }
 
-    if (KRA_CAT === 'Research') {
+    const savedKey = parts.find(part => part.startsWith('CRITERION_KEY='))?.slice(14) || '';
+    const rowKey = savedKey || e.criterion_key || (!parts[0] ? activeKraRowKey : '');
+    let cells = `<td class="kra-entry-spacer"><input type="hidden" class="entry-criterion-key" value="${esc(rowKey)}"></td><td class="kra-entry-rownum">${num}</td>`;
+
+    const customPending = (!parts[0] && (pendingKraCustomCrit || activeKraCustomCrit)) ? (pendingKraCustomCrit || activeKraCustomCrit) : null;
+    if (customPending) pendingKraCustomCrit = null;
+    const isCustomEntry = customPending || parts[0] === 'CUSTOM';
+
+    if (isCustomEntry) {
+        const customLetter = customPending?.letter || parts[1] || activeKraCriterion || '';
+        const customKey    = customPending?.key || parts[2] || '';
+        const customLabel  = customPending?.label || parts[3] || 'Custom criterion';
+        const customPts    = parseFloat(customPending?.pts ?? parts[4] ?? score) || 0;
+        const customDetail = parts[5] || '';
+        if (score <= 0 && customPts > 0) score = customPts;
+
+        cells += `
+        <td style="padding:0.4rem;">
+            <input type="hidden" class="custom-letter" value="${esc(customLetter)}">
+            <input type="hidden" class="custom-key" value="${esc(customKey)}">
+            <input type="hidden" class="custom-label" value="${esc(customLabel)}">
+            <input type="hidden" class="custom-max" value="${esc(String(customPts))}">
+            <div style="font-size:0.78rem;color:#1e293b;font-weight:700;line-height:1.3;">${esc(customLabel)}</div>
+            <div style="font-size:0.72rem;color:#64748b;margin-top:0.15rem;">${customPts.toFixed(2)} pts</div>
+        </td>
+        <td style="padding:0.4rem;" colspan="2">
+            <input class="custom-detail" value="${esc(customDetail)}" placeholder="Entry title / details / notes">
+        </td>`;
+    } else if (KRA_CAT === 'Research') {
         // parts[0] stores the full display text e.g. "Criterion A - Book, Sole Author (100pts)"
         // Strip the pts suffix for matching against c.label
         const storedLabel = (parts[0] || '').replace(/\s*\(\d+(\.\d+)?pts?\)\s*$/i, '').trim();
@@ -2866,7 +3638,7 @@ function buildRow(e, num) {
             : '';
         const resSelectHtml = _resLockedOpt
             ? `<select class="rtype" data-sid="${sid}" style="display:none;" aria-hidden="true">
-                 <option value="${esc(String(_resLockedOpt.pts))}" data-label="${esc(_resLockedOpt.label)}" selected>${esc(_resLockedLabel)}</option>
+                 <option value="${esc(String(_resLockedOpt.pts))}" data-label="${esc(_resLockedOpt.label)}" selected>${esc(_resLockedLabel)} (${_resLockedOpt.pts}pts)</option>
                </select>
                <div style="font-size:0.78rem;color:#1e293b;font-weight:600;padding:0.1rem 0 0.3rem;line-height:1.3;">${esc(_resLockedLabel)}</div>`
             : `<select class="rtype" onchange="calcRow(this)" data-sid="${sid}"><option value="" disabled selected>- Select -</option>${opts}</select>`;
@@ -3004,10 +3776,10 @@ function buildRow(e, num) {
                 subField = `<select class="rpd-sub" onchange="calcRow(this)">${pOpts}</select>`;
             }
         } else if (effectivePdType === 'C-award') {
-            const aOpts = [['2','Institutional (2 pts)'],['3','Local/City/Province (3 pts)'],['4','Regional (4 pts)'],['0','National/International (+1 sub-rank, 0 pts)']]
+            const aOpts = [['2','Institutional (2 pts)'],['3','Local/Regional (3 pts)'],['4','National (4 pts)'],['5','International (pts pending — CONFIG GAP)'],['0','Prestigious Award — Sub-rank trigger only (0 pts)']]
                 .map(([v,l]) => `<option value="${v}" ${effectivePdSub===v?'selected':''}>${l}</option>`).join('');
             if (_pdPending && effectivePdSub !== '') {
-                const aLabels = {'2':'Institutional (2 pts)','3':'Local/City/Province (3 pts)','4':'Regional (4 pts)','0':'National/International (+1 sub-rank)'};
+                const aLabels = {'2':'Institutional (2 pts)','3':'Local/Regional (3 pts)','4':'National (4 pts)','5':'International (CONFIG GAP)','0':'Prestigious Award — Sub-rank trigger'};
                 subField = `<input type="hidden" class="rpd-sub" value="${esc(effectivePdSub)}">
                             <span style="font-size:0.75rem;color:#475569;">${aLabels[effectivePdSub] || effectivePdSub}</span>`;
             } else {
@@ -3033,25 +3805,25 @@ function buildRow(e, num) {
         // Flat criterion options  -  B and C sub-items shown directly
         const ALL_CRIT_OPTS = [
             ['A-set-sef',   'Criterion A - Teaching Effectiveness (SET + SEF)'],
-            ['B|30|Textbook - Sole Author',             'B - Textbook - Sole Author (30 pts)'],
-            ['B|30co|Textbook - Co-Author',             'B - Textbook - Co-Author (30 x contrib%)'],
-            ['B|10|Textbook Chapter - Sole Author',     'B - Textbook Chapter - Sole Author (10 pts)'],
-            ['B|10co|Textbook Chapter - Co-Author',     'B - Textbook Chapter - Co-Author (10 x contrib%)'],
-            ['B|16|Manual/Module - Sole Author',        'B - Manual/Module - Sole Author (16 pts)'],
-            ['B|16co|Manual/Module - Co-Author',        'B - Manual/Module - Co-Author (16 x contrib%)'],
-            ['B|16|Multimedia Teaching Materials',           'B - Multimedia Teaching Materials (16 pts)'],
-            ['B|10|Validated Testing Materials',             'B - Validated Testing Materials (10 pts)'],
-            ['B|10|Academic Program - Lead',            'B - Academic Program - Lead (10 pts)'],
-            ['B|5|Academic Program - Contributor',      'B - Academic Program - Contributor (5 pts)'],
-            ['C|3|Adviser - Special/Capstone Project',  'C - Adviser - Special/Capstone Project (3 pts)'],
-            ['C|5|Adviser - Undergraduate Thesis',      'C - Adviser - Undergraduate Thesis (5 pts)'],
-            ['C|8|Adviser - Master\'s Thesis',          "C - Adviser - Master's Thesis (8 pts)"],
-            ['C|10|Adviser - Doctoral Dissertation',    'C - Adviser - Doctoral Dissertation (10 pts)'],
-            ['C|1|Panel - Special/Capstone Project',    'C - Panel - Special/Capstone Project (1 pt)'],
-            ['C|2|Panel - Undergraduate Thesis',        'C - Panel - Undergraduate Thesis (2 pts)'],
-            ['C|4|Panel - Master\'s Thesis',            "C - Panel - Master's Thesis (4 pts)"],
-            ['C|6|Panel - Doctoral Dissertation',       'C - Panel - Doctoral Dissertation (6 pts)'],
-            ['C|0|Mentor - Competition Winner',         'C - Mentor - Competition Winner (Warning pending)'],
+            ['B|30|Textbook, Sole Author',                         'B - Textbook, Sole Author (30 pts)'],
+            ['B|30co|Textbook, Co-Author',                         'B - Textbook, Co-Author (30 x contrib%)'],
+            ['B|0|Textbook Chapter, Sole Author',                  'B - Textbook Chapter, Sole Author (Pending confirmation, not counted)'],
+            ['B|0|Textbook Chapter, Co-Author',                    'B - Textbook Chapter, Co-Author (Pending confirmation, not counted)'],
+            ['B|16|Manual / Module, Sole Author',                  'B - Manual / Module, Sole Author (16 pts)'],
+            ['B|16co|Manual / Module, Co-Author',                  'B - Manual / Module, Co-Author (16 x contrib%)'],
+            ['B|16|Multimedia Teaching Materials',                 'B - Multimedia Teaching Materials (16 pts)'],
+            ['B|0|Validated Testing Materials',                    'B - Validated Testing Materials (Pending confirmation, not counted)'],
+            ['B|10|Academic Program Dev/Revision, Lead',           'B - Academic Program Dev/Revision, Lead (10 pts)'],
+            ['B|5|Academic Program Dev/Revision, Contributor',     'B - Academic Program Dev/Revision, Contributor (5 pts)'],
+            ['C|3|Adviser: Special Project / Capstone',            'C - Adviser: Special Project / Capstone (3 pts)'],
+            ['C|5|Adviser: Undergraduate Thesis',                  'C - Adviser: Undergraduate Thesis (5 pts)'],
+            ['C|8|Adviser: Master\'s Thesis',                      "C - Adviser: Master's Thesis (8 pts)"],
+            ['C|10|Adviser: Doctoral Dissertation',                'C - Adviser: Doctoral Dissertation (10 pts)'],
+            ['C|1|Panel Member: Special Project / Capstone',       'C - Panel Member: Special Project / Capstone (1 pt)'],
+            ['C|2|Panel Member: Undergraduate Thesis',             'C - Panel Member: Undergraduate Thesis (2 pts)'],
+            ['C|4|Panel Member: Master\'s Thesis',                 "C - Panel Member: Master's Thesis (4 pts)"],
+            ['C|6|Panel Member: Doctoral Dissertation',            'C - Panel Member: Doctoral Dissertation (6 pts)'],
+            ['C|0|Mentor: Student/Team Competition Winner',        'C - Mentor: Student/Team Competition Winner (Pending confirmation, not counted)'],
         ];
         // Determine currently selected option from stored critType/d1 combo
         // Legacy stored as 'B-material' or 'C-thesis' with d1 being the label
@@ -3059,11 +3831,13 @@ function buildRow(e, num) {
             if (ct === 'A-set-sef') return 'A-set-sef';
             if (ct === 'B-material' || ct.startsWith('B|')) {
                 // match by label in d1
-                const found = ALL_CRIT_OPTS.find(([v]) => v.startsWith('B|') && v.split('|').slice(2).join('|') === storedD1);
+                const storedNorm = normalizeChoiceLabel(storedD1 || ct.split('|').slice(2).join('|'));
+                const found = ALL_CRIT_OPTS.find(([v]) => v.startsWith('B|') && normalizeChoiceLabel(v.split('|').slice(2).join('|')) === storedNorm);
                 return found ? found[0] : ct;
             }
             if (ct === 'C-thesis' || ct.startsWith('C|')) {
-                const found = ALL_CRIT_OPTS.find(([v]) => v.startsWith('C|') && v.split('|').slice(2).join('|') === storedD1);
+                const storedNorm = normalizeChoiceLabel(storedD1 || ct.split('|').slice(2).join('|'));
+                const found = ALL_CRIT_OPTS.find(([v]) => v.startsWith('C|') && normalizeChoiceLabel(v.split('|').slice(2).join('|')) === storedNorm);
                 return found ? found[0] : ct;
             }
             return ct;
@@ -3190,7 +3964,7 @@ function buildRow(e, num) {
             <button type="button" class="btn btn-success kra-action-btn kra-save-btn d-none" onclick="saveRow(this)" data-sid="${sid}" title="Save row" style="width:36px;height:36px;padding:0;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;">
                 <i class="bi bi-floppy"></i>
             </button>
-            <button type="button" class="btn btn-danger kra-action-btn" onclick="deleteRow(this)" data-sid="${sid}" title="Delete this row" style="width:36px;height:36px;padding:0;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;">
+            <button type="button" class="btn btn-danger kra-action-btn" onclick="deleteRow(this)" ${KRA_REVISION_MODE ? 'disabled' : ''} data-sid="${sid}" title="Delete this row" style="width:36px;height:36px;padding:0;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;">
                 <i class="bi bi-trash"></i>
             </button>
         </div>
@@ -3205,12 +3979,18 @@ function normalizeChoiceLabel(s) {
     const txt = document.createElement('textarea');
     txt.innerHTML = String(s || '');
     return txt.value
-        .replace(/[- - ]/g, '-')
+        .replace(/[\u2010-\u2015]/g, '-')
+        .replace(/\s*\/\s*/g, '/')
         .replace(/[xx]\s*contrib%/ig, '')
         .replace(/\(\s*\d+(\.\d+)?\s*pts?\.?\s*\)/ig, '')
+        .replace(/[^a-z0-9]+/ig, ' ')
         .replace(/\s+/g, ' ')
         .trim()
         .toLowerCase();
+}
+
+function normalizeResearchLabel(label) {
+    return normalizeChoiceLabel(String(label || '').replace(/^Criterion\s+[A-Z]\s*[.\-:\u2013\u2014]*\s*/i, ''));
 }
 
 function storedChoicePoints(s) {
@@ -3259,8 +4039,10 @@ function extScoreForSubtype(subtype, val1, val2) {
     if (s === 'media-column-occasional') return 2.0;
     if (s === 'media-tv-radio-host') return 10.0;
     if (s === 'media-guest') return 1.0;
-    if (s === 'resource-speaker-local') return 2.0;
-    if (s === 'resource-speaker-intl') return 3.0;
+    if (s === 'resource-speaker-local' || s === 'resource-speaker-intl') {
+        const hours = Math.max(1, parseFloat(val1) || 1);
+        return (s === 'resource-speaker-intl' ? 3.0 : 2.0) * hours;
+    }
     if (s === 'outreach-isr-lead') return 5.0;
     if (s === 'outreach-isr-member') return 2.0;
     if (s === 'csr-satisfaction') {
@@ -3272,6 +4054,8 @@ function extScoreForSubtype(subtype, val1, val2) {
         'campus director': 8, 'office director': 6, 'dean': 6, 'associate dean': 5,
         'dept head': 4, 'program chair': 3, 'committee chair': 2, 'committee member': 1,
         'coordinator': 2,
+        'faculty regent': 8, 'university secretary': 6, 'college secretary': 3,
+        'project head inst': 4, 'committee chair inst': 3, 'committee member inst': 2,
     };
     if (s in D_RATES) {
         const years = Math.max(1, parseFloat(val1) || 1);
@@ -3284,7 +4068,9 @@ function extScoreForSubtype(subtype, val1, val2) {
 function calcRow(el) {
     const tr = el.closest('tr');
     let score = 0;
-    if (KRA_CAT === 'Research') {
+    if (tr.querySelector('.custom-key')) {
+        score = parseFloat(tr.querySelector('.custom-max')?.value) || 0;
+    } else if (KRA_CAT === 'Research') {
         const base = parseFloat(tr.querySelector('.rtype')?.value) || 0;
         const cont = parseFloat(tr.querySelector('.rcontrib')?.value) || 0;
         // Warn if contribution > 100
@@ -3317,7 +4103,8 @@ function calcRow(el) {
         } else if (critType === 'B-paper') {
             score = subVal; // 3 or 5 pts per presentation
         } else if (critType === 'C-award') {
-            score = subVal; // 2/3/4 pts
+            // subVal: 2=Institutional, 3=Local/Regional, 4=National, 5=Intl (CONFIG GAP→0 live), 0=Prestigious(0)
+            score = (subVal === 5) ? 0 : subVal; // International shows 0 until admin configures the value
         } else if (critType === 'A-org') {
             score = 5; // 5 pts per qualifying org
         }
@@ -3339,7 +4126,7 @@ function calcRow(el) {
                 }
                 w.style.display = v > 100 ? 'block' : 'none';
             });
-            score = (set/100)*36 + (sef/100)*24;
+            score = (set / 100) * KRA1_A_SET_CAP + (sef / 100) * KRA1_A_SEF_CAP;
         } else if (critType === 'B-material' || critType.startsWith('B|')) {
             // Flat B: value like 'B|30co|Label'
             const parts = critType.split('|');
@@ -3354,10 +4141,14 @@ function calcRow(el) {
             // Flat C: value like 'C|5|Adviser  -  Undergraduate Thesis'
             const parts = critType.split('|');
             const pts = parseFloat(parts[1] ?? '0');
-            const isMentor = parts[1] === '0' && critType.includes('Mentor');
+            const isPendingSourceGap = parts[1] === '0' && (
+                critType.includes('Mentor') ||
+                critType.includes('Textbook Chapter') ||
+                critType.includes('Validated Testing Materials')
+            );
             const scoreEl2 = document.getElementById(`rscore_${tr.dataset.sid}`) || tr.querySelector('.kra-score-badge');
-            if (isMentor && scoreEl2) {
-                scoreEl2.textContent = '? pending';
+            if (isPendingSourceGap && scoreEl2) {
+                scoreEl2.textContent = 'Pending confirmation, not counted';
                 scoreEl2.className = 'kra-score-badge';
                 updateGrandTotal();
                 return;
@@ -3437,9 +4228,9 @@ function updateCriteriaASummary() {
     const avg = ratings.length ? ratings.reduce((a,b) => a + b, 0) / ratings.length : 0;
     const avgSet = setVals.length ? setVals.reduce((a,b) => a + b, 0) / setVals.length : 0;
     const avgSef = sefVals.length ? sefVals.reduce((a,b) => a + b, 0) / sefVals.length : 0;
-    const facultyScore = (avgSet / 100) * 36 + (avgSef / 100) * 24;
-    const setSubtotal = (avgSet / 100) * 36;
-    const sefSubtotal = (avgSef / 100) * 24;
+    const facultyScore = (avgSet / 100) * KRA1_A_SET_CAP + (avgSef / 100) * KRA1_A_SEF_CAP;
+    const setSubtotal = (avgSet / 100) * KRA1_A_SET_CAP;
+    const sefSubtotal = (avgSef / 100) * KRA1_A_SEF_CAP;
     const setAvgEl = document.getElementById('kraSetAverage');
     const sefAvgEl = document.getElementById('kraSefAverage');
     const setSubtotalEl = document.getElementById('kraSetSubtotal');
@@ -3463,7 +4254,7 @@ function criteriaAScoreFromRow(tr, sem) {
     const type = tr.dataset.entryType === 'sef' ? 'sef' : 'set';
     const raw = parseFloat(tr.querySelector(type === 'sef' ? `.kra-a-sef.sem-${sem}` : `.kra-a-set.sem-${sem}`)?.value) || 0;
     const rating = Math.min(100, Math.max(0, raw));
-    return type === 'sef' ? (rating / 100) * 24 : (rating / 100) * 36;
+    return type === 'sef' ? (rating / 100) * KRA1_A_SEF_CAP : (rating / 100) * KRA1_A_SET_CAP;
 }
 
 async function saveCriteriaASemester(tr, sem, sidOverride) {
@@ -3496,8 +4287,7 @@ function criteriaASemestersToSave(tr, forceSem) {
     return [1, 2].filter(sem => {
         const type = tr.dataset.entryType === 'sef' ? 'sef' : 'set';
         const selector = type === 'sef' ? `.kra-a-sef.sem-${sem}` : `.kra-a-set.sem-${sem}`;
-        const scoreDiv = tr.querySelector(`.kra-a-scores.sem-${sem}`);
-        if (scoreDiv && scoreDiv.querySelector(selector)?.disabled) return false; // verified & locked
+        if (tr.querySelector(selector)?.disabled) return false;
         if (forceSem && parseInt(forceSem) === sem) return true;
         const btn = tr.querySelector(`[data-sem="${sem}"]`);
         const sid = parseInt(btn?.dataset.sid || '0');
@@ -3585,6 +4375,7 @@ async function saveCriteriaARow(btn) {
 }
 
 function deleteCriteriaARow(btn) {
+    if (KRA_REVISION_MODE) { showKraAlert('Edit the flagged entry and resubmit it.'); return; }
     const rowType = btn.closest('tr')?.dataset.entryType === 'sef' ? 'SEF' : 'SET';
     confirmAction(`Remove this ${rowType} entry? This removes its semester entries and evidence.`, function() {
         pendingKraScrollState = captureKraScrollState();
@@ -3638,9 +4429,10 @@ function updatePdSubField(sel) {
     } else if (critType === 'C-award') {
         html = `<select class="rpd-sub" onchange="calcRow(this)">
             <option value="2">Institutional (2 pts)</option>
-            <option value="3">Local/City/Province (3 pts)</option>
-            <option value="4">Regional (4 pts)</option>
-            <option value="0">National/International (+1 sub-rank, 0 pts)</option>
+            <option value="3">Local/Regional (3 pts)</option>
+            <option value="4">National (4 pts)</option>
+            <option value="5">International (pts pending — CONFIG GAP)</option>
+            <option value="0">Prestigious Award — Sub-rank trigger only (0 pts)</option>
         </select>`;
     } else {
         html = `<input type="hidden" class="rpd-sub" value="1"><span class="text-muted small">5 pts</span>`;
@@ -3686,16 +4478,16 @@ function updateInstrSubField(sel) {
         detailCell.innerHTML = `
             <select class="ri-d1-sel" onchange="calcRow(this)" style="margin-bottom:3px;">
                 <option value="" disabled selected>- Select material type -</option>
-                <option value="30">Textbook - Sole Author (30 pts)</option>
-                <option value="30co">Textbook - Co-Author (30 x contrib%)</option>
-                <option value="10">Textbook Chapter - Sole Author (10 pts)</option>
-                <option value="10co">Textbook Chapter - Co-Author (10 x contrib%)</option>
-                <option value="16">Manual/Module - Sole Author (16 pts)</option>
-                <option value="16co">Manual/Module - Co-Author (16 x contrib%)</option>
+                <option value="30">Textbook, Sole Author (30 pts)</option>
+                <option value="30co">Textbook, Co-Author (30 x contrib%)</option>
+                <option value="10">Textbook Chapter, Sole Author (10 pts)</option>
+                <option value="10co">Textbook Chapter, Co-Author (10 x contrib%)</option>
+                <option value="16">Manual / Module, Sole Author (16 pts)</option>
+                <option value="16co">Manual / Module, Co-Author (16 x contrib%)</option>
                 <option value="16">Multimedia Teaching Materials (16 pts)</option>
                 <option value="10">Validated Testing Materials (10 pts)</option>
-                <option value="10">Academic Program - Lead (10 pts)</option>
-                <option value="5">Academic Program - Contributor (5 pts)</option>
+                <option value="10">Academic Program Dev/Revision, Lead (10 pts)</option>
+                <option value="5">Academic Program Dev/Revision, Contributor (5 pts)</option>
             </select>
             <input type="text" inputmode="decimal" class="ri-d2" placeholder="Contrib % (if co-author)" oninput="calcRow(this)">`;
         if (notesCell) notesCell.innerHTML = `<span class="text-muted small">-</span>`;
@@ -3703,15 +4495,15 @@ function updateInstrSubField(sel) {
         detailCell.innerHTML = `
             <select class="ri-d1-sel" onchange="calcRow(this)">
                 <option value="" disabled selected>- Select role -</option>
-                <option value="3">Adviser - Special/Capstone Project (3 pts)</option>
-                <option value="5">Adviser - Undergraduate Thesis (5 pts)</option>
-                <option value="8">Adviser - Master's Thesis (8 pts)</option>
-                <option value="10">Adviser - Doctoral Dissertation (10 pts)</option>
-                <option value="1">Panel - Special/Capstone Project (1 pt)</option>
-                <option value="2">Panel - Undergraduate Thesis (2 pts)</option>
-                <option value="4">Panel - Master's Thesis (4 pts)</option>
-                <option value="6">Panel - Doctoral Dissertation (6 pts)</option>
-                <option value="0">Mentor - Competition Winner (? pts pending ... see note)</option>
+                <option value="3">Adviser: Special Project / Capstone (3 pts)</option>
+                <option value="5">Adviser: Undergraduate Thesis (5 pts)</option>
+                <option value="8">Adviser: Master's Thesis (8 pts)</option>
+                <option value="10">Adviser: Doctoral Dissertation (10 pts)</option>
+                <option value="1">Panel Member: Special Project / Capstone (1 pt)</option>
+                <option value="2">Panel Member: Undergraduate Thesis (2 pts)</option>
+                <option value="4">Panel Member: Master's Thesis (4 pts)</option>
+                <option value="6">Panel Member: Doctoral Dissertation (6 pts)</option>
+                <option value="0">Mentor: Student/Team Competition Winner (Pending confirmation, not counted)</option>
             </select>`;
         if (notesCell) notesCell.innerHTML = `<span class="text-muted small">-</span>`;
     }
@@ -4042,6 +4834,7 @@ function refreshAddRowButton() {
 
 // -- Add row ---------------------------------------------------
 function addKraRow() {
+    if (KRA_REVISION_MODE) { showKraAlert('Only flagged entries can be edited during revision.'); return; }
     if (isCriteriaATableMode()) {
         const tbody = document.getElementById('kraTableBody');
         // Guard: never exceed the 3-row cycle limit
@@ -4078,7 +4871,7 @@ function refreshAddRowButton() {
     if (!isCriteriaATableMode()) return;
     document.querySelectorAll('#criteriaASections [data-add-type]').forEach(btn => {
         const type = btn.dataset.addType === 'sef' ? 'sef' : 'set';
-        const atLimit = criteriaARowCount(type) >= CYCLE_ROW_LIMIT;
+        const atLimit = KRA_REVISION_MODE || criteriaARowCount(type) >= CYCLE_ROW_LIMIT;
         btn.disabled = atLimit;
         btn.style.opacity = atLimit ? '0.45' : '1';
         btn.style.cursor = atLimit ? 'not-allowed' : 'pointer';
@@ -4089,6 +4882,7 @@ function refreshAddRowButton() {
 }
 
 function addKraRow(type = 'set') {
+    if (KRA_REVISION_MODE) { showKraAlert('Only flagged entries can be edited during revision.'); return; }
     if (isCriteriaATableMode()) {
         type = type === 'sef' ? 'sef' : 'set';
         const tbody = criteriaABodyForType(type);
@@ -4141,55 +4935,7 @@ function saveRow(btn) {
         score = parseFloat(scoreEl?.textContent) || 0;
     }
 
-    let remarks = '';
-    if (KRA_CAT === 'Research') {
-        const typeEl = tr.querySelector('.rtype');
-        // Store the full display text (with pts suffix) so server-side scoring can extract points via regex
-        const label  = typeEl?.options[typeEl.selectedIndex]?.text || '';
-        const dev    = tr.querySelector('.rdev')?.value || '';
-        const aff    = tr.querySelector('.raff')?.value || '';
-        const area   = tr.querySelector('.rarea')?.value || '';
-        const spec   = tr.querySelector('.rspec')?.value || '';
-        const contrib = tr.querySelector('.rcontrib')?.value || '100';
-        remarks = `${label}|||${dev}|||${aff}|||${area}|||${spec}|||${contrib}`;
-    } else if (KRA_CAT === 'Extension') {
-        const subtype = tr.querySelector('.re-crit')?.value || '';
-        const title   = tr.querySelector('.re-title')?.value || '';
-        const val1    = tr.querySelector('.re-val1')?.value || '';
-        const val2    = tr.querySelector('.re-val2')?.value || '';
-        remarks = `${subtype}|||${title}|||${val1}|||${val2}`;
-    } else if (KRA_CAT === 'Professional Development') {
-        const critType = tr.querySelector('.rpd-crit')?.value || '';
-        const desc     = tr.querySelector('.rpd-desc')?.value || '';
-        const subVal   = tr.querySelector('.rpd-sub')?.value || '0';
-        remarks = `${critType}|||${desc}|||${subVal}`;
-    } else {
-        // KRA I - Instruction
-        const critType = tr.querySelector('.ri-crit')?.value || '';
-        if (critType === 'A-set-sef') {
-            const set   = tr.querySelector('.ri-d1')?.value || '';
-            const sef   = tr.querySelector('.ri-d2')?.value || '';
-            const notes = tr.querySelector('.ri-notes')?.value || '';
-            remarks = `${critType}|||${set}|||${sef}|||${notes}`;
-        } else if (critType === 'B-material' || critType.startsWith('B|')) {
-            const sel    = tr.querySelector('.ri-d1-sel');
-            const parts = critType.split('|');
-            const label = critType.startsWith('B|')
-                ? (parts.slice(2).join('|') || '')
-                : (sel?.options[sel.selectedIndex]?.text || '');
-            const contrib = tr.querySelector('.ri-d2')?.value || '100';
-            remarks = `${critType}|||${label}|||${contrib}`;
-        } else if (critType === 'C-thesis' || critType.startsWith('C|')) {
-            const sel   = tr.querySelector('.ri-d1-sel');
-            const parts = critType.split('|');
-            const label = critType.startsWith('C|')
-                ? (parts.slice(2).join('|') || '')
-                : (sel?.options[sel.selectedIndex]?.text || '');
-            remarks = `${critType}|||${label}|||`;
-        } else {
-            remarks = `${critType}|||${tr.querySelector('.ri-d1')?.value||''}|||`;
-        }
-    }
+    const remarks = _buildRemarksFromRow(tr);
 
     if (!kraRemarksLookMeaningful(remarks)) {
         showKraAlert('Select a criterion and fill the required score fields before saving or uploading evidence.');
@@ -4258,18 +5004,19 @@ function saveRow(btn) {
                 updateGrandTotal();
                 loadRows();
             } else {
-                alert('Error: ' + (data.error || 'Save failed'));
+                showToast('Error: ' + (data.error || 'Save failed'), 'error');
             }
         })
         .catch(() => {
             btn.disabled = false;
             btn.innerHTML = '<i class="bi bi-floppy"></i>';
-            alert('Network error. Please try again.');
+            showToast('Network error. Please try again.', 'error');
         });
 }
 
 // -- Delete row ------------------------------------------------
 function deleteRow(btn) {
+    if (KRA_REVISION_MODE) { showKraAlert('Edit the flagged entry and resubmit it.'); return; }
     const sid = btn.dataset.sid || '0';
     confirmAction(
         'Remove this entry? This cannot be undone.',
@@ -4377,7 +5124,7 @@ async function openUploadModal(btn) {
         renderUploadFileList();
     }
 
-    new bootstrap.Modal(document.getElementById('uploadModal')).show();
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('uploadModal')).show();
 }
 
 function renderUploadFileList() {
@@ -4408,22 +5155,42 @@ function renderUploadFileList() {
     }
 
     if (n === 0) {
-        list.innerHTML = '<tr><td colspan="4" class="text-center text-muted py-2">No files uploaded</td></tr>';
+        list.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;
+                                      padding:1rem;color:#94a3b8;font-size:0.78rem;gap:0.4rem;">
+            <i class="bi bi-folder" style="font-size:1rem;"></i> No files uploaded yet
+        </div>`;
         return;
     }
 
     list.innerHTML = uploadModalCurrentFiles.map((f, i) => {
-        const fname  = f.original_filename || f.file_path.split('/').pop();
-        const viewBtn = `<a href="pages/view_file.php?file=${encodeURIComponent(f.file_path)}" target="_blank" class="btn btn-xs btn-primary" style="font-size:0.7rem;padding:0.2rem 0.4rem;" rel="noopener noreferrer"><i class="bi bi-eye"></i></a>`;
-        const delBtn  = f.evidence_id > 0
-            ? `<button type="button" class="btn btn-xs btn-outline-danger" style="font-size:0.7rem;padding:0.2rem 0.4rem;" onclick="deleteEvidenceFile(${f.evidence_id}, ${currentUploadSid})" title="Remove file"><i class="bi bi-trash"></i></button>`
-            : `<span class="text-muted small">-</span>`;
-        return `<tr>
-            <td style="padding:0.4rem 0.6rem;">${i+1}</td>
-            <td style="padding:0.4rem 0.6rem;word-break:break-all;"><i class="bi bi-file-earmark me-1 text-primary"></i>${esc(fname)}</td>
-            <td style="padding:0.4rem 0.6rem;text-align:center;">${viewBtn}</td>
-            <td style="padding:0.4rem 0.6rem;text-align:center;">${delBtn}</td>
-        </tr>`;
+        const fname   = f.original_filename || f.file_path.split('/').pop();
+        const ext     = fname.split('.').pop().toLowerCase();
+        const icon    = ext === 'pdf' ? 'bi-file-earmark-pdf' : (ext.match(/jpe?g|png/) ? 'bi-file-earmark-image' : 'bi-file-earmark');
+        const iconCol = ext === 'pdf' ? '#dc2626' : (ext.match(/jpe?g|png/) ? '#7c3aed' : '#475569');
+        const viewBtn = `<a href="pages/view_file.php?file=${encodeURIComponent(f.file_path)}" target="_blank"
+            rel="noopener noreferrer"
+            style="display:inline-flex;align-items:center;justify-content:center;
+                   width:28px;height:28px;border-radius:6px;border:1px solid #dbeafe;
+                   background:#eff6ff;color:#1a3a6b;font-size:0.75rem;text-decoration:none;"
+            title="View file"><i class="bi bi-eye"></i></a>`;
+        const delBtn = f.evidence_id > 0
+            ? `<button type="button"
+                  style="display:inline-flex;align-items:center;justify-content:center;
+                         width:28px;height:28px;border-radius:6px;border:1px solid #fecaca;
+                         background:#fef2f2;color:#dc2626;font-size:0.75rem;cursor:pointer;"
+                  onclick="deleteEvidenceFile(${f.evidence_id}, ${currentUploadSid})" title="Remove file">
+                <i class="bi bi-trash"></i>
+              </button>`
+            : `<span style="width:28px;display:inline-block;"></span>`;
+        const isLast = i === uploadModalCurrentFiles.length - 1;
+        return `<div style="display:flex;align-items:center;gap:0.6rem;padding:0.55rem 0.75rem;
+                             ${isLast ? '' : 'border-bottom:1px solid #f1f5f9;'}">
+            <i class="bi ${icon}" style="color:${iconCol};font-size:1rem;flex-shrink:0;"></i>
+            <span style="flex:1;min-width:0;font-size:0.77rem;color:#1e293b;
+                         overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                  title="${esc(fname)}">${esc(fname)}</span>
+            <div style="display:flex;gap:4px;flex-shrink:0;">${viewBtn}${delBtn}</div>
+        </div>`;
     }).join('');
 }
 
@@ -4457,7 +5224,7 @@ function _executeDeleteEvidenceFile(evidenceId, submissionId) {
                 pendingScrollToSid = parseInt(currentUploadSid) || parseInt(submissionId) || 0;
                 loadRows();
             } else {
-                alert('Failed to delete file: ' + (data.error || 'Unknown error'));
+                showToast('Failed to delete file: ' + (data.error || 'Unknown error'), 'error');
             }
         });
 }
@@ -4532,7 +5299,11 @@ async function processUploadFiles(fileList) {
     const tr      = currentUploadTr;
     const score   = _computeScoreFromRow(tr);
     const remarks = _buildRemarksFromRow(tr);
-    if (!kraRemarksLookMeaningful(remarks)) {
+    // Skip the remarks check when the entry is already saved — sid > 0 means the
+    // data is already in the DB and a client-side parse failure should not block
+    // the upload. Only enforce it for brand-new (unsaved) rows.
+    const isSavedEntry = parseInt(currentUploadSid) > 0;
+    if (!isSavedEntry && !kraRemarksLookMeaningful(remarks)) {
         progressEl.style.display = 'none';
         showKraAlert('Select a criterion and fill the required score fields before uploading evidence.');
         const firstSelect = tr?.querySelector('select');
@@ -4651,16 +5422,25 @@ async function processUploadFiles(fileList) {
     if (uploaded > 0) showUploadSuccess(uploaded === 1 ? batch[0].name : `${uploaded} files uploaded`);
     if (errors.length) showKraAlert(`<strong>${errors.length} file(s) failed:</strong><br>${errors.map(e => esc(e)).join('<br>')}`);
 
-    // Preserve anything still only in the inputs across the refresh.
-    const uploadRemarks = _buildRemarksFromRow(tr);
-    const uploadCriterion = tr?.classList.contains('kra-a-row')
-        ? 'A'
-        : criterionLetterFromEntry({ remarks: uploadRemarks });
-    if (uploadCriterion) setKraModalCriterion(uploadCriterion);
-    if (isCriteriaATableMode()) criteriaADraftCache = snapshotCriteriaADraft();
-    pendingKraScrollState = captureKraScrollState();
-    pendingScrollToSid = parseInt(currentUploadSid) || 0;
-    loadRows();
+    // Do NOT call loadRows() here — it would wipe the locked criterion state
+    // from the current row (pendingKraResCrit was already consumed when the row
+    // was built, so a reload renders "Select" instead of the locked label).
+    // The evidence button and score badge are already updated in-place above.
+    // We only reload if this was a Criteria-A semester row (which manages its
+    // own state via criteriaADraftCache) or if the entire table was empty
+    // (sid went from ≤0 to a real id, meaning a new row was just created).
+    const wasNewRow = uploaded > 0 && parseInt(currentUploadSid) > 0 && tr && !tr.classList.contains('kra-a-row');
+    if (isCriteriaATableMode()) {
+        const uploadRemarks   = _buildRemarksFromRow(tr);
+        const uploadCriterion = 'A';
+        setKraModalCriterion(uploadCriterion);
+        criteriaADraftCache   = snapshotCriteriaADraft();
+        pendingKraScrollState = captureKraScrollState();
+        pendingScrollToSid    = parseInt(currentUploadSid) || 0;
+        loadRows();
+    }
+    // For non-Criteria-A rows: just keep the modal open with the updated file list.
+    // The row in the table behind is already correct (score + button updated above).
 }
 
 // -- Helpers: extract score and remarks from the current row --
@@ -4671,7 +5451,9 @@ function _computeScoreFromRow(tr) {
         return criteriaAScoreFromRow(tr, sem);
     }
     let score = 0;
-    if (KRA_CAT === 'Research') {
+    if (tr.querySelector('.custom-key')) {
+        score = parseFloat(tr.querySelector('.custom-max')?.value) || 0;
+    } else if (KRA_CAT === 'Research') {
         const typeEl  = tr.querySelector('.rtype');
         const label   = typeEl?.options[typeEl?.selectedIndex]?.text || '';
         const contrib = parseFloat(tr.querySelector('.rcontrib')?.value) || 100;
@@ -4691,7 +5473,7 @@ function _computeScoreFromRow(tr) {
         if (critType === 'A-set-sef') {
             const set = parseFloat(tr.querySelector('.ri-d1')?.value) || 0;
             const sef = parseFloat(tr.querySelector('.ri-d2')?.value) || 0;
-            score = (set / 100) * 36 + (sef / 100) * 24;
+            score = (set / 100) * KRA1_A_SET_CAP + (sef / 100) * KRA1_A_SEF_CAP;
         } else if (critType === 'B-material' || critType.startsWith('B|')) {
             const parts = critType.split('|');
             const pts = parts[1] || '';
@@ -4714,6 +5496,7 @@ function kraRemarksLookMeaningful(remarks) {
     const parts = String(remarks || '').split('|||').map(p => p.trim());
     const type = parts[0] || '';
     if (!type) return false;
+    if (type === 'CUSTOM') return !!parts[1] && !!parts[2] && !!parts[3] && (parseFloat(parts[4] || '0') > 0);
     if (KRA_CAT === 'Instruction') {
         if (type === 'A-set-sef') return !!parts[1] && !!parts[2];
         if (type === 'A-set-sef-sem') return !!parts[3] && !!parts[4];
@@ -4729,14 +5512,37 @@ function kraRemarksLookMeaningful(remarks) {
 }
 
 function _buildRemarksFromRow(tr) {
+    const remarks = _buildRawRemarksFromRow(tr);
+    const key = tr?.querySelector('.entry-criterion-key')?.value || '';
+    if (!key || !remarks) return remarks;
+    const fields = remarks.split('|||');
+    while (fields.length < 8) fields.push('');
+    return `${fields.join('|||')}|||CRITERION_KEY=${key}`;
+}
+
+function researchRemarksLabel(typeEl) {
+    const option = typeEl?.options[typeEl.selectedIndex];
+    if (!option || !option.value) return '';
+    return `${option.dataset.label || option.text.replace(/\s*\(\d+(?:\.\d+)?\s*pts?\)\s*$/i, '')} (${option.value}pts)`;
+}
+
+function _buildRawRemarksFromRow(tr) {
     if (!tr) return '';
     if (tr.classList.contains('kra-a-row')) {
         const sem = currentUploadBtn?.dataset.sem || '1';
         return criteriaARemarksFromRow(tr, sem);
     }
+    if (tr.querySelector('.custom-key')) {
+        const letter = tr.querySelector('.custom-letter')?.value || activeKraCriterion || '';
+        const key    = tr.querySelector('.custom-key')?.value || '';
+        const label  = tr.querySelector('.custom-label')?.value || 'Custom criterion';
+        const max    = tr.querySelector('.custom-max')?.value || String(_computeScoreFromRow(tr) || 0);
+        const detail = tr.querySelector('.custom-detail')?.value || '';
+        return `CUSTOM|||${letter}|||${key}|||${label}|||${max}|||${detail}`;
+    }
     if (KRA_CAT === 'Research') {
         const typeEl = tr.querySelector('.rtype');
-        const label  = typeEl?.options[typeEl.selectedIndex]?.text || '';
+        const label  = researchRemarksLabel(typeEl);
         const dev    = tr.querySelector('.rdev')?.value || '';
         const aff    = tr.querySelector('.raff')?.value || '';
         const area   = tr.querySelector('.rarea')?.value || '';
@@ -4837,8 +5643,12 @@ let pendingScrollToSid = 0;
 
 function openEditModal(submissionId) {
     if (deferUntilKraModalClosed(() => openEditModal(submissionId))) return;
+    activeKraRowKey = '';
+    activeKraRowCrit = null;
     // Get entry data from the button's data-entry attribute
     const btn = document.getElementById('editBtn_' + submissionId);
+    const step = btn?.closest('.criterion-step');
+    if (step) goCriterion(Number(step.dataset.step), false);
     let entryData = null;
     try {
         entryData = btn ? JSON.parse(btn.getAttribute('data-entry') || '{}') : null;

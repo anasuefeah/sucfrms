@@ -243,10 +243,15 @@ if (empty($logs)) {
 
         if ($role === 'admin') {
             $actor_role = $log['role_at_time'] ?? '';
-            $actor_display = in_array($actor_role, ['checker','talisay_checker'])
+            $actor_display = $actor_role === 'evaluator'
                 ? checkerDisplayLabel(['checker_label' => $log['checker_label'] ?? null, 'user_id' => $log['user_id'] ?? null])
                 : ($log['full_name'] ?? 'System');
-            $role_display_map = ['admin'=>'Admin','checker'=>'Evaluator','faculty'=>'Faculty','talisay_checker'=>'ITC Evaluator'];
+            // Admin full_name is stored as "Last, First" — display without the comma for admin accounts
+            if ($actor_role === 'admin' && str_contains($actor_display, ',')) {
+                $parts_name = array_map('trim', explode(',', $actor_display, 2));
+                $actor_display = trim(($parts_name[1] ?? '') . ' ' . ($parts_name[0] ?? ''));
+            }
+            $role_display_map = ['admin'=>'Admin','evaluator'=>'Evaluator','faculty'=>'Faculty'];
             $role_display = $role_display_map[$log['role_at_time'] ?? ''] ?? ucfirst($log['role_at_time'] ?? '-');
             $row = [
                 [8,   (string)($i + 1),                              'C'],

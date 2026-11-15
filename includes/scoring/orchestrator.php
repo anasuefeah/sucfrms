@@ -17,6 +17,7 @@ require_once __DIR__ . '/kra2_scorer.php';
 require_once __DIR__ . '/kra3_scorer.php';
 require_once __DIR__ . '/kra4_scorer.php';
 require_once __DIR__ . '/autosubrank.php';
+require_once __DIR__ . '/entry_scores.php';
 
 class Orchestrator
 {
@@ -39,7 +40,7 @@ class Orchestrator
     {
         // -- Load application + faculty -------------------------------
         $app = $pdo->prepare("
-            SELECT a.*, u.rank AS current_rank, u.user_id AS faculty_user_id,
+            SELECT a.*, u.`rank` AS current_rank, u.user_id AS faculty_user_id,
                    u.first_name, u.last_name, u.employee_id,
                    c.status AS cycle_status
             FROM applications a
@@ -58,9 +59,13 @@ class Orchestrator
         $current_rank   = $app['current_rank'] ?? '';
         $faculty_id     = (int)$app['faculty_user_id'];
 
+        EntryScores::refreshDraft($pdo, $application_id);
+
         // -- Load all KRA submissions ---------------------------------
         $subs_stmt = $pdo->prepare("
-            SELECT s.*, GROUP_CONCAT(ef.original_filename ORDER BY ef.evidence_id SEPARATOR '|||') AS evidence_names
+            SELECT s.*,
+                   GROUP_CONCAT(ef.original_filename ORDER BY ef.evidence_id SEPARATOR '|||') AS evidence_names,
+                   GROUP_CONCAT(ef.file_size_bytes ORDER BY ef.evidence_id SEPARATOR '|||') AS evidence_sizes
             FROM kra_submissions s
             LEFT JOIN kra_evidence_files ef ON ef.submission_id = s.submission_id
             WHERE s.application_id = ?
@@ -79,7 +84,10 @@ class Orchestrator
     $eval_ok = self::checkEvaluationPeriod($app);
 
         // -- STEP 2: Double-counting check ----------------------------
-        $double_flags = self::checkDoubleCounting($all_subs);
+        $double_flags = array_merge(
+            self::checkDoubleCounting($all_subs),
+            self::checkPreviousUnsuccessfulReuse($pdo, $app)
+        );
 
         // -- STEP 3: Admin duty exclusion -----------------------------
         $admin_flags = self::checkAdminDutyExclusion($subs_by_cat);
@@ -97,20 +105,40 @@ class Orchestrator
         }
 
         // -- STEP 4: Route to KRA scorers ----------------------------
-        KRA1Scorer::setPdo($pdo);   // provides DB access for CONFIG_MENTORSHIP_POINTS lookup
+        KRA1Scorer::setPdo($pdo);   // provides DB access for configurable criteria lookups
+        KRA1Scorer::setCriteriaContext((int)($app['cycle_id'] ?? 0), $rank ?: null);
+        KRA2Scorer::setPdo($pdo);
+        KRA2Scorer::setCriteriaContext((int)($app['cycle_id'] ?? 0), $rank ?: null);
+        KRA3Scorer::setPdo($pdo);
+        KRA3Scorer::setCriteriaContext((int)($app['cycle_id'] ?? 0), $rank ?: null);
+        KRA4Scorer::setPdo($pdo);
+        KRA4Scorer::setCriteriaContext((int)($app['cycle_id'] ?? 0), $rank ?: null);
         $kra1 = KRA1Scorer::score($subs_by_cat['Instruction'] ?? []);
         $kra2 = KRA2Scorer::score($subs_by_cat['Research'] ?? []);
         $kra3 = KRA3Scorer::score($subs_by_cat['Extension'] ?? []);
+
+        // Auto Sub Rank is applied to the base rank before point-based
+        // reclassification. This preliminary run determines whether a doctorate
+        // should be excluded from ordinary KRA IV points before KRA IV is scored.
+        $auto_subrank_pre = AutoSubrank::compute($pdo, $app, [], 0.0, 0);
+        $auto_bump_pre    = (int)($auto_subrank_pre['bonus_increment'] ?? 0);
+        $doctorate_points_for_kra4 = in_array(($auto_subrank_pre['doctorate_mode'] ?? ''), ['points_only', 'blocked_historical', 'not_eligible'], true)
+            && (float)($auto_subrank_pre['doctorate_points'] ?? 0) > 0
+            ? AutoSubRankCalculator::DOCTORATE_POINTS
+            : 0.0;
+        KRA4Scorer::setDoctoratePointsOverride($doctorate_points_for_kra4);
         $kra4 = KRA4Scorer::score($subs_by_cat['Professional Development'] ?? []);
+        KRA4Scorer::setDoctoratePointsOverride(null);
 
         // -- STEP 5: Aggregate ----------------------------------------
         $grand_total = $kra1['subtotal'] + $kra2['subtotal'] + $kra3['subtotal'] + $kra4['subtotal'];
         // No global cap per JC01 s.2026 (GRAND_TOTAL_CAP = null/unset)
 
-        // -- STEP 5a: PASS 1  -  weighted score using the CURRENT rank's weights --
+        // -- STEP 5a: PASS 1  -  weighted score using the auto-bumped base rank's weights --
         // Look up the bracket, get the initial increment, apply it to get the
-        // Initial Reclassified Rank. This pass never sees Auto Sub Rank.
-        $weights_pass1          = self::getKraWeights($current_rank);
+        // Initial Reclassified Rank.
+        $auto_base_rank         = self::computeTargetRank($current_rank, $auto_bump_pre);
+        $weights_pass1          = self::getKraWeights($auto_base_rank);
         $weighted_score_pass1   = round(
             ($kra1['subtotal'] * $weights_pass1['Instruction']) +
             ($kra2['subtotal'] * $weights_pass1['Research']) +
@@ -119,7 +147,7 @@ class Orchestrator
             2
         );
         $sub_rank_increment_pass1 = self::getSubRankIncrement($weighted_score_pass1);
-        $initial_reclassified_rank = self::computeTargetRank($current_rank, $sub_rank_increment_pass1);
+        $initial_reclassified_rank = self::computeTargetRank($auto_base_rank, $sub_rank_increment_pass1);
 
         // -- STEP 5b: PASS 2  -  recompute using the Initial Reclassified Rank's
         // weight row (NOT the original rank), since the weight table itself
@@ -134,19 +162,16 @@ class Orchestrator
             2
         );
         $sub_rank_increment_pass2 = self::getSubRankIncrement($weighted_score_pass2);
-        // FINAL Reclassified Rank uses Pass 2's increment, applied on top of
-        // the Initial Reclassified Rank (not the original current rank).
-        $reclassified_rank = self::computeTargetRank($initial_reclassified_rank, $sub_rank_increment_pass2);
+        // FINAL Reclassified Rank uses Pass 2's increment, replacing Pass 1's
+        // point-based increment from the auto-bumped base rank.
+        $reclassified_rank = self::computeTargetRank($auto_base_rank, $sub_rank_increment_pass2);
 
         // -- STEP 6: Auto Sub Rank -------------------------------------
-        // Score-based increment (Steps 5a/5b above) and Auto Sub Rank
-        // (doctorate or prestigious award) are two SEPARATE mechanisms that
-        // both apply  -  never alternatives, and never blended into the Pass 1
-        // / Pass 2 weight lookups above. They are added together only here,
-        // on top of the already-final Reclassified Rank, to get Final Rank.
+        // Re-run with the final score only to keep the explanatory text fresh.
+        // Trigger decisions are not score-threshold based under JC01 s.2026.
         $auto_subrank = AutoSubrank::compute($pdo, $app, $kra4, $weighted_score_pass2, $sub_rank_increment_pass2);
         $auto_bump    = $auto_subrank['bonus_increment']; // +0, +1, or +2
-        $final_rank   = self::computeTargetRank($reclassified_rank, $auto_bump);
+        $final_rank   = $reclassified_rank;
 
         // -- Back-compat aliases for the rest of this method / DB persistence.
         // "weighted_score" / "sub_rank_increment" / "target_rank" keep meaning
@@ -154,7 +179,7 @@ class Orchestrator
         // existing callers/columns that read these keys are unaffected.
         $weighted_score      = $weighted_score_pass2;
         $sub_rank_increment  = $sub_rank_increment_pass2 + $auto_bump;
-        $bumped_base_rank    = $reclassified_rank; // kept for the code below that still references this name
+        $bumped_base_rank    = $auto_base_rank; // kept for the code below that still references this name
 
         // -- STEP 7: Self-assessment summary -------------------------
         $pending_docs   = array_merge(
@@ -225,6 +250,7 @@ class Orchestrator
             'weights_pass1'                => $weights_pass1,
             'weighted_score_pass1'         => $weighted_score_pass1,
             'sub_rank_increment_pass1'     => $sub_rank_increment_pass1,
+            'auto_bumped_base_rank'         => $auto_base_rank,
             'initial_reclassified_rank'    => $initial_reclassified_rank,
             'weights_pass2'                => $weights_pass2,
             'weighted_score_pass2'         => $weighted_score_pass2,
@@ -334,6 +360,44 @@ class Orchestrator
                 'title'      => $title,
                 'categories' => $unique_cats,
                 'message'    => "Document appears in multiple KRA categories  -  flag for manual review before scoring proceeds.",
+            ];
+        }
+        return $flags;
+    }
+
+    private static function checkPreviousUnsuccessfulReuse(\PDO $pdo, array $app): array
+    {
+        $flags = [];
+        $stmt = $pdo->prepare("
+            SELECT cur.original_filename, cur.file_size_bytes,
+                   prev_app.application_id AS previous_application_id,
+                   prev_cycle.cycle_name
+            FROM kra_submissions cur_sub
+            JOIN kra_evidence_files cur ON cur.submission_id = cur_sub.submission_id
+            JOIN kra_evidence_files prev ON LOWER(prev.original_filename) = LOWER(cur.original_filename)
+                 AND prev.file_size_bytes = cur.file_size_bytes
+            JOIN kra_submissions prev_sub ON prev_sub.submission_id = prev.submission_id
+            JOIN applications prev_app ON prev_app.application_id = prev_sub.application_id
+            LEFT JOIN cycles prev_cycle ON prev_cycle.cycle_id = prev_app.cycle_id
+            WHERE cur_sub.application_id = ?
+              AND prev_app.user_id = ?
+              AND prev_app.application_id <> ?
+              AND prev_app.status = 'admin_rejected'
+            GROUP BY cur.original_filename, cur.file_size_bytes, prev_app.application_id, prev_cycle.cycle_name
+            ORDER BY cur.original_filename ASC
+        ");
+        $app_id = (int)($app['application_id'] ?? 0);
+        $user_id = (int)($app['faculty_user_id'] ?? $app['user_id'] ?? 0);
+        if (!$app_id || !$user_id) return $flags;
+        $stmt->execute([$app_id, $user_id, $app_id]);
+        foreach ($stmt->fetchAll(\PDO::FETCH_ASSOC) as $row) {
+            $cycle = $row['cycle_name'] ?: 'a previous cycle';
+            $name = $row['original_filename'] ?: 'Uploaded evidence';
+            $flags[] = [
+                'type' => 'previous_unsuccessful_reuse',
+                'title' => $name,
+                'cycle_name' => $cycle,
+                'message' => "Evidence file \"{$name}\" was already used in an unsuccessful previous application ({$cycle}).",
             ];
         }
         return $flags;
@@ -511,7 +575,7 @@ class Orchestrator
                                     ?: trim(($faculty['first_name'] ?? '') . ' ' . ($faculty['last_name'] ?? '')),
             'employee_id'        => $faculty['employee_id'] ?? '',
             'current_rank'       => $faculty['current_rank'] ?? $faculty['rank'] ?? '',
-            'bumped_base_rank'   => $rank_calc['reclassified_rank'], // back-compat alias
+            'bumped_base_rank'   => $rank_calc['auto_bumped_base_rank'] ?? $rank_calc['reclassified_rank'], // back-compat alias
             'cycle_id'           => $app['cycle_id'] ?? null,
             'application_status' => $app['status'] ?? '',
             'kra_scores' => [
@@ -544,6 +608,7 @@ class Orchestrator
             'weight_row_pass1'             => $rank_calc['weights_pass1'],
             'weighted_score_pass1'         => $rank_calc['weighted_score_pass1'],
             'sub_rank_increment_pass1'     => $rank_calc['sub_rank_increment_pass1'],
+            'auto_bumped_base_rank'         => $rank_calc['auto_bumped_base_rank'] ?? $rank_calc['reclassified_rank'],
             'initial_reclassified_rank'    => $rank_calc['initial_reclassified_rank'],
             'weight_row_pass2'             => $rank_calc['weights_pass2'],
             'weighted_score_pass2'         => $rank_calc['weighted_score_pass2'],

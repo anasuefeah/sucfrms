@@ -5,199 +5,100 @@ require_once __DIR__ . '/../includes/functions.php';
 
 if (isLoggedIn()) { header('Location: ../index.php'); exit; }
 
-// Clear session if user clicked "Start Over"
 if (isset($_GET['clear'])) {
     unset($_SESSION['reset_email'], $_SESSION['reset_user_id'], $_SESSION['reset_name'], $_SESSION['reset_verified']);
     header('Location: forgot_password.php'); exit;
 }
 
-// -- Runtime migration: add OTP columns to password_resets --
 try { $pdo->query("SELECT otp_code FROM password_resets LIMIT 1"); }
 catch (\Exception $e) {
     $pdo->exec("ALTER TABLE password_resets
-        ADD COLUMN otp_code       VARCHAR(6)   DEFAULT NULL AFTER temp_password,
-        ADD COLUMN otp_expires_at DATETIME     DEFAULT NULL AFTER otp_code
+        ADD COLUMN otp_code       VARCHAR(6)  DEFAULT NULL AFTER temp_password,
+        ADD COLUMN otp_expires_at DATETIME    DEFAULT NULL AFTER otp_code
     ");
 }
 
-$step  = 'request';   // request | verify | reset | done
+$step  = 'request';
 $error = '';
 
-// --------------------------------------------------------------
-// Helper: generate a 6-digit numeric OTP
-// --------------------------------------------------------------
 function generateOTP(): string {
     return str_pad((string)random_int(0, 999999), 6, '0', STR_PAD_LEFT);
 }
 
-// --------------------------------------------------------------
-// SMTP Configuration
-// --------------------------------------------------------------
-define('SMTP_HOST',     'smtp.gmail.com');
-define('SMTP_PORT',     587);
-define('SMTP_USER',     'sucfrms.chmsu@gmail.com');
-define('SMTP_PASS',     'wwbbxdrtpuammsma');
-define('SMTP_FROM',     'sucfrms.chmsu@gmail.com');
-define('SMTP_FROM_NAME','SUCFRMS - SUC');
+require_once __DIR__ . '/../config/smtp.php';
 
-// --------------------------------------------------------------
-// Helper: send OTP email via PHPMailer
-// --------------------------------------------------------------
 function sendOTPEmail(string $to_email, string $to_name, string $otp): bool {
-    $subject = 'SUCFRMS - Your Password Reset Code';
-
-    // Load PHPMailer directly
     $base = __DIR__ . '/../vendor/phpmailer/phpmailer/src/';
-    if (file_exists($base . 'PHPMailer.php')) {
-        require_once $base . 'Exception.php';
-        require_once $base . 'SMTP.php';
-        require_once $base . 'PHPMailer.php';
-
-        try {
-            $mail = new \PHPMailer\PHPMailer\PHPMailer(true);
-            $mail->isSMTP();
-            $mail->Host       = SMTP_HOST;
-            $mail->SMTPAuth   = true;
-            $mail->Username   = SMTP_USER;
-            $mail->Password   = SMTP_PASS;
-            $mail->SMTPSecure = \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_STARTTLS;
-            $mail->Port       = SMTP_PORT;
-            $mail->setFrom(SMTP_FROM, SMTP_FROM_NAME);
-            $mail->addAddress($to_email, $to_name);
-            $mail->isHTML(true);
-            $mail->Subject = $subject;
-            $mail->Body    = emailTemplate($to_name, $otp);
-            $mail->AltBody = "Hello $to_name,\n\nYour password reset code is: $otp\n\nThis code expires in 15 minutes.\n\n- SUCFRMS";
-            $mail->send();
-            return true;
-        } catch (\Exception $e) {
-            error_log('PHPMailer error: ' . $e->getMessage());
-            return false;
-        }
+    if (!file_exists($base . 'PHPMailer.php')) {
+        error_log('PHPMailer not found.');
+        return false;
     }
-
-    // PHPMailer not available - cannot send
-    error_log('PHPMailer not found. Please install it in vendor/phpmailer/phpmailer/src/');
-    return false;
+    require_once $base . 'Exception.php';
+    require_once $base . 'SMTP.php';
+    require_once $base . 'PHPMailer.php';
+    try {
+        $mail = new \PHPMailer\PHPMailer\PHPMailer(true);
+        $mail->isSMTP();
+        $mail->Host       = SMTP_HOST;
+        $mail->SMTPAuth   = true;
+        $mail->Username   = SMTP_USER;
+        $mail->Password   = SMTP_PASS;
+        $mail->SMTPSecure = \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_STARTTLS;
+        $mail->Port       = SMTP_PORT;
+        $mail->setFrom(SMTP_FROM, SMTP_FROM_NAME);
+        $mail->addAddress($to_email, $to_name);
+        $mail->isHTML(true);
+        $mail->Subject = 'SUCFRMS - Your Password Reset Code';
+        $mail->Body    = "<p>Hello <strong>" . htmlspecialchars($to_name) . "</strong>,</p>"
+                       . "<p>Your 6-digit reset code is: <strong style='letter-spacing:4px;font-size:1.2em;'>{$otp}</strong></p>"
+                       . "<p>This code expires in 15 minutes. Do not share it with anyone.</p>";
+        $mail->AltBody = "Hello {$to_name},\n\nYour reset code: {$otp}\n\nExpires in 15 minutes.\n\n- SUCFRMS";
+        $mail->send();
+        return true;
+    } catch (\Exception $e) {
+        error_log('PHPMailer: ' . $e->getMessage());
+        return false;
+    }
 }
 
-// --------------------------------------------------------------
-// HTML email template
-// --------------------------------------------------------------
-function emailTemplate(string $name, string $otp): string {
-    return "
-<!DOCTYPE html>
-<html>
-<head><meta charset='UTF-8'></head>
-<body style='margin:0;padding:0;background:#f1f5f9;font-family:Arial,sans-serif;'>
-  <table width='100%' cellpadding='0' cellspacing='0' style='background:#f1f5f9;padding:40px 0;'>
-    <tr><td align='center'>
-      <table width='480' cellpadding='0' cellspacing='0' style='background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.08);'>
-
-        <!-- Header -->
-        <tr><td style='background:#1a3a6b;padding:28px 32px;text-align:center;'>
-          <h2 style='margin:0;color:#fff;font-size:20px;letter-spacing:1px;'>SUCFRMS</h2>
-          <p style='margin:4px 0 0;color:#81c784;font-size:13px;'>Password Reset Request</p>
-        </td></tr>
-
-        <!-- Body -->
-        <tr><td style='padding:32px;'>
-          <p style='margin:0 0 12px;color:#334155;font-size:15px;'>Hello, <strong>" . htmlspecialchars($name) . "</strong>!</p>
-          <p style='margin:0 0 24px;color:#64748b;font-size:14px;line-height:1.6;'>
-            We received a request to reset your password. Use the confirmation code below to continue.
-            This code expires in <strong>15 minutes</strong>.
-          </p>
-
-          <!-- OTP Box -->
-          <div style='background:#eff6ff;border:2px dashed #1a3a6b;border-radius:10px;padding:24px;text-align:center;margin-bottom:24px;'>
-            <p style='margin:0 0 6px;font-size:12px;color:#64748b;text-transform:uppercase;letter-spacing:1px;'>Your Confirmation Code</p>
-            <span style='font-size:42px;font-weight:700;letter-spacing:10px;color:#1a3a6b;font-family:monospace;'>" . htmlspecialchars($otp) . "</span>
-          </div>
-
-          <div style='background:#f1f5f9;border-left:4px solid #475569;border-radius:4px;padding:12px 16px;margin-bottom:24px;font-size:13px;color:#334155;'>
-            <strong>? Security tip:</strong> Never share this code with anyone. SUCFRMS staff will never ask for it.
-          </div>
-
-          <p style='margin:0;color:#94a3b8;font-size:12px;line-height:1.6;'>
-            If you did not request a password reset, please ignore this email or contact your administrator immediately.
-          </p>
-        </td></tr>
-
-        <!-- Footer -->
-        <tr><td style='background:#f8fafc;padding:16px 32px;text-align:center;border-top:1px solid #e2e8f0;'>
-          <p style='margin:0;color:#94a3b8;font-size:12px;'>© " . date('Y') . " SUCFRMS. All rights reserved.</p>
-        </td></tr>
-
-      </table>
-    </td></tr>
-  </table>
-</body>
-</html>";
-}
-
-// --------------------------------------------------------------
-// STEP 1 - Submit email ? send OTP
-// --------------------------------------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
     if ($_POST['action'] === 'send_otp') {
         $email = trim($_POST['email'] ?? '');
         if (!$email) {
             $error = 'Please enter your email address.';
-            $step  = 'request';
         } else {
             $stmt = $pdo->prepare("SELECT * FROM users WHERE email = ? AND status = 'active' LIMIT 1");
             $stmt->execute([$email]);
             $user = $stmt->fetch();
-
             if ($user) {
                 $otp     = generateOTP();
-                $expires = date('Y-m-d H:i:s', time() + 900); // 15 min, local time
-
-                // Persist to DB
-                $pdo->prepare("
-                    INSERT INTO password_resets (user_id, otp_code, otp_expires_at, status, requested_at)
+                $expires = date('Y-m-d H:i:s', time() + 900);
+                $pdo->prepare("INSERT INTO password_resets (user_id, otp_code, otp_expires_at, status, requested_at)
                     VALUES (?, ?, ?, 'pending', NOW())
-                    ON DUPLICATE KEY UPDATE
-                        otp_code       = VALUES(otp_code),
-                        otp_expires_at = VALUES(otp_expires_at),
-                        temp_password  = NULL,
-                        status         = 'pending',
-                        requested_at   = NOW()
-                ")->execute([$user['user_id'], $otp, $expires]);
-
+                    ON DUPLICATE KEY UPDATE otp_code=VALUES(otp_code), otp_expires_at=VALUES(otp_expires_at),
+                    temp_password=NULL, status='pending', requested_at=NOW()")
+                    ->execute([$user['user_id'], $otp, $expires]);
                 $sent = sendOTPEmail($user['email'], $user['full_name'], $otp);
-
                 if ($sent) {
-                    // Store everything in session  -  OTP included  -  so double-submits don't
-                    // overwrite the DB with a different code after the email has gone out
                     $_SESSION['reset_email']   = $user['email'];
                     $_SESSION['reset_user_id'] = $user['user_id'];
                     $_SESSION['reset_name']    = $user['full_name'];
-                    $_SESSION['reset_otp']     = $otp;          // source of truth for verification
-                    $_SESSION['reset_expires'] = time() + 900;  // Unix timestamp, immune to TZ issues
+                    $_SESSION['reset_otp']     = $otp;
+                    $_SESSION['reset_expires'] = time() + 900;
                     logAudit($pdo, $user['user_id'], 'Password Reset OTP Sent', 'OTP sent to ' . $user['email']);
-                    // PRG: redirect to prevent browser re-submit on refresh
-                    header('Location: forgot_password.php');
-                    exit;
+                    header('Location: forgot_password.php'); exit;
                 } else {
-                    $error = 'Email could not be sent. Please check SMTP settings (SMTP_USER, SMTP_PASS) and that PHPMailer is installed.';
-                    $step  = 'request';
+                    $error = 'Email could not be sent. Please check SMTP settings.';
                 }
             } else {
                 $error = 'No active account found with that email address.';
-                $step  = 'request';
             }
         }
-    }
 
-    // ----------------------------------------------------------
-    // STEP 2  -  Verify OTP
-    // ----------------------------------------------------------
-    elseif ($_POST['action'] === 'verify_otp') {
+    } elseif ($_POST['action'] === 'verify_otp') {
         $uid  = (int)($_SESSION['reset_user_id'] ?? -1);
         $code = str_pad(preg_replace('/\D/', '', trim($_POST['otp'] ?? '')), 6, '0', STR_PAD_LEFT);
-
         if ($uid <= 0 || !$code) {
             $error = 'Session expired. Please start over.';
             $step  = 'request';
@@ -206,7 +107,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         } else {
             $session_otp     = $_SESSION['reset_otp']     ?? '';
             $session_expires = (int)($_SESSION['reset_expires'] ?? 0);
-
             if (time() > $session_expires) {
                 $error = 'Your code has expired. Please request a new one.';
                 $step  = 'request';
@@ -216,27 +116,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $error = 'Invalid code. Please check your email and try again.';
                 $step  = 'verify';
             } else {
-                // Valid  -  mark verified in both session and DB
-                $pdo->prepare("UPDATE password_resets SET status='verified' WHERE user_id=?")
-                    ->execute([$uid]);
+                $pdo->prepare("UPDATE password_resets SET status='verified' WHERE user_id=?")->execute([$uid]);
                 $_SESSION['reset_verified'] = true;
-                unset($_SESSION['reset_otp']); // no longer needed
-                // PRG redirect
-                header('Location: forgot_password.php');
-                exit;
+                unset($_SESSION['reset_otp']);
+                header('Location: forgot_password.php'); exit;
             }
         }
-    }
 
-    // ----------------------------------------------------------
-    // STEP 3 - Set new password
-    // ----------------------------------------------------------
-    elseif ($_POST['action'] === 'reset_password') {
+    } elseif ($_POST['action'] === 'reset_password') {
         $uid      = (int)($_SESSION['reset_user_id'] ?? 0);
         $verified = $_SESSION['reset_verified'] ?? false;
         $pw1      = $_POST['password']  ?? '';
         $pw2      = $_POST['password2'] ?? '';
-
         if (!$uid || !$verified) {
             $error = 'Session expired. Please start over.';
             $step  = 'request';
@@ -248,18 +139,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $error = 'Passwords do not match.';
             $step  = 'reset';
         } else {
-            $hash = password_hash($pw1, PASSWORD_DEFAULT);
-            $pdo->prepare("UPDATE users SET password=? WHERE user_id=?")->execute([$hash, $uid]);
+            $pdo->prepare("UPDATE users SET password=? WHERE user_id=?")->execute([password_hash($pw1, PASSWORD_DEFAULT), $uid]);
             $pdo->prepare("DELETE FROM password_resets WHERE user_id=?")->execute([$uid]);
-            logAudit($pdo, $uid, 'Password Reset Complete', 'User reset password via email OTP.');
-
+            logAudit($pdo, $uid, 'Password Reset Complete', 'User reset password via OTP.');
             unset($_SESSION['reset_email'], $_SESSION['reset_user_id'], $_SESSION['reset_name'], $_SESSION['reset_verified']);
             $step = 'done';
         }
-    }
 
-    // -- Resend OTP ------------------------------------------
-    elseif ($_POST['action'] === 'resend_otp') {
+    } elseif ($_POST['action'] === 'resend_otp') {
         $uid = (int)($_SESSION['reset_user_id'] ?? 0);
         if ($uid) {
             $u = $pdo->prepare("SELECT full_name, email FROM users WHERE user_id=?");
@@ -271,19 +158,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 $pdo->prepare("UPDATE password_resets SET otp_code=?, otp_expires_at=?, status='pending' WHERE user_id=?")
                     ->execute([$otp, $expires, $uid]);
                 sendOTPEmail($user['email'], $user['full_name'], $otp);
-                // Keep session in sync with new OTP
                 $_SESSION['reset_otp']     = $otp;
                 $_SESSION['reset_expires'] = time() + 900;
-                logAudit($pdo, $uid, 'Password Reset OTP Resent', 'OTP resent to ' . $user['email']);
+                logAudit($pdo, $uid, 'OTP Resent', 'OTP resent to ' . $user['email']);
             }
         }
-        // PRG redirect
-        header('Location: forgot_password.php');
-        exit;
+        header('Location: forgot_password.php'); exit;
     }
 
 } else {
-    // Restore step from session
     if (!empty($_SESSION['reset_verified'])) {
         $step = 'reset';
     } elseif (array_key_exists('reset_user_id', $_SESSION)) {
@@ -301,298 +184,282 @@ if (!empty($_SESSION['reset_email'])) {
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <meta name="mobile-web-app-capable" content="yes">
-    <meta name="theme-color" content="#1a3a6b">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SUCFRMS | Forgot Password</title>
     <link href="../assets/vendor/bootstrap-icons/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="../assets/css/app.css">
     <style>
-        .otp-input-group { display:flex; gap:8px; justify-content:center; }
-        .otp-digit {
-            width:44px; height:54px; text-align:center; font-size:1.4rem; font-weight:700;
-            border:2px solid #cbd5e1; border-radius:10px; background:#f8fafc;
-            color:#1a3a6b; transition:border-color .2s, box-shadow .2s;
-            flex-shrink:0;
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: 'Segoe UI', sans-serif;
+            background: linear-gradient(rgba(0,0,0,0.55), rgba(0,0,0,0.55)),
+                        url('../assets/images/login_bg.jpg') center center / cover no-repeat fixed;
+            padding: 1rem;
         }
-        .otp-digit:focus { border-color:#1a3a6b; box-shadow:0 0 0 3px rgba(30,77,140,.15); outline:none; }
-        .strength-bar { height:4px; border-radius:2px; transition:width .3s, background .3s; }
+        body::before, body::after { display: none !important; content: none !important; }
+
+        .fp-wrap { width: 100%; max-width: 340px; }
+
+        .fp-box {
+            background: #fff;
+            border-radius: 0;
+            padding: 1.5rem 1.5rem 1.25rem;
+            box-shadow: 0 2px 16px rgba(0,0,0,0.08);
+            border: 1px solid #e2e8f0;
+            text-align: center;
+        }
+
+        .fp-box img.logo {
+            width: 58px; height: 58px; object-fit: contain;
+            border-radius: 50%; margin: 0 auto 0.5rem; display: block;
+        }
+        .fp-box h5 { color: #1a3a6b; font-size: 0.95rem; font-weight: 700; line-height: 1.3; margin-bottom: 0.2rem; }
+        .fp-subtitle { color: #94a3b8; font-size: 0.65rem; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 1rem; }
+        .fp-divider  { border: none; border-top: 1px solid #e2e8f0; margin-bottom: 1rem; }
+
+        .fp-step-title { font-size: 0.88rem; font-weight: 700; color: #1e293b; text-align: left; margin-bottom: 0.25rem; }
+        .fp-step-sub   { font-size: 0.75rem; color: #64748b; line-height: 1.6; text-align: left; margin-bottom: 1rem; }
+
+        .field-label {
+            display: block; text-align: left;
+            font-size: 0.76rem; font-weight: 600; color: #1a3a6b; margin-bottom: 0.25rem;
+        }
+        .field-wrap {
+            display: flex; align-items: stretch;
+            border: 1.5px solid #dbeafe; border-radius: 0;
+            overflow: hidden; background: #fff; margin-bottom: 0.75rem;
+        }
+        .field-wrap:focus-within { border-color: #1e4d8c; box-shadow: 0 0 0 3px rgba(30,77,140,0.15); }
+        .field-icon {
+            display: flex; align-items: center; justify-content: center;
+            padding: 0 0.6rem; background: #fff;
+            border-right: 1.5px solid #e2e8f0; color: #1e4d8c; font-size: 0.9rem; flex-shrink: 0;
+        }
+        .field-wrap input {
+            flex: 1; min-width: 0; border: none; outline: none;
+            background: #fff; color: #1e293b; font-size: 0.85rem;
+            padding: 0.5rem 0.6rem; font-family: inherit;
+        }
+        .field-wrap input::placeholder { color: #94a3b8; }
+        .eye-btn {
+            display: flex; align-items: center; padding: 0 0.6rem;
+            background: #fff; border: none; border-left: 1.5px solid #e2e8f0;
+            color: #1a3a6b; cursor: pointer; font-size: 0.9rem;
+        }
+        .eye-btn:hover { background: #f8fafc; }
+
+        .btn-main {
+            width: 100%; background: #1e4d8c; color: #fff;
+            border: none; padding: 0.55rem; border-radius: 0;
+            font-size: 0.875rem; font-weight: 600; letter-spacing: 0.01em;
+            cursor: pointer; transition: background 0.2s; font-family: inherit;
+        }
+        .btn-main:hover { background: #1a5276; }
+
+        .fp-link {
+            display: block; margin-top: 0.85rem; font-size: 0.75rem;
+            color: #64748b; text-decoration: none; text-align: center;
+        }
+        .fp-link:hover { color: #1e4d8c; }
+
+        .fp-alert {
+            background: #f8fafc; border: 1px solid #94a3b8; color: #1a3a6b;
+            border-radius: 0; padding: 0.4rem 0.65rem; font-size: 0.78rem;
+            margin-bottom: 0.85rem; text-align: left;
+        }
+
+        .otp-row { display: flex; gap: 6px; justify-content: center; margin-bottom: 0.75rem; }
+        .otp-digit {
+            width: 42px; height: 50px; text-align: center;
+            font-size: 1.35rem; font-weight: 700;
+            border: 1.5px solid #dbeafe; border-radius: 0;
+            background: #fff; color: #1a3a6b; outline: none; font-family: inherit;
+            transition: border-color .2s, box-shadow .2s;
+        }
+        .otp-digit:focus { border-color: #1e4d8c; box-shadow: 0 0 0 3px rgba(30,77,140,0.15); }
+
+        .fp-actions {
+            display: flex; align-items: center; justify-content: center;
+            gap: 0.75rem; margin-top: 0.75rem;
+        }
+        .fp-actions a, .fp-actions button {
+            color: #64748b; background: none; border: none; cursor: pointer;
+            font-size: 0.75rem; font-family: inherit; text-decoration: none; padding: 0;
+        }
+        .fp-actions a:hover, .fp-actions button:hover { color: #1e4d8c; }
+
+        .strength-bar { height: 3px; border-radius: 0; transition: width .3s, background .3s; }
+
+        @keyframes circleIn { from { stroke-dashoffset: 214; } to { stroke-dashoffset: 0; } }
+        @keyframes checkIn  { from { stroke-dashoffset: 50;  } to { stroke-dashoffset: 0; } }
+        @keyframes fadeUp   { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }
     </style>
 </head>
-<body style="background:#ffffff; min-height:100vh; position:relative; overflow:hidden;"
-      class="d-flex align-items-center justify-content-center min-vh-100">
+<body>
 
-<div style="position:fixed;width:600px;height:600px;border-radius:50%;background:radial-gradient(circle,rgba(30,77,140,0.08) 0%,transparent 70%);top:-150px;right:-150px;pointer-events:none;z-index:0;"></div>
-<div style="position:fixed;width:500px;height:500px;border-radius:50%;background:radial-gradient(circle,rgba(34,197,94,0.07) 0%,transparent 70%);bottom:-100px;left:-100px;pointer-events:none;z-index:0;"></div>
+<div class="fp-wrap">
+<div class="fp-box">
 
-<div class="container" style="position:relative;z-index:1;">
-    <div class="row justify-content-center">
-        <div class="col-md-5 col-lg-4" style="min-width:340px;max-width:400px;">
-            <div style="background:rgba(255,255,255,0.97);border-radius:16px;padding:2rem 1.5rem;box-shadow:0 8px 40px rgba(30,77,140,0.13);border:1px solid #e2e8f0;text-align:center;position:relative;overflow:visible;">
-                <div style="position:absolute;top:0;left:0;right:0;height:4px;background:linear-gradient(90deg,#1a3a6b,#1a3a6b,#1a3a6b);border-radius:16px 16px 0 0;overflow:hidden;"></div>
+    <img class="logo" src="../assets/images/logo.jpg" alt="Logo">
+    <h5>SUC Faculty Reclassification Management System</h5>
+    <p class="fp-subtitle">SUCFRMS</p>
+    <hr class="fp-divider">
 
-                <?php if ($error): ?>
-                <div class="alert alert-danger py-2 small text-start mb-3">
-                    <i class="bi bi-exclamation-circle me-1"></i><?= sanitize($error) ?>
-                </div>
-                <?php endif; ?>
+    <?php if ($error): ?>
+    <div class="fp-alert"><i class="bi bi-exclamation-circle" style="margin-right:5px;"></i><?= sanitize($error) ?></div>
+    <?php endif; ?>
 
-                <!-- ------------------------------------------ -->
-                <!-- STEP 1 - Request Form                      -->
-                <!-- ------------------------------------------ -->
-                <?php if ($step === 'request'): ?>
-                <div style="width:64px;height:64px;border-radius:50%;background:#eff6ff;display:flex;align-items:center;justify-content:center;margin:0 auto 1rem;">
-                    <i class="bi bi-envelope-at-fill" style="font-size:1.75rem;color:#1a3a6b;"></i>
-                </div>
-                <h5 class="fw-bold mb-1" style="color:#1e293b;">Forgot Password</h5>
-                <p style="color:#64748b;font-size:0.82rem;margin-bottom:1.25rem;">
-                    Enter your registered email address and we'll send you a 6-digit confirmation code.
-                </p>
-
-                <form method="POST" novalidate>
-                    <input type="hidden" name="action" value="send_otp">
-                    <div class="mb-3 text-start">
-                        <label class="form-label small fw-semibold" style="color:#1a3a6b;">Email Address</label>
-                        <div style="display:flex;border:1px solid #cbd5e1;border-radius:8px;overflow:hidden;background:#f8fafc;">
-                            <span style="display:flex;align-items:center;padding:0 0.75rem;background:#f1f5f9;border-right:1px solid #cbd5e1;color:#1a3a6b;">
-                                <i class="bi bi-envelope"></i>
-                            </span>
-                            <input type="email" name="email"
-                                   style="flex:1;min-width:0;border:none;outline:none;background:#f8fafc;color:#1e293b;padding:0.55rem 0.75rem;font-size:0.95rem;"
-                                   placeholder="your.email@university.edu.ph" required
-                                   value="<?= htmlspecialchars($_SESSION['reset_email'] ?? '') ?>">
-                        </div>
-                    </div>
-                    <button type="submit"
-                            style="width:100%;background:#1a3a6b;color:#fff;border:none;padding:0.65rem;border-radius:8px;font-size:0.9rem;font-weight:700;cursor:pointer;">
-                        <i class="bi bi-send me-1"></i>Send Confirmation Code
-                    </button>
-                </form>
-
-                <p class="mt-3 mb-0" style="font-size:0.82rem;">
-                    <a href="login.php" style="color:#64748b;"><i class="bi bi-arrow-left me-1"></i>Back to Login</a>
-                </p>
-
-
-                <!-- ------------------------------------------ -->
-                <!-- STEP 2 - OTP Verify                        -->
-                <!-- ------------------------------------------ -->
-                <?php elseif ($step === 'verify'): ?>
-                <div style="width:64px;height:64px;border-radius:50%;background:#eff6ff;display:flex;align-items:center;justify-content:center;margin:0 auto 1rem;">
-                    <i class="bi bi-shield-lock-fill" style="font-size:1.75rem;color:#1a3a6b;"></i>
-                </div>
-                <h5 class="fw-bold mb-1" style="color:#1e293b;">Check Your Email</h5>
-                <p style="color:#64748b;font-size:0.82rem;margin-bottom:1.5rem;">
-                    We sent a 6-digit code to<br>
-                    <strong style="color:#1a3a6b;"><?= htmlspecialchars($masked_email) ?></strong><br>
-                    <span style="font-size:0.75rem;">It expires in 15 minutes.</span>
-                </p>
-
-                <form method="POST" id="otpForm" novalidate>
-                    <input type="hidden" name="action" value="verify_otp">
-                    <input type="hidden" name="otp" id="otpHidden">
-
-                    <div class="otp-input-group mb-3" id="otpBoxes">
-                        <?php for ($i = 0; $i < 6; $i++): ?>
-                        <input type="text" maxlength="1" class="otp-digit"
-                               inputmode="numeric" pattern="[0-9]"
-                               autocomplete="<?= $i === 0 ? 'one-time-code' : 'off' ?>"
-                               id="d<?= $i ?>">
-                        <?php endfor; ?>
-                    </div>
-
-                    <button type="submit" id="verifyBtn"
-                            style="width:100%;background:#1a3a6b;color:#fff;border:none;padding:0.65rem;border-radius:8px;font-size:0.9rem;font-weight:700;cursor:pointer;">
-                        <i class="bi bi-check-circle me-1"></i>Confirm Code
-                    </button>
-                </form>
-
-                <div class="mt-3">
-                    <form method="POST" style="display:inline;">
-                        <input type="hidden" name="action" value="resend_otp">
-                        <button type="submit" class="btn btn-link btn-sm p-0" style="color:#64748b;font-size:0.8rem;">
-                            <i class="bi bi-arrow-clockwise me-1"></i>Resend Code
-                        </button>
-                    </form>
-                    &nbsp;&middot;&nbsp;
-                    <a href="forgot_password.php?clear=1" style="color:#64748b;font-size:0.8rem;">
-                        <i class="bi bi-x-circle me-1"></i>Start Over
-                    </a>
-                </div>
-
-                <!-- Countdown timer -->
-                <p id="countdown" style="font-size:0.75rem;color:#94a3b8;margin-top:0.5rem;"></p>
-
-
-                <!-- ------------------------------------------ -->
-                <!-- STEP 3 - New Password Form                 -->
-                <!-- ------------------------------------------ -->
-                <?php elseif ($step === 'reset'): ?>
-                <div style="width:64px;height:64px;border-radius:50%;background:#eff6ff;display:flex;align-items:center;justify-content:center;margin:0 auto 1rem;">
-                    <i class="bi bi-key-fill" style="font-size:1.75rem;color:#1a3a6b;"></i>
-                </div>
-                <h5 class="fw-bold mb-1" style="color:#1e293b;">Set New Password</h5>
-                <p style="color:#64748b;font-size:0.82rem;margin-bottom:1.25rem;">
-                    Create a strong password for your account.
-                </p>
-
-                <form method="POST" novalidate>
-                    <input type="hidden" name="action" value="reset_password">
-
-                    <div class="mb-3 text-start">
-                        <label class="form-label small fw-semibold" style="color:#1a3a6b;">New Password</label>
-                        <div style="display:flex;border:1px solid #cbd5e1;border-radius:8px;overflow:hidden;background:#f8fafc;">
-                            <span style="display:flex;align-items:center;padding:0 0.75rem;background:#f1f5f9;border-right:1px solid #cbd5e1;color:#1a3a6b;">
-                                <i class="bi bi-lock"></i>
-                            </span>
-                            <input type="password" name="password" id="pw1" required minlength="8"
-                                   style="flex:1;min-width:0;border:none;outline:none;background:#f8fafc;color:#1e293b;padding:0.55rem 0.75rem;font-size:0.95rem;"
-                                   placeholder="Min. 8 characters" oninput="checkStrength(this.value)">
-                            <button type="button" onclick="toggleVis('pw1','eyeIcon1')"
-                                    style="border:none;background:transparent;padding:0 0.75rem;color:#94a3b8;cursor:pointer;">
-                                <i id="eyeIcon1" class="bi bi-eye"></i>
-                            </button>
-                        </div>
-                        <div style="background:#e2e8f0;border-radius:2px;height:4px;margin-top:6px;">
-                            <div id="strengthBar" class="strength-bar" style="width:0;background:#334155;"></div>
-                        </div>
-                        <small id="strengthLabel" style="font-size:0.72rem;color:#94a3b8;"></small>
-                    </div>
-
-                    <div class="mb-3 text-start">
-                        <label class="form-label small fw-semibold" style="color:#1a3a6b;">Confirm Password</label>
-                        <div style="display:flex;border:1px solid #cbd5e1;border-radius:8px;overflow:hidden;background:#f8fafc;">
-                            <span style="display:flex;align-items:center;padding:0 0.75rem;background:#f1f5f9;border-right:1px solid #cbd5e1;color:#1a3a6b;">
-                                <i class="bi bi-lock-fill"></i>
-                            </span>
-                            <input type="password" name="password2" id="pw2" required
-                                   style="flex:1;min-width:0;border:none;outline:none;background:#f8fafc;color:#1e293b;padding:0.55rem 0.75rem;font-size:0.95rem;"
-                                   placeholder="Re-enter password">
-                            <button type="button" onclick="toggleVis('pw2','eyeIcon2')"
-                                    style="border:none;background:transparent;padding:0 0.75rem;color:#94a3b8;cursor:pointer;">
-                                <i id="eyeIcon2" class="bi bi-eye"></i>
-                            </button>
-                        </div>
-                    </div>
-
-                    <button type="submit"
-                            style="width:100%;background:#1a3a6b;color:#fff;border:none;padding:0.65rem;border-radius:8px;font-size:0.9rem;font-weight:700;cursor:pointer;">
-                        <i class="bi bi-check-lg me-1"></i>Reset Password
-                    </button>
-                </form>
-
-
-                <!-- ------------------------------------------ -->
-                <!-- STEP 4 - Done                              -->
-                <!-- ------------------------------------------ -->
-                <?php elseif ($step === 'done'): ?>
-                <div style="width:72px;height:72px;border-radius:50%;background:#eff6ff;display:flex;align-items:center;justify-content:center;margin:0 auto 1rem;">
-                    <i class="bi bi-check-circle-fill" style="font-size:2rem;color:#1a3a6b;"></i>
-                </div>
-                <h5 class="fw-bold mb-1" style="color:#1e293b;">Password Updated!</h5>
-                <p style="color:#64748b;font-size:0.85rem;margin-bottom:1.5rem;">
-                    Your password has been successfully reset.<br>You can now log in with your new password.
-                </p>
-                <a href="login.php" class="btn w-100 fw-bold"
-                   style="background:#1a3a6b;color:#fff;border:none;border-radius:8px;padding:0.6rem;font-size:0.9rem;">
-                    <i class="bi bi-box-arrow-in-right me-2"></i>Go to Login
-                </a>
-                <?php endif; ?>
-
+    <?php if ($step === 'request'): ?>
+        <p class="fp-step-title">Forgot Password</p>
+        <p class="fp-step-sub">Enter your registered email address. We will send you a 6-digit verification code.</p>
+        <form method="POST" novalidate>
+            <input type="hidden" name="action" value="send_otp">
+            <label class="field-label">Email Address</label>
+            <div class="field-wrap">
+                <span class="field-icon"><i class="bi bi-envelope"></i></span>
+                <input type="email" name="email" placeholder="your.email@university.edu.ph"
+                       value="<?= htmlspecialchars($_SESSION['reset_email'] ?? '') ?>"
+                       autocomplete="email" required>
             </div>
+            <button type="submit" class="btn-main">SEND CONFIRMATION CODE</button>
+        </form>
+        <a href="login.php" class="fp-link">&#8592; Back to Login</a>
+
+    <?php elseif ($step === 'verify'): ?>
+        <p class="fp-step-title">Check Your Email</p>
+        <p class="fp-step-sub">We sent a 6-digit code to <strong style="color:#1a3a6b;"><?= htmlspecialchars($masked_email) ?></strong>. It expires in 15 minutes.</p>
+        <form method="POST" id="otpForm" novalidate>
+            <input type="hidden" name="action" value="verify_otp">
+            <input type="hidden" name="otp" id="otpHidden">
+            <div class="otp-row">
+                <?php for ($i = 0; $i < 6; $i++): ?>
+                <input type="text" maxlength="1" class="otp-digit" inputmode="numeric" pattern="[0-9]"
+                       autocomplete="<?= $i === 0 ? 'one-time-code' : 'off' ?>" id="d<?= $i ?>">
+                <?php endfor; ?>
+            </div>
+            <button type="submit" class="btn-main">CONFIRM CODE</button>
+        </form>
+        <div class="fp-actions">
+            <form method="POST" style="display:inline;">
+                <input type="hidden" name="action" value="resend_otp">
+                <button type="submit"><i class="bi bi-arrow-clockwise" style="margin-right:3px;"></i>Resend</button>
+            </form>
+            <span style="color:#e2e8f0;">|</span>
+            <a href="forgot_password.php?clear=1"><i class="bi bi-x-circle" style="margin-right:3px;"></i>Start Over</a>
         </div>
-    </div>
+        <p id="countdown" style="font-size:0.72rem;color:#94a3b8;margin-top:0.5rem;text-align:center;"></p>
+
+    <?php elseif ($step === 'reset'): ?>
+        <p class="fp-step-title">Set New Password</p>
+        <p class="fp-step-sub">Create a strong password for your account.</p>
+        <form method="POST" novalidate>
+            <input type="hidden" name="action" value="reset_password">
+            <label class="field-label">New Password</label>
+            <div class="field-wrap">
+                <span class="field-icon"><i class="bi bi-lock"></i></span>
+                <input type="password" name="password" id="pw1" required minlength="8"
+                       placeholder="Min. 8 characters" oninput="checkStrength(this.value)">
+                <button type="button" class="eye-btn" onclick="toggleVis('pw1','ei1')"><i id="ei1" class="bi bi-eye"></i></button>
+            </div>
+            <div style="background:#e2e8f0;height:3px;margin:-0.5rem 0 0.5rem;">
+                <div id="strengthBar" class="strength-bar" style="width:0;background:#1a3a6b;"></div>
+            </div>
+            <small id="strengthLabel" style="display:block;text-align:left;font-size:0.7rem;color:#94a3b8;margin-bottom:0.6rem;"></small>
+            <label class="field-label">Confirm Password</label>
+            <div class="field-wrap">
+                <span class="field-icon"><i class="bi bi-lock-fill"></i></span>
+                <input type="password" name="password2" id="pw2" required placeholder="Re-enter password">
+                <button type="button" class="eye-btn" onclick="toggleVis('pw2','ei2')"><i id="ei2" class="bi bi-eye"></i></button>
+            </div>
+            <button type="submit" class="btn-main">RESET PASSWORD</button>
+        </form>
+
+    <?php elseif ($step === 'done'): ?>
+        <div style="text-align:center;padding:0.5rem 0 1rem;">
+            <svg viewBox="0 0 80 80" width="64" height="64" style="display:block;margin:0 auto 1rem;overflow:visible;">
+                <circle cx="40" cy="40" r="34" fill="none" stroke="#e2e8f0" stroke-width="5"/>
+                <circle cx="40" cy="40" r="34" fill="none" stroke="#1e4d8c" stroke-width="5"
+                        stroke-linecap="round" stroke-dasharray="214" stroke-dashoffset="214"
+                        transform="rotate(-90 40 40)"
+                        style="animation:circleIn 0.65s ease 0.05s forwards;"/>
+                <polyline points="22,41 34,53 58,28" fill="none" stroke="#1e4d8c" stroke-width="5"
+                          stroke-linecap="round" stroke-linejoin="round"
+                          stroke-dasharray="50" stroke-dashoffset="50"
+                          style="animation:checkIn 0.4s ease 0.65s forwards;"/>
+            </svg>
+            <p class="fp-step-title" style="text-align:center;animation:fadeUp 0.3s ease 0.9s both;opacity:0;">Password Updated</p>
+            <p class="fp-step-sub"  style="text-align:center;margin-top:4px;animation:fadeUp 0.3s ease 1.0s both;opacity:0;margin-bottom:0;">
+                Your password has been reset.<br>You may now sign in.
+            </p>
+        </div>
+        <a href="login.php" class="btn-main"
+           style="display:block;text-decoration:none;text-align:center;animation:fadeUp 0.3s ease 1.1s both;opacity:0;">
+            SIGN IN
+        </a>
+    <?php endif; ?>
+
+</div>
 </div>
 
-<script src="../assets/js/app.js"></script>
 <script>
-// -- OTP digit boxes ------------------------------------------
 (function () {
-    const digits  = document.querySelectorAll('.otp-digit');
-    const hidden  = document.getElementById('otpHidden');
-    const form    = document.getElementById('otpForm');
+    const digits = document.querySelectorAll('.otp-digit');
+    const hidden = document.getElementById('otpHidden');
+    const form   = document.getElementById('otpForm');
     if (!digits.length) return;
-
     digits.forEach((el, idx) => {
-        el.addEventListener('input', e => {
-            el.value = el.value.replace(/\D/g, '').slice(-1);
-            if (el.value && idx < digits.length - 1) digits[idx + 1].focus();
-            syncHidden();
+        el.addEventListener('input', () => {
+            el.value = el.value.replace(/\D/g,'').slice(-1);
+            if (el.value && idx < digits.length - 1) digits[idx+1].focus();
+            sync();
         });
         el.addEventListener('keydown', e => {
-            if (e.key === 'Backspace' && !el.value && idx > 0) {
-                digits[idx - 1].focus();
-                digits[idx - 1].value = '';
-                syncHidden();
-            }
+            if (e.key === 'Backspace' && !el.value && idx > 0) { digits[idx-1].focus(); digits[idx-1].value=''; sync(); }
         });
         el.addEventListener('paste', e => {
             e.preventDefault();
-            const text = (e.clipboardData || window.clipboardData).getData('text').replace(/\D/g,'');
-            [...text].slice(0, 6).forEach((ch, i) => { if (digits[i]) digits[i].value = ch; });
-            const next = Math.min(text.length, 5);
-            digits[next].focus();
-            syncHidden();
+            const t = (e.clipboardData||window.clipboardData).getData('text').replace(/\D/g,'');
+            [...t].slice(0,6).forEach((c,i) => { if(digits[i]) digits[i].value=c; });
+            digits[Math.min(t.length,5)].focus(); sync();
         });
     });
-
-    function syncHidden() {
-        hidden.value = [...digits].map(d => d.value).join('');
-    }
-
-    form && form.addEventListener('submit', e => {
-        syncHidden();
-        if (hidden.value.length !== 6) { e.preventDefault(); alert('Please enter all 6 digits.'); }
-    });
-
+    function sync() { if(hidden) hidden.value=[...digits].map(d=>d.value).join(''); }
+    form && form.addEventListener('submit', e => { sync(); if(hidden.value.length!==6){e.preventDefault();showToast('Please enter all 6 digits.','warning');} });
     digits[0] && digits[0].focus();
 })();
 
-// -- 15-min countdown -----------------------------------------
 (function () {
     const el = document.getElementById('countdown');
     if (!el) return;
-    let secs = 15 * 60;
+    let s = 15*60;
     const tick = () => {
-        const m = Math.floor(secs / 60), s = secs % 60;
-        el.textContent = `Code expires in ${m}:${s.toString().padStart(2,'0')}`;
-        if (secs-- <= 0) { el.textContent = 'Code expired. Please request a new one.'; el.style.color='#334155'; }
-        else setTimeout(tick, 1000);
+        const m=Math.floor(s/60), sec=s%60;
+        el.textContent = `Code expires in ${m}:${sec.toString().padStart(2,'0')}`;
+        if (s-- <= 0) { el.textContent='Code expired. Please request a new one.'; return; }
+        setTimeout(tick, 1000);
     };
     tick();
 })();
 
-// -- Password strength ----------------------------------------
 function checkStrength(v) {
-    const bar = document.getElementById('strengthBar');
-    const lbl = document.getElementById('strengthLabel');
+    const bar=document.getElementById('strengthBar'), lbl=document.getElementById('strengthLabel');
     if (!bar) return;
-    let score = 0;
-    if (v.length >= 8)  score++;
-    if (/[A-Z]/.test(v)) score++;
-    if (/[0-9]/.test(v)) score++;
-    if (/[^A-Za-z0-9]/.test(v)) score++;
-    const map = [
-        {w:'0%',  c:'#334155', t:''},
-        {w:'25%', c:'#334155', t:'Weak'},
-        {w:'50%', c:'#475569', t:'Fair'},
-        {w:'75%', c:'#1a3a6b', t:'Good'},
-        {w:'100%',c:'#1a3a6b', t:'Strong'},
-    ];
-    bar.style.width      = map[score].w;
-    bar.style.background = map[score].c;
-    lbl.textContent      = map[score].t;
-    lbl.style.color      = map[score].c;
+    let n=0;
+    if(v.length>=8)n++; if(/[A-Z]/.test(v))n++; if(/[0-9]/.test(v))n++; if(/[^A-Za-z0-9]/.test(v))n++;
+    const m=[{w:'0%',c:'#e2e8f0',t:''},{w:'25%',c:'#94a3b8',t:'Weak'},{w:'50%',c:'#64748b',t:'Fair'},{w:'75%',c:'#1a3a6b',t:'Good'},{w:'100%',c:'#1e4d8c',t:'Strong'}];
+    bar.style.width=m[n].w; bar.style.background=m[n].c;
+    lbl.textContent=m[n].t; lbl.style.color=m[n].c;
 }
 
-// -- Show/hide password ---------------------------------------
-function toggleVis(inputId, iconId) {
-    const inp  = document.getElementById(inputId);
-    const icon = document.getElementById(iconId);
-    if (!inp) return;
-    const isPass = inp.type === 'password';
-    inp.type = isPass ? 'text' : 'password';
-    icon.className = isPass ? 'bi bi-eye-slash' : 'bi bi-eye';
+function toggleVis(id, iconId) {
+    const i=document.getElementById(id), ic=document.getElementById(iconId);
+    if(!i) return;
+    i.type = i.type==='password'?'text':'password';
+    ic.className = i.type==='text'?'bi bi-eye-slash':'bi bi-eye';
 }
 </script>
 </body>

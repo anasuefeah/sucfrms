@@ -64,7 +64,7 @@ $uid = $_SESSION['user_id'];
 // Load application  -  faculty can only see their own; admin can see any
 $app_stmt = $pdo->prepare("
     SELECT a.application_id, a.status, a.weighted_score, a.total_score,
-           a.sub_rank_increment, a.potential_rank, u.rank AS faculty_rank,
+           a.sub_rank_increment, a.potential_rank, u.`rank` AS faculty_rank,
            u.full_name
     FROM applications a
     JOIN users u ON a.user_id = u.user_id
@@ -148,8 +148,8 @@ try {
     $reviews = [];
 }
 
-$stage1_reviews = array_values(array_filter($reviews, fn($r) => $r['role'] === 'checker'));
-$stage2_reviews = array_values(array_filter($reviews, fn($r) => $r['role'] === 'talisay_checker'));
+$stage1_reviews = array_values(array_filter($reviews, fn($r) => $r['role'] === 'evaluator'));
+$stage2_reviews = [];
 
 // For each submission, determine stage (stage1 = Subcommittee, stage2 = ITC)
 // Use verified_by role to classify the adjustment stage
@@ -159,7 +159,7 @@ foreach ($subs as $s) {
     $vby_info = $vby_id ? ($checker_names[$vby_id] ?? null) : null;
 
     $checker_adjusted  = ($vby_id !== null) && ((float)$s['computed_points'] !== (float)$s['faculty_original_score']);
-    $is_stage2_checker = $vby_info && $vby_info['role'] === 'talisay_checker';
+    $is_stage2_checker = false;
 
     $submissions[] = [
         'submission_id'          => (int)$s['submission_id'],
@@ -178,7 +178,7 @@ foreach ($subs as $s) {
 }
 
 // Compute weighted scores
-$kra_caps = ['Instruction' => 100, 'Research' => 100, 'Extension' => 120, 'Professional Development' => 120];
+$kra_caps = ['Instruction' => 100, 'Research' => 100, 'Extension' => 100, 'Professional Development' => 100];
 $faculty_raw = [];
 $checker_raw = [];
 $stage2_raw  = [];

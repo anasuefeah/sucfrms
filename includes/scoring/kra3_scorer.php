@@ -17,6 +17,8 @@
 
 namespace Scoring;
 
+require_once __DIR__ . '/entry_metadata.php';
+
 class KRA3Scorer
 {
     const CAP   = 100;
@@ -25,6 +27,24 @@ class KRA3Scorer
     const CAP_C = 20;
     const CAP_D = 20;    // added on top before final cap
     const ISR_CAP = 30;  // ISR sub-item within Criterion B
+
+    private static ?\PDO $pdo_ref = null;
+    private static ?int $criteria_cycle_id = null;
+    private static ?string $criteria_position_rank = null;
+    private static array $criteria_max_cache = [];
+
+    public static function setPdo(\PDO $pdo): void
+    {
+        self::$pdo_ref = $pdo;
+        self::$criteria_max_cache = [];
+    }
+
+    public static function setCriteriaContext(?int $cycleId, ?string $positionRank): void
+    {
+        self::$criteria_cycle_id = $cycleId ?: null;
+        self::$criteria_position_rank = $positionRank !== null && trim($positionRank) !== '' ? trim($positionRank) : null;
+        self::$criteria_max_cache = [];
+    }
 
     public static function score(array $submissions): array
     {
@@ -49,7 +69,7 @@ class KRA3Scorer
         // First pass: identify ISR projects in Crit B
         foreach ($submissions as $s) {
             $parts    = array_map('trim', explode('|||', $s['remarks'] ?? ''));
-            $subtype  = strtolower($parts[0] ?? '');
+            $subtype  = EntryMetadata::extensionSubtype($parts);
             $title    = $parts[1] ?? '';
             if (str_contains($subtype, 'outreach') || str_contains($subtype, 'isr') || str_contains($subtype, 'b-outreach')) {
                 $isr_projects_b[] = strtolower(trim($title));
@@ -58,11 +78,21 @@ class KRA3Scorer
 
         foreach ($submissions as $s) {
             $parts   = array_map('trim', explode('|||', $s['remarks'] ?? ''));
-            $subtype = strtolower($parts[0] ?? '');
+            $subtype = EntryMetadata::extensionSubtype($parts);
             $title   = $parts[1] ?? '';
             $val1    = $parts[2] ?? '';
             $val2    = $parts[3] ?? '';
             $pts     = 0.0;
+
+            if ($subtype === 'custom') {
+                $letter = strtoupper($parts[1] ?? '');
+                $pts = max(0.0, (float)($parts[4] ?? 0));
+                if ($letter === 'A') $crit_a += $pts;
+                elseif ($letter === 'B') $crit_b += $pts;
+                elseif ($letter === 'C') $crit_c += $pts;
+                else $crit_d += $pts;
+                continue;
+            }
 
             // -- Criterion A: Service to the Institution --------------
             if (self::isCritA($subtype)) {
@@ -89,8 +119,8 @@ class KRA3Scorer
                     $config_i[] = "KRA III Crit C: Project '{$title}'  -  cross-validation FAILED. This project was not declared under ISR (Criterion B outreach/ISR). CSR credit was not counted per JC01 rule.";
                 } else {
                     $rating = min(100, max(0, (float)$val1));
-                    // Formula: (CSR Rating / 100) x 20
-                    $pts    = round(($rating / 100) * 20, 2);
+                    $cap = self::configuredMax('kra3_c_satisfaction', 20.0);
+                    $pts = round(($rating / 100) * $cap, 2);
                     $crit_c += $pts;
                     if ($rating === 0.0) {
                         $pending[] = "KRA III Crit C: '{$title}'  -  CSR rating is 0. Provide CMO 18 s.2025 instrument summary.";
@@ -108,11 +138,12 @@ class KRA3Scorer
                 $moa_cnt  = max(0, (int)($parts[2] ?? 0));
                 $out_cnt  = max(0, (int)($parts[3] ?? 0));
                 $inc_pts  = 0;
-                if ($income >= 12000000)     $inc_pts = 18;
-                elseif ($income >= 6000000)  $inc_pts = 12;
-                elseif ($income >= 500000)   $inc_pts = 6;
-                elseif ($income >= 100001)   $inc_pts = 4;
-                elseif ($income > 0)         $inc_pts = 2;
+                // JC01 s.2026 tiers: above 12M | 6,000,001–12M | 500,001–6M | 100,001–500K | 100K and below
+                if ($income > 12000000)       $inc_pts = 18;
+                elseif ($income >= 6000001)   $inc_pts = 12;
+                elseif ($income >= 500001)    $inc_pts = 6;
+                elseif ($income >= 100001)    $inc_pts = 4;
+                elseif ($income > 0)          $inc_pts = 2;
                 $pts = $inc_pts + $moa_cnt * 5 + $out_cnt * 2;
                 $crit_a += min(10, $inc_pts);   // income -> Crit A
                 $crit_b += $moa_cnt * 5;        // MOA/linkage -> Crit A actually, but legacy maps differently
@@ -132,7 +163,7 @@ class KRA3Scorer
         $sum_before_bonus = $crit_a + $crit_b + $crit_c;
         $capped_base      = min(self::CAP, $sum_before_bonus);
         $sum_with_bonus   = $capped_base + $crit_d;
-        $subtotal         = $sum_with_bonus;
+        $subtotal         = min(self::CAP, $sum_with_bonus);
 
         return [
             'criterion_a'           => round($crit_a, 2),
@@ -152,13 +183,13 @@ class KRA3Scorer
     // -- Category detectors -------------------------------------------
     private static function isCritA(string $sub): bool
     {
-        return str_contains($sub, 'a-') || str_contains($sub, 'moa') || str_contains($sub, 'linkage')
+        return str_starts_with($sub, 'a-') || str_contains($sub, 'moa') || str_contains($sub, 'linkage')
             || str_contains($sub, 'income') || str_contains($sub, 'kra3_a');
     }
 
     private static function isCritB(string $sub): bool
     {
-        return str_contains($sub, 'b-') || str_contains($sub, 'accredit') || str_contains($sub, 'judge')
+        return str_starts_with($sub, 'b-') || str_contains($sub, 'accredit') || str_contains($sub, 'judge')
             || str_contains($sub, 'consultant') || str_contains($sub, 'media') || str_contains($sub, 'column')
             || str_contains($sub, 'resource') || str_contains($sub, 'outreach') || str_contains($sub, 'isr')
             || str_contains($sub, 'tv') || str_contains($sub, 'radio') || str_contains($sub, 'kra3_b');
@@ -166,15 +197,18 @@ class KRA3Scorer
 
     private static function isCritC(string $sub): bool
     {
-        return str_contains($sub, 'c-') || str_contains($sub, 'csr') || str_contains($sub, 'satisfaction')
+        return str_starts_with($sub, 'c-') || str_contains($sub, 'csr') || str_contains($sub, 'satisfaction')
             || str_contains($sub, 'kra3_c');
     }
 
     private static function isCritD(string $sub): bool
     {
-        return str_contains($sub, 'd-') || str_contains($sub, 'bonus') || str_contains($sub, 'designation')
+        return str_starts_with($sub, 'd-') || str_contains($sub, 'bonus') || str_contains($sub, 'designation')
             || str_contains($sub, 'kra3_d') || str_contains($sub, 'president') || str_contains($sub, 'dean')
-            || str_contains($sub, 'director') || str_contains($sub, 'chancellor') || str_contains($sub, 'vice');
+            || str_contains($sub, 'director') || str_contains($sub, 'chancellor') || str_contains($sub, 'vice')
+            || str_contains($sub, 'secretary') || str_contains($sub, 'regent') || str_contains($sub, 'trustee')
+            || str_contains($sub, 'head') || str_contains($sub, 'chair') || str_contains($sub, 'committee')
+            || str_contains($sub, 'coordinator');
     }
 
     // -- Criterion A scorer -------------------------------------------
@@ -187,7 +221,7 @@ class KRA3Scorer
             if (empty($s['evidence_names'])) {
                 $pending[] = "KRA III Crit A: MOA/Linkage  -  missing notarized MOA/MOU + proof of implementation + Board/President approval.";
             }
-            return 5.0;
+            return self::configuredMax('kra3_a_moa', 5.0);
         }
         // Income generation
         if (str_contains($subtype, 'income')) {
@@ -196,9 +230,9 @@ class KRA3Scorer
             $lead   = !str_contains($role, 'co') && !str_contains($role, 'contrib');
 
             $tier_pts = 0;
-            if ($income > 12000000)       $tier_pts = 18;
-            elseif ($income >= 6000001)   $tier_pts = 12;
-            elseif ($income >= 500001)    $tier_pts = 6;
+            if ($income > 12000000)       $tier_pts = self::configuredMax('kra3_a_income_above12m', 18.0);
+            elseif ($income >= 6000001)   $tier_pts = self::configuredMax('kra3_a_income_6to12m', 12.0);
+            elseif ($income >= 500001)    $tier_pts = self::configuredMax('kra3_a_income_below6m', 6.0);
             elseif ($income >= 100001)    $tier_pts = 4;
             elseif ($income > 0)          $tier_pts = 2;
 
@@ -221,47 +255,47 @@ class KRA3Scorer
         $isr_inc = 0.0;
 
         if (str_contains($subtype, 'accredit') || str_contains($subtype, 'qa') || str_contains($subtype, 'evaluation')) {
-            $pts = str_contains($subtype, 'intl') ? 10.0 : 8.0;
+            $pts = str_contains($subtype, 'intl') ? self::configuredMax('kra3_b_accreditation_intl', 10.0) : self::configuredMax('kra3_b_accreditation_local', 8.0);
             if (empty($s['evidence_names'])) $pending[] = "KRA III Crit B: Accreditation '{$title}'  -  missing appointment letter + proof of engagement.";
         }
         elseif (str_contains($subtype, 'judge')) {
-            $pts = str_contains($subtype, 'research') ? 2.0 : 1.0;
+            $pts = str_contains($subtype, 'research') ? self::configuredMax('kra3_b_judge_research', 2.0) : self::configuredMax('kra3_b_judge_competition', 1.0);
             if (empty($s['evidence_names'])) $pending[] = "KRA III Crit B: Judging '{$title}'  -  missing appointment letter + proof.";
         }
         elseif (str_contains($subtype, 'consultant') || str_contains($subtype, 'expert')) {
-            $pts = str_contains($subtype, 'intl') ? 10.0 : 8.0;
+            $pts = str_contains($subtype, 'intl') ? self::configuredMax('kra3_b_consultant_intl', 10.0) : self::configuredMax('kra3_b_consultant_local', 8.0);
             if (empty($s['evidence_names'])) $pending[] = "KRA III Crit B: Consultancy '{$title}'  -  missing contract of service.";
         }
         elseif (str_contains($subtype, 'column') || str_contains($subtype, 'media')) {
             if (str_contains($subtype, 'regular')) {
-                $pts = 10.0;
+                $pts = self::configuredMax('kra3_b_column_regular', 10.0);
             } elseif (str_contains($subtype, 'occasional')) {
                 if ($media_occasional_count * 2 < 10) {
-                    $pts = 2.0;
+                    $pts = self::configuredMax('kra3_b_column_occasional', 2.0);
                     $media_occasional_count++;
                 }
             } elseif (str_contains($subtype, 'tv') || str_contains($subtype, 'radio') || str_contains($subtype, 'host')) {
-                $pts = 10.0;
+                $pts = self::configuredMax('kra3_b_tv_radio_host', 10.0);
             } elseif (str_contains($subtype, 'guest')) {
                 if ($technical_guest_count * 1 < 10) {
-                    $pts = 1.0;
+                    $pts = self::configuredMax('kra3_b_technical_guest', 1.0);
                     $technical_guest_count++;
                 }
             }
         }
         elseif (str_contains($subtype, 'resource') || str_contains($subtype, 'speaker') || str_contains($subtype, 'facilitator')) {
-            // Per-hour rate  -  CONFIG_INCOMPLETE per JC01: confirm if per-hour or per-engagement
-            $pts = str_contains($subtype, 'intl') ? 3.0 : 2.0;
-            $config_i[] = "KRA III Crit B: Resource person '{$title}'  -  per-hour vs per-engagement rate is CONFIG_INCOMPLETE per JC01. Confirm with evaluators. Currently applying per-entry rate.";
+            $rate  = str_contains($subtype, 'intl') ? self::configuredMax('kra3_b_resource_intl', 3.0) : self::configuredMax('kra3_b_resource_local', 2.0);
+            $hours = max(1.0, (float)($val1 ?: 1));
+            $pts   = round($rate * $hours, 2);
             if (empty($s['evidence_names'])) $pending[] = "KRA III Crit B: Resource person '{$title}'  -  missing invitation letter, program, certificate of appreciation.";
         }
         elseif (str_contains($subtype, 'outreach') || str_contains($subtype, 'isr')) {
             // ISR sub-cap of 30 within Crit B
             if ($isr_subtotal < self::ISR_CAP) {
                 if (str_contains($subtype, 'head') || str_contains($subtype, 'lead')) {
-                    $pts = min(5.0, self::ISR_CAP - $isr_subtotal);
+                    $pts = min(self::configuredMax('kra3_b_outreach_head', 5.0), self::ISR_CAP - $isr_subtotal);
                 } else {
-                    $pts = min(2.0, self::ISR_CAP - $isr_subtotal);
+                    $pts = min(self::configuredMax('kra3_b_outreach_participant', 2.0), self::ISR_CAP - $isr_subtotal);
                 }
                 $isr_inc = $pts;
             }
@@ -279,25 +313,30 @@ class KRA3Scorer
         $years = max(1, $years ?: 1);
 
         // Institutional level
-        if (str_contains($subtype, 'president') && !str_contains($subtype, 'vice') && !str_contains($subtype, 'program')) return round(20.0 * $years, 2);
-        if (str_contains($subtype, 'vice-president') || str_contains($subtype, 'vice president') || (str_contains($subtype, 'vp') && !str_contains($subtype, 'dean'))) return round(15.0 * $years, 2);
-        if (str_contains($subtype, 'chancellor') && !str_contains($subtype, 'vice')) return round(10.0 * $years, 2);
-        if (str_contains($subtype, 'vice-chancellor') || str_contains($subtype, 'vice chancellor')) return round(8.0 * $years, 2);
-        if (str_contains($subtype, 'campus director') || str_contains($subtype, 'administrator')) return round(8.0 * $years, 2);
-        if (str_contains($subtype, 'regent') || str_contains($subtype, 'trustee')) return round(8.0 * $years, 2);
-        if (str_contains($subtype, 'office director') || (str_contains($subtype, 'director') && !str_contains($subtype, 'campus'))) return round(6.0 * $years, 2);
-        if (str_contains($subtype, 'university secretary') || str_contains($subtype, 'college secretary')) return round(6.0 * $years, 2);
-        if (str_contains($subtype, 'project head') && str_contains($subtype, 'inst')) return round(4.0 * $years, 2);
-        if (str_contains($subtype, 'committee chair') && str_contains($subtype, 'inst')) return round(3.0 * $years, 2);
-        if (str_contains($subtype, 'committee member') && str_contains($subtype, 'inst')) return round(2.0 * $years, 2);
+        if (str_contains($subtype, 'president') && !str_contains($subtype, 'vice') && !str_contains($subtype, 'program')) return round(self::configuredMax('kra3_d_president', 20.0) * $years, 2);
+        if (str_contains($subtype, 'vice-president') || str_contains($subtype, 'vice president') || (str_contains($subtype, 'vp') && !str_contains($subtype, 'dean'))) return round(self::configuredMax('kra3_d_vp', 15.0) * $years, 2);
+        if (str_contains($subtype, 'chancellor') && !str_contains($subtype, 'vice')) return round(self::configuredMax('kra3_d_chancellor', 10.0) * $years, 2);
+        if (str_contains($subtype, 'vice-chancellor') || str_contains($subtype, 'vice chancellor')) return round(self::configuredMax('kra3_d_vice_chancellor', 8.0) * $years, 2);
+        if (str_contains($subtype, 'campus director') || str_contains($subtype, 'administrator')) return round(self::configuredMax('kra3_d_campus_director', 8.0) * $years, 2);
+        if (str_contains($subtype, 'regent') || str_contains($subtype, 'trustee')) return round(self::configuredMax('kra3_d_faculty_regent', 8.0) * $years, 2);
+        if (str_contains($subtype, 'office director') || (str_contains($subtype, 'director') && !str_contains($subtype, 'campus'))) return round(self::configuredMax('kra3_d_office_director', 6.0) * $years, 2);
+        if (str_contains($subtype, 'university secretary')) return round(self::configuredMax('kra3_d_univ_secretary', 6.0) * $years, 2);
+        if (str_contains($subtype, 'college secretary')) return round(self::configuredMax('kra3_d_college_secretary', 3.0) * $years, 2);
+        if (str_contains($subtype, 'project head') && str_contains($subtype, 'inst')) return round(self::configuredMax('kra3_d_project_head_inst', 4.0) * $years, 2);
+        if (str_contains($subtype, 'committee chair') && str_contains($subtype, 'inst')) return round(self::configuredMax('kra3_d_committee_chair_inst', 3.0) * $years, 2);
+        if (str_contains($subtype, 'committee member') && str_contains($subtype, 'inst')) return round(self::configuredMax('kra3_d_committee_member_inst', 2.0) * $years, 2);
         // College/Department level
-        if (str_contains($subtype, 'dean') && !str_contains($subtype, 'assoc') && !str_contains($subtype, 'associate')) return round(6.0 * $years, 2);
-        if (str_contains($subtype, 'associate dean')) return round(5.0 * $years, 2);
-        if (str_contains($subtype, 'dept head') || str_contains($subtype, 'department head')) return round(4.0 * $years, 2);
-        if (str_contains($subtype, 'program chair') || str_contains($subtype, 'project head')) return round(3.0 * $years, 2);
-        if (str_contains($subtype, 'committee chair')) return round(2.0 * $years, 2);
-        if (str_contains($subtype, 'committee member')) return round(1.0 * $years, 2);
-        if (str_contains($subtype, 'coordinator')) return round(2.0 * $years, 2);
+        if (str_contains($subtype, 'dean') && !str_contains($subtype, 'assoc') && !str_contains($subtype, 'associate')) return round(self::configuredMax('kra3_d_dean', 6.0) * $years, 2);
+        if (str_contains($subtype, 'associate dean')) return round(self::configuredMax('kra3_d_assoc_dean', 5.0) * $years, 2);
+        if (str_contains($subtype, 'dept head') || str_contains($subtype, 'department head')) return round(self::configuredMax('kra3_d_dept_head', 4.0) * $years, 2);
+        if (str_contains($subtype, 'program chair') || str_contains($subtype, 'project head')) return round(self::configuredMax('kra3_d_program_chair', 3.0) * $years, 2);
+        if (str_contains($subtype, 'committee chair')) return round(self::configuredMax('kra3_d_committee_chair_dept', 2.0) * $years, 2);
+        if (str_contains($subtype, 'committee member')) return round(self::configuredMax('kra3_d_committee_member_dept', 1.0) * $years, 2);
+        // Coordinator: institutional level = 2 pts/yr; college/dept level = 1 pt/yr (JC01 s.2026 Annex)
+        if (str_contains($subtype, 'coordinator') && (str_contains($subtype, 'inst') || str_contains($subtype, 'university') || str_contains($subtype, 'univ')))
+            return round(self::configuredMax('kra3_d_coordinator_inst', 2.0) * $years, 2);
+        if (str_contains($subtype, 'coordinator'))
+            return round(self::configuredMax('kra3_d_coordinator_dept', 1.0) * $years, 2);
         // Fallback: generic designation
         if (empty($s['evidence_names'])) {
             $pending[] = "KRA III Crit D: Designation bonus  -  missing appointment order with effectivity period + accomplishment report.";
@@ -311,7 +350,7 @@ class KRA3Scorer
     public static function computeFromRemarks(string $remarks): float
     {
         $parts    = array_map('trim', explode('|||', $remarks));
-        $subtype  = strtolower($parts[0] ?? '');
+        $subtype  = EntryMetadata::extensionSubtype($parts);
         $val1     = $parts[2] ?? '0';
         $val2     = $parts[3] ?? '';
         $dummy_ci = [];
@@ -321,10 +360,14 @@ class KRA3Scorer
         $med_occ  = 0;
         $tech_g   = 0;
 
+        if ($subtype === 'custom') {
+            return max(0.0, (float)($parts[4] ?? 0));
+        }
+
         if (self::isCritA($subtype)) return self::scoreCritA($subtype, $val1, $val2, $dummy_ci, $dummy_pd, $dummy_s);
         if (self::isCritC($subtype)) {
             $rating = min(100, max(0, (float)$val1));
-            return round(($rating / 100) * 20, 2);
+            return round(($rating / 100) * self::configuredMax('kra3_c_satisfaction', 20.0), 2);
         }
         if (self::isCritD($subtype)) return self::scoreCritD($subtype, (float)($val1 ?: 1), $dummy_pd, $dummy_s);
         if (self::isCritB($subtype)) {
@@ -336,11 +379,48 @@ class KRA3Scorer
         $moa     = max(0, (int)($parts[2] ?? 0));
         $out     = max(0, (int)($parts[3] ?? 0));
         $inc_pts = 0;
-        if ($income >= 12000000)    $inc_pts = 18;
-        elseif ($income >= 6000000) $inc_pts = 12;
-        elseif ($income >= 500000)  $inc_pts = 6;
-        elseif ($income >= 100001)  $inc_pts = 4;
-        elseif ($income > 0)        $inc_pts = 2;
+        // JC01 s.2026 tiers: above 12M | 6,000,001–12M | 500,001–6M | 100,001–500K | 100K and below
+        if ($income > 12000000)       $inc_pts = 18;
+        elseif ($income >= 6000001)   $inc_pts = 12;
+        elseif ($income >= 500001)    $inc_pts = 6;
+        elseif ($income >= 100001)    $inc_pts = 4;
+        elseif ($income > 0)          $inc_pts = 2;
         return (float)($inc_pts + $moa * 5 + $out * 2);
+    }
+
+    private static function configuredMax(string $key, float $default): float
+    {
+        if (isset(self::$criteria_max_cache[$key])) return self::$criteria_max_cache[$key];
+        $value = $default;
+        if (self::$pdo_ref !== null) {
+            try {
+                $stmt = self::$pdo_ref->prepare("SELECT max_points, cycle_id, position_rank FROM scoring_criteria WHERE criterion_key=? AND is_active=1");
+                $stmt->execute([$key]);
+                $best_score = -1;
+                foreach ($stmt->fetchAll(\PDO::FETCH_ASSOC) as $row) {
+                    $score = self::criteriaScopeScore($row);
+                    if ($score > $best_score) {
+                        $best_score = $score;
+                        $value = (float)$row['max_points'];
+                    }
+                }
+            } catch (\Exception $e) {
+                $value = $default;
+            }
+        }
+        self::$criteria_max_cache[$key] = $value;
+        return $value;
+    }
+
+    private static function criteriaScopeScore(array $row): int
+    {
+        $row_cycle = isset($row['cycle_id']) ? (int)$row['cycle_id'] : null;
+        $row_position = isset($row['position_rank']) && $row['position_rank'] !== null ? trim((string)$row['position_rank']) : null;
+        if (self::$criteria_cycle_id !== null && $row_cycle === self::$criteria_cycle_id) {
+            if (self::$criteria_position_rank !== null && $row_position === self::$criteria_position_rank) return 3;
+            if ($row_position === null || $row_position === '') return 2;
+        }
+        if ($row_cycle === null || $row_cycle === 0) return 1;
+        return 0;
     }
 }

@@ -8,7 +8,7 @@ $total_approved = (int)$pdo->query("SELECT COUNT(*) FROM applications WHERE stat
 $pending_review = (int)$pdo->query("SELECT COUNT(*) FROM applications WHERE status='submitted'")->fetchColumn();
 $under_review   = (int)$pdo->query("SELECT COUNT(*) FROM applications WHERE status='under_review'")->fetchColumn();
 $needs_revision = (int)$pdo->query("SELECT COUNT(*) FROM applications WHERE status='needs_revision'")->fetchColumn();
-$total_checkers = (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role IN ('checker','talisay_checker') AND status='active'")->fetchColumn();
+$total_checkers = (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role = 'evaluator' AND status='active'")->fetchColumn();
 
 // Deadline info removed  -  cycle timing is controlled by Open/Closed status only.
 $days_left = null; $deadline_str = ''; $deadline_urgent = false;
@@ -59,7 +59,6 @@ for ($i = 6; $i >= 0; $i--) {
 $donut_colors = [
     'submitted'      => '#1a3a6b',
     'under_review'   => '#2f6fb0',
-    'talisay_review' => '#64748b',
     'approved'       => '#334155',
     'rejected'       => '#94a3b8',
     'needs_revision' => '#475569',
@@ -79,46 +78,17 @@ foreach ($status_counts as $st => $cnt) {
 <!-- ══════════════════════════════════════════════
      HEADER  -  greeting + actions
 ═══════════════════════════════════════════════ -->
-<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;margin-bottom:1.5rem;">
-    <div style="display:flex;align-items:center;gap:1rem;">
-        <?php
-        $pic    = $_SESSION['profile_pic'] ?? '';
-        $init_h = strtoupper(
-            substr($_SESSION['first_name'] ?? '', 0, 1) .
-            substr($_SESSION['last_name']  ?? '', 0, 1)
-        ) ?: 'A';
-        ?>
-        <?php if ($pic): ?>
-        <img src="<?= sanitize($pic) ?>" alt="Profile" style="width:48px;height:48px;border-radius:12px;object-fit:cover;border:2px solid #e2e8f0;flex-shrink:0;">
-        <?php else: ?>
-        <div style="width:48px;height:48px;border-radius:12px;background:#1a3a6b;display:flex;align-items:center;justify-content:center;font-size:0.95rem;font-weight:700;color:#fff;flex-shrink:0;"><?= $init_h ?></div>
-        <?php endif; ?>
-        <div>
-            <div style="font-size:1rem;font-weight:700;color:#0f172a;line-height:1.25;">Welcome back, <?= sanitize($_SESSION['full_name'] ?? 'Admin') ?></div>
-            <div style="font-size:0.72rem;color:#94a3b8;margin-top:2px;display:flex;align-items:center;gap:0.5rem;">
-                <i class="bi bi-calendar3" style="font-size:0.7rem;"></i><?= date('l, F j, Y') ?>
-                &ensp;<span style="background:#fef3c7;color:#92400e;font-size:0.62rem;font-weight:700;letter-spacing:0.04em;padding:1px 7px;border-radius:4px;border:1px solid #fde68a;">ADMIN</span>
-            </div>
-        </div>
-    </div>
-    <div style="display:flex;gap:0.6rem;flex-wrap:wrap;">
-        <a href="pages/oss_print.php<?= $cycle ? '?cycle_id='.$cycle['cycle_id'] : '' ?>" target="_blank"
-           style="display:inline-flex;align-items:center;gap:0.4rem;padding:0.45rem 1rem;border-radius:8px;border:1px solid #e2e8f0;background:#fff;color:#475569;font-size:0.78rem;font-weight:600;text-decoration:none;">
-            <i class="bi bi-file-earmark-spreadsheet"></i>Print Report
-        </a>
-
-    </div>
-</div>
+<?php include __DIR__ . '/_dashboard_header.php'; ?>
 
 <!-- ══════════════════════════════════════════════
      CYCLE BANNER
 ═══════════════════════════════════════════════ -->
 <?php if ($cycle): ?>
-<div style="background:#1a3a6b;border-radius:10px;padding:0.9rem 1.25rem;margin-bottom:1.25rem;
+<div style="background:#1a3a6b;border-radius:0;padding:0.9rem 1.25rem;margin-bottom:1.25rem;
             display:flex;align-items:center;justify-content:space-between;gap:0.75rem;flex-wrap:wrap;
             min-width:0;">
     <div style="display:flex;align-items:center;gap:0.75rem;">
-        <div style="width:36px;height:36px;border-radius:8px;background:rgba(255,255,255,0.1);display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+        <div style="width:36px;height:36px;border-radius:0;background:rgba(255,255,255,0.1);display:flex;align-items:center;justify-content:center;flex-shrink:0;">
             <i class="bi bi-calendar-range" style="color:rgba(255,255,255,0.85);font-size:1rem;"></i>
         </div>
         <div>
@@ -139,13 +109,13 @@ foreach ($status_counts as $st => $cnt) {
             <div style="font-size:0.65rem;color:rgba(255,255,255,0.45);text-transform:uppercase;letter-spacing:0.06em;">Pending review</div>
             <div style="font-size:1.4rem;font-weight:800;color:#fff;line-height:1;"><?= $pending_review + $under_review ?></div>
         </div>
-        <a href="?page=cycles" style="padding:0.4rem 0.9rem;border-radius:7px;background:rgba(255,255,255,0.12);color:#fff;font-size:0.75rem;font-weight:600;text-decoration:none;border:1px solid rgba(255,255,255,0.2);white-space:nowrap;">
+        <a href="?page=cycles" style="padding:0.4rem 0.9rem;border-radius:0;background:rgba(255,255,255,0.12);color:#fff;font-size:0.75rem;font-weight:600;text-decoration:none;border:1px solid rgba(255,255,255,0.2);white-space:nowrap;">
             <i class="bi bi-gear me-1"></i>Manage
         </a>
     </div>
 </div>
 <?php else: ?>
-<div style="background:#f8fafc;border:1px solid #e2e8f0;border-left:3px solid #1a3a6b;border-radius:8px;padding:0.85rem 1.15rem;margin-bottom:1.25rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.75rem;">
+<div style="background:#f8fafc;border:1px solid #e2e8f0;border-left:3px solid #1a3a6b;border-radius:0;padding:0.85rem 1.15rem;margin-bottom:1.25rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.75rem;">
     <div style="display:flex;align-items:center;gap:0.75rem;">
         <i class="bi bi-calendar-x" style="font-size:1.1rem;color:#1a3a6b;"></i>
         <div>
@@ -153,7 +123,7 @@ foreach ($status_counts as $st => $cnt) {
             <div style="font-size:0.72rem;color:#64748b;">Faculty cannot submit until a cycle is open.</div>
         </div>
     </div>
-    <a href="?page=cycles" style="padding:0.38rem 0.9rem;border-radius:7px;background:#1a3a6b;color:#fff;font-size:0.75rem;font-weight:600;text-decoration:none;">Create Cycle</a>
+    <a href="?page=cycles" style="padding:0.38rem 0.9rem;border-radius:0;background:#1a3a6b;color:#fff;font-size:0.75rem;font-weight:600;text-decoration:none;">Create Cycle</a>
 </div>
 <?php endif; ?>
 
@@ -173,9 +143,10 @@ $kpi = [
 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:0.75rem;margin-bottom:1.5rem;">
 <?php foreach ($kpi as [$label,$val,$link]): ?>
     <a href="<?= $link ?>" style="text-decoration:none;">
-        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:1rem 1.1rem;
+        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:0;padding:1rem 1.1rem;
+                    border-left:3px solid #1a3a6b;
                     transition:border-color .15s,box-shadow .15s;"
-             onmouseover="this.style.borderColor='#1a3a6b';this.style.boxShadow='0 2px 10px rgba(26,58,107,.08)'"
+             onmouseover="this.style.boxShadow='0 2px 10px rgba(26,58,107,.08)'"
              onmouseout="this.style.borderColor='#e2e8f0';this.style.boxShadow=''">
             <?php
             $admin_poll_keys = ['admin_faculty','admin_applied','admin_pending','admin_review','admin_revision','admin_approved'];
@@ -295,7 +266,7 @@ $kpi = [
             </div>
             <a href="?page=manage_campuses"
                style="font-size:0.72rem;font-weight:600;color:#1e4d8c;text-decoration:none;
-                      padding:0.3rem 0.8rem;border-radius:6px;border:1px solid #dbeafe;background:#eff6ff;">
+                      padding:0.3rem 0.8rem;border-radius:0;border:1px solid #dbeafe;background:#eff6ff;">
                 Manage
             </a>
         </div>
@@ -333,14 +304,14 @@ $kpi = [
                 </td>
                 <td style="padding:0.75rem 0.6rem;text-align:center;">
                     <span style="background:#eff6ff;color:#1e4d8c;padding:0.15rem 0.55rem;
-                                 border-radius:20px;font-weight:700;font-size:0.75rem;">
+                                 border-radius:0;font-weight:700;font-size:0.75rem;">
                         <?= $cs['applied_count'] ?>
                     </span>
                 </td>
                 <td style="padding:0.75rem 0.6rem;text-align:center;">
                     <?php if ($cs['pending_count'] > 0): ?>
                     <span style="background:#f0f4fb;color:#1e4d8c;padding:0.15rem 0.55rem;
-                                 border-radius:20px;font-weight:700;font-size:0.75rem;">
+                                 border-radius:0;font-weight:700;font-size:0.75rem;">
                         <?= $cs['pending_count'] ?>
                     </span>
                     <?php else: ?><span style="color:#cbd5e1;font-size:0.75rem;"> - </span><?php endif; ?>
@@ -348,7 +319,7 @@ $kpi = [
                 <td style="padding:0.75rem 0.6rem;text-align:center;">
                     <?php if ($cs['reclass_count'] > 0): ?>
                     <span style="background:#eff6ff;color:#1e4d8c;padding:0.15rem 0.55rem;
-                                 border-radius:20px;font-weight:700;font-size:0.75rem;">
+                                 border-radius:0;font-weight:700;font-size:0.75rem;">
                         <?= $cs['reclass_count'] ?>
                     </span>
                     <?php else: ?><span style="color:#cbd5e1;font-size:0.75rem;"> - </span><?php endif; ?>
@@ -397,9 +368,9 @@ $kpi = [
                 'Revision'=>'bi-flag-fill','Resent'=>'bi-envelope',
             ];
             $role_badge = [
-                'admin'   => ['#1e4d8c','#eff6ff'],
-                'checker' => ['#475569','#f1f5f9'],
-                'faculty' => ['#475569','#f1f5f9'],
+                'admin'     => ['#1e4d8c','#eff6ff'],
+                'evaluator' => ['#475569','#f1f5f9'],
+                'faculty'   => ['#475569','#f1f5f9'],
             ];
             foreach ($recent_logs as $log):
                 $action_display = strtr((string)($log['action_performed'] ?? ''), [

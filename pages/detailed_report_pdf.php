@@ -7,7 +7,7 @@ ob_start();
 if (session_status() === PHP_SESSION_NONE) session_start();
 require_once __DIR__ . '/../includes/functions.php';
 requireLogin();
-if (!isAdmin() && !isChecker()) { http_response_code(403); die('Access denied.'); }
+if (!isAdmin() && !isEvaluator()) { http_response_code(403); die('Access denied.'); }
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../fpdf/fpdf.php';
 
@@ -35,7 +35,7 @@ $allowed = ['submitted','under_review','approved','rejected','admin_rejected','r
 if ($status && in_array($status, $allowed)) { $where .= ' AND a.status=?'; $params[] = $status; }
 
 $rows = $pdo->prepare("
-    SELECT a.*, u.full_name, u.employee_id, u.rank, u.email,
+    SELECT a.*, u.full_name, u.employee_id, u.`rank`, u.email,
            COALESCE(camp.campus_name,'N/A') AS campus_name,
            chk.checker_label AS checker_name, chk.user_id AS checker_uid
     FROM applications a
@@ -72,8 +72,8 @@ foreach ($all_subs as $s) $subs_by_app[$s['application_id']][$s['kra_category']]
 $kra_info = [
     'Instruction'              => ['num'=>'I',   'max'=>100, 'label'=>'Teaching Effectiveness'],
     'Research'                 => ['num'=>'II',  'max'=>100, 'label'=>'Research, Innovation & Creative Work'],
-    'Extension'                => ['num'=>'III', 'max'=>120, 'label'=>'Extension Services'],
-    'Professional Development' => ['num'=>'IV',  'max'=>120, 'label'=>'Professional Development'],
+    'Extension'                => ['num'=>'III', 'max'=>100, 'label'=>'Extension Services'],
+    'Professional Development' => ['num'=>'IV',  'max'=>100, 'label'=>'Professional Development'],
 ];
 
 $printed_at = date('M d, Y h:i A');
