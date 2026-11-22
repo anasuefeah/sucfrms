@@ -115,7 +115,7 @@ $feedbacks = $pdo->query("
     <!-- Row 1: Identity + meta -->
     <div style="padding:0.75rem 1rem 0.65rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;border-bottom:1px solid #f1f5f9;">
         <div style="display:flex;align-items:center;gap:0.6rem;">
-            <div style="width:30px;height:30px;border-radius:50%;background:#1a3a6b;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+            <div class="account-avatar" style="width:30px;height:30px;border-radius:50%;background:#1a3a6b;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
                 <span style="color:#fff;font-weight:700;font-size:0.68rem;"><?= $init ?></span>
             </div>
             <div>

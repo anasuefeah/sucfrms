@@ -135,13 +135,14 @@ CREATE TABLE IF NOT EXISTS applications (
     application_id     INT AUTO_INCREMENT PRIMARY KEY,
     user_id            INT NOT NULL,
     cycle_id           INT DEFAULT NULL,
-    status             ENUM('draft','submitted','under_review','talisay_review','approved','rejected','reclassified','admin_rejected','edit_requested','needs_revision') DEFAULT 'draft',
+    status             ENUM('draft','submitted','under_review','approved','rejected','reclassified','admin_rejected','edit_requested','needs_revision','expired') DEFAULT 'draft',
     total_score        DECIMAL(7,2) DEFAULT 0,
     weighted_score     DECIMAL(7,2) DEFAULT 0,
     sub_rank_increment TINYINT DEFAULT 0,
     potential_rank     VARCHAR(100) DEFAULT NULL,
     checker_id         INT DEFAULT NULL,
     checker_remarks    TEXT,
+    duplicate_reviews  LONGTEXT DEFAULT NULL,
     reviewed_at        TIMESTAMP NULL,
     submitted_at       TIMESTAMP NULL,
     position_title     VARCHAR(100) DEFAULT NULL,
@@ -293,6 +294,27 @@ CREATE TABLE IF NOT EXISTS scoring_criteria (
 );
 
 -- ============================================================
+-- Criteria revisions: scope 0 holds future-cycle defaults; cycle scopes are isolated.
+CREATE TABLE IF NOT EXISTS criteria_scope_state (
+    scope_id INT PRIMARY KEY,
+    revision INT NOT NULL DEFAULT 0
+) ENGINE=InnoDB;
+INSERT IGNORE INTO criteria_scope_state (scope_id) VALUES (0);
+CREATE TABLE IF NOT EXISTS criteria_snapshots (
+    snapshot_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    scope_id INT NOT NULL,
+    cycle_id INT DEFAULT NULL,
+    revision INT NOT NULL,
+    criteria_json LONGTEXT NOT NULL,
+    change_summary VARCHAR(255) NOT NULL,
+    created_by INT DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_criteria_revision (scope_id,revision),
+    FOREIGN KEY (scope_id) REFERENCES criteria_scope_state(scope_id) ON DELETE CASCADE,
+    FOREIGN KEY (cycle_id) REFERENCES cycles(cycle_id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by) REFERENCES users(user_id) ON DELETE SET NULL
+) ENGINE=InnoDB;
+
 -- 9. PASSWORD RESETS
 -- ============================================================
 CREATE TABLE IF NOT EXISTS password_resets (
@@ -377,7 +399,7 @@ CREATE TABLE IF NOT EXISTS auto_sub_rank (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================================
--- 12. PRE-EVALUATION AUTO SUB-RANK  (per faculty user, no checker)
+-- 12. SELF-ASSESSMENT AUTO SUB-RANK  (per faculty user, no checker)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS pre_eval_auto_sub_rank (
     pea_id             INT AUTO_INCREMENT PRIMARY KEY,
@@ -498,8 +520,8 @@ ON DUPLICATE KEY UPDATE
 INSERT INTO scoring_criteria (kra_category, criterion_key, criterion_label, max_points, weight_pct, description) VALUES
 
 -- -- KRA I: INSTRUCTION ---------------------------------------
-('Instruction','kra1_a_set','Criterion A - Student Evaluation of Teaching (SET)',36.00,100.00,'Student evaluation rating using prescribed template.'),
-('Instruction','kra1_a_sef','Criterion A - Supervisor Evaluation Form (SEF)',24.00,100.00,'Supervisor\'s evaluation rating using prescribed template.'),
+('Instruction','kra1_a_set','Criterion A - Student Evaluation of Teaching',36.00,100.00,'Student evaluation rating using prescribed template.'),
+('Instruction','kra1_a_sef','Criterion A - Supervisor Evaluation Form',24.00,100.00,'Supervisor\'s evaluation rating using prescribed template.'),
 ('Instruction','kra1_b_textbook_sole','Criterion B - Textbook, Sole Author',30.00,100.00,'Copy of instructional material developed. Copy of evidence that the material underwent peer-review or evaluation process. Copy of approval for use in the department/institution.'),
 ('Instruction','kra1_b_textbook_co','Criterion B - Textbook, Co-Author',30.00,100.00,'Copy of instructional material developed. Copy of evidence that the material underwent peer-review or evaluation process. Copy of approval for use in the department/institution. For multiple authors  -  certification signed by all authors indicating percentage contribution using prescribed template.'),
 ('Instruction','kra1_b_chapter_sole','Criterion B - Textbook Chapter, Sole Author',10.00,100.00,'Copy of instructional material developed. Copy of evidence that the material underwent peer-review or evaluation process. Copy of approval for use in the department/institution.'),
@@ -627,7 +649,7 @@ ON DUPLICATE KEY UPDATE
     description     = VALUES(description);
 
 -- ============================================================
--- 13. PRE-EVALUATION
+-- 13. SELF-ASSESSMENT
 --     Faculty self-assessment before a cycle opens.
 --     Stores KRA entries and evidence independently of any cycle.
 -- ============================================================
@@ -776,6 +798,16 @@ UPDATE users
     SET checker_label = CONCAT('Evaluator #', (@cl_rownum := @cl_rownum + 1))
     WHERE role = 'evaluator' AND checker_label IS NULL
     ORDER BY user_id ASC;
+
+-- Expand existing evaluation labels, including cycle and rank copies.
+-- Evaluation label migration begin
+UPDATE scoring_criteria
+    SET criterion_label = REPLACE(criterion_label, 'Student Evaluation of Teaching (SET)', 'Student Evaluation of Teaching')
+    WHERE criterion_key = 'kra1_a_set';
+UPDATE scoring_criteria
+    SET criterion_label = REPLACE(criterion_label, 'Supervisor Evaluation Form (SEF)', 'Supervisor Evaluation Form')
+    WHERE criterion_key = 'kra1_a_sef';
+-- Evaluation label migration end
 
 -- Re-enable foreign key checks after all inserts
 SET FOREIGN_KEY_CHECKS = 1;

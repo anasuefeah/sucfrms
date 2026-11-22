@@ -1,0 +1,45 @@
+/* Layered important rules also cover rounded utilities and inline component styles. */
+@layer square-corners {
+    *:not(.loader-logo-frame, .loader-spinner, .spinner-border, .upload-spinner),
+    *::before,
+    *::after {
+        border-radius: 0 !important;
+    }
+
+    .navbar-brand > img,
+    .pnav-logo,
+    .topbar-logo,
+    .account-avatar,
+    .profile-avatar,
+    .profile-avatar-placeholder,
+    .profile-identity-image,
+    .profile-avatar-control,
+    .colleague-avatar,
+    .pnav-avatar,
+    .pnav-avatar-ph,
+    .pnav-dd-avatar-ph,
+    .topbar-av,
+    .dd-av,
+    .hero-avatar-wrap,
+    #portalPhotoPreview,
+    #helpBtn,
+    .help-btn,
+    .application-progress-icon,
+    .profile-setup-step-icon,
+    .criterion-step-button {
+        border-radius: 50% !important;
+    }
+
+    .criterion-step-button {
+        display: inline-grid;
+        place-items: center;
+        width: 2.25rem;
+        height: 2.25rem;
+        padding: 0;
+        flex: 0 0 auto;
+    }
+
+    *::-webkit-scrollbar-thumb {
+        border-radius: 0 !important;
+    }
+}

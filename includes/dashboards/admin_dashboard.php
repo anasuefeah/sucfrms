@@ -1,32 +1,28 @@
 <?php
 $cycle = getActiveCycle($pdo);
 
-// Core stats
-$total_faculty  = (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role = 'faculty'")->fetchColumn();
-$total_applied  = (int)$pdo->query("SELECT COUNT(DISTINCT user_id) FROM applications WHERE status != 'draft'")->fetchColumn();
-$total_approved = (int)$pdo->query("SELECT COUNT(*) FROM applications WHERE status='approved'")->fetchColumn();
-$pending_review = (int)$pdo->query("SELECT COUNT(*) FROM applications WHERE status='submitted'")->fetchColumn();
-$under_review   = (int)$pdo->query("SELECT COUNT(*) FROM applications WHERE status='under_review'")->fetchColumn();
-$needs_revision = (int)$pdo->query("SELECT COUNT(*) FROM applications WHERE status='needs_revision'")->fetchColumn();
-$total_checkers = (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role = 'evaluator' AND status='active'")->fetchColumn();
-
-// Deadline info removed  -  cycle timing is controlled by Open/Closed status only.
-$days_left = null; $deadline_str = ''; $deadline_urgent = false;
+$dashboardCounts = adminDashboardCounts($pdo);
+$total_faculty  = $dashboardCounts['admin_faculty'];
+$total_applied  = $dashboardCounts['admin_applied'];
+$total_approved = $dashboardCounts['admin_approved'];
+$pending_review = $dashboardCounts['admin_pending'];
+$under_review   = $dashboardCounts['admin_review'];
+$needs_revision = $dashboardCounts['admin_revision'];
 
 // KRA averages
-$kra_avgs = $pdo->query("SELECT kra_category, AVG(computed_points) as avg_pts FROM kra_submissions GROUP BY kra_category")->fetchAll();
+$kra_avgs = criteriaReportStats($pdo);
 $kra_map  = ['Instruction'=>0,'Research'=>0,'Extension'=>0,'Professional Development'=>0];
-foreach ($kra_avgs as $k) $kra_map[$k['kra_category']] = round($k['avg_pts'], 2);
+foreach ($kra_avgs as $k) $kra_map[$k['kra_category']] = (float)$k['avg_pts'];
 
 // Status counts
-$status_counts = $pdo->query("SELECT status, COUNT(*) as cnt FROM applications GROUP BY status")->fetchAll(PDO::FETCH_KEY_PAIR);
+$status_counts = $pdo->query("SELECT status, COUNT(*) as cnt FROM applications WHERE status NOT IN ('draft','expired') GROUP BY status")->fetchAll(PDO::FETCH_KEY_PAIR);
 
 // Campus stats
 $campus_stats = $pdo->query("
     SELECT c.campus_name,
            COUNT(DISTINCT u.user_id) AS faculty_count,
-           COUNT(DISTINCT CASE WHEN a.status != 'draft' THEN a.application_id END) AS applied_count,
-           COUNT(DISTINCT CASE WHEN a.status = 'approved' THEN a.application_id END) AS reclass_count,
+           COUNT(DISTINCT CASE WHEN a.status NOT IN ('draft','expired') THEN a.application_id END) AS applied_count,
+           COUNT(DISTINCT CASE WHEN a.status IN ('approved','reclassified') THEN a.application_id END) AS reclass_count,
            COUNT(DISTINCT CASE WHEN a.status IN ('submitted','under_review') THEN a.application_id END) AS pending_count
     FROM campuses c
     LEFT JOIN users u ON u.campus_id = c.campus_id AND u.role = 'faculty'
@@ -39,13 +35,13 @@ $campus_stats = $pdo->query("
 $recent_logs = $pdo->query("
     SELECT al.action_performed, al.details, al.timestamp, al.role_at_time, u.full_name
     FROM audit_logs al LEFT JOIN users u ON al.user_id = u.user_id
-    ORDER BY al.timestamp DESC LIMIT 8
+    ORDER BY al.timestamp DESC, al.log_id DESC LIMIT 5
 ")->fetchAll();
 
 // 7-day trend
 $trend_rows = $pdo->query("
     SELECT DATE(submitted_at) AS day, COUNT(*) AS cnt
-    FROM applications WHERE submitted_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
+    FROM applications WHERE status NOT IN ('draft','expired') AND submitted_at >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
     GROUP BY DATE(submitted_at)
 ")->fetchAll(PDO::FETCH_KEY_PAIR);
 $trend_labels = []; $trend_data = [];
@@ -55,24 +51,16 @@ for ($i = 6; $i >= 0; $i--) {
     $trend_data[]   = (int)($trend_rows[$d] ?? 0);
 }
 
-// Donut data
-$donut_colors = [
+// Pipeline colors
+$pipelineColors = [
     'submitted'      => '#1a3a6b',
     'under_review'   => '#2f6fb0',
     'approved'       => '#334155',
     'rejected'       => '#94a3b8',
     'needs_revision' => '#475569',
     'admin_rejected' => '#1e293b',
-    'draft'          => '#e2e8f0',
     'reclassified'   => '#1e4d8c',
 ];
-$pie_labels = []; $pie_data = []; $pie_colors_arr = [];
-foreach ($status_counts as $st => $cnt) {
-    if ($st === 'draft') continue;
-    $pie_labels[] = ucwords(str_replace('_',' ',$st));
-    $pie_data[]   = $cnt;
-    $pie_colors_arr[] = $donut_colors[$st] ?? '#94a3b8';
-}
 ?>
 
 <!-- ══════════════════════════════════════════════
@@ -95,11 +83,11 @@ foreach ($status_counts as $st => $cnt) {
             <div style="font-weight:700;color:#fff;font-size:0.88rem;line-height:1.2;"><?= sanitize($cycle['cycle_name']) ?></div>
             <div style="font-size:0.7rem;margin-top:3px;">
                 <?php if ($cycle['status'] === 'open'): ?>
-                <span style="background:rgba(74,222,128,0.15);color:#4ade80;border:1px solid rgba(74,222,128,0.3);padding:1px 8px;border-radius:20px;font-size:0.62rem;font-weight:700;letter-spacing:0.04em;">● OPEN</span>
+                <span style="background:rgba(74,222,128,0.15);color:#4ade80;border:1px solid rgba(74,222,128,0.3);padding:1px 8px;border-radius:0;font-size:0.62rem;font-weight:700;letter-spacing:0.04em;">● OPEN</span>
                 <?php elseif ($cycle['status'] === 'closed'): ?>
-                <span style="background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.55);border:1px solid rgba(255,255,255,0.15);padding:1px 8px;border-radius:20px;font-size:0.62rem;font-weight:700;">CLOSED</span>
+                <span style="background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.55);border:1px solid rgba(255,255,255,0.15);padding:1px 8px;border-radius:0;font-size:0.62rem;font-weight:700;">CLOSED</span>
                 <?php else: ?>
-                <span style="background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.4);padding:1px 8px;border-radius:20px;font-size:0.62rem;font-weight:700;">ARCHIVED</span>
+                <span style="background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.4);padding:1px 8px;border-radius:0;font-size:0.62rem;font-weight:700;">ARCHIVED</span>
                 <?php endif; ?>
             </div>
         </div>
@@ -141,21 +129,16 @@ $kpi = [
 ];
 ?>
 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:0.75rem;margin-bottom:1.5rem;">
-<?php foreach ($kpi as [$label,$val,$link]): ?>
+<?php $admin_poll_keys = ['admin_faculty','admin_applied','admin_pending','admin_review','admin_revision','admin_approved']; ?>
+<?php foreach ($kpi as $index => [$label,$val,$link]): ?>
     <a href="<?= $link ?>" style="text-decoration:none;">
-        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:0;padding:1rem 1.1rem;
+        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:0;height:100%;padding:1rem 1.1rem;
                     border-left:3px solid #1a3a6b;
                     transition:border-color .15s,box-shadow .15s;"
              onmouseover="this.style.boxShadow='0 2px 10px rgba(26,58,107,.08)'"
              onmouseout="this.style.borderColor='#e2e8f0';this.style.boxShadow=''">
-            <?php
-            $admin_poll_keys = ['admin_faculty','admin_applied','admin_pending','admin_review','admin_revision','admin_approved'];
-            static $admin_kpi_idx = 0;
-            $apk = $admin_poll_keys[$admin_kpi_idx] ?? '';
-            $admin_kpi_idx++;
-            ?>
             <div style="font-size:1.9rem;font-weight:800;color:#1a3a6b;line-height:1;letter-spacing:-1px;"
-                 data-poll-key="<?= $apk ?>">
+                 data-poll-key="<?= $admin_poll_keys[$index] ?>">
                 <?= $val ?>
             </div>
             <div style="font-size:0.7rem;font-weight:600;color:#64748b;margin-top:5px;
@@ -170,10 +153,10 @@ $kpi = [
 <!-- ══════════════════════════════════════════════
      CHARTS ROW  -  trend + donut + KRA
 ═══════════════════════════════════════════════ -->
-<div style="display:grid;grid-template-columns:1fr 300px 300px;gap:1rem;margin-bottom:1.5rem;">
+<div class="admin-dashboard-charts">
 
     <!-- Submission trend -->
-    <div class="neon-card" style="padding:1.1rem 1.25rem;">
+    <div class="neon-card rounded-0 shadow-none" style="padding:1.1rem 1.25rem;">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;">
             <div>
                 <div style="font-weight:700;color:#1a3a6b;font-size:0.88rem;">
@@ -184,28 +167,44 @@ $kpi = [
             <?php $total_week = array_sum($trend_data); ?>
             <div style="text-align:right;">
                 <div style="font-size:1.3rem;font-weight:800;color:#1e4d8c;line-height:1;"><?= $total_week ?></div>
-                <div style="font-size:0.65rem;color:#94a3b8;">this week</div>
+                <div style="font-size:0.65rem;color:#94a3b8;">last 7 days</div>
             </div>
         </div>
-        <div style="height:190px;"><canvas id="trendLineChart"></canvas></div>
+        <?php if ($total_week): $peak = max($trend_data); ?>
+        <ul class="admin-dashboard-trend" aria-label="Daily submissions for the last seven days">
+            <?php foreach ($trend_labels as $i => $label): ?>
+            <li>
+                <strong><?= $trend_data[$i] ?></strong>
+                <span aria-hidden="true" style="--bar-height:<?= round(100 * $trend_data[$i] / $peak, 2) ?>%"></span>
+                <small><?= $label ?></small>
+            </li>
+            <?php endforeach; ?>
+        </ul>
+        <?php else: ?>
+        <p class="admin-dashboard-chart-empty">No submissions in the last 7 days.</p>
+        <?php endif; ?>
     </div>
 
-    <!-- Status donut -->
-    <div class="neon-card" style="padding:1.1rem 1.25rem;">
+    <!-- Status pipeline -->
+    <div class="neon-card rounded-0 shadow-none" style="padding:1.1rem 1.25rem;">
         <div style="font-weight:700;color:#1a3a6b;font-size:0.88rem;margin-bottom:0.25rem;">
             Pipeline
         </div>
         <div style="font-size:0.7rem;color:#94a3b8;margin-bottom:0.75rem;">Application status split</div>
-        <?php if (!empty($pie_data) && array_sum($pie_data) > 0): ?>
-        <div style="height:140px;"><canvas id="statusPieChart"></canvas></div>
+        <?php if ($status_counts): ?>
+        <div class="admin-dashboard-pipeline" aria-hidden="true">
+            <?php foreach ($status_counts as $status => $count): ?>
+            <span style="flex:<?= (int)$count ?>;background:<?= $pipelineColors[$status] ?? '#94a3b8' ?>"></span>
+            <?php endforeach; ?>
+        </div>
         <div style="margin-top:0.65rem;display:flex;flex-direction:column;gap:3px;">
-            <?php foreach ($pie_labels as $i => $pl): ?>
+            <?php foreach ($status_counts as $status => $count): ?>
             <div style="display:flex;align-items:center;justify-content:space-between;font-size:0.7rem;">
                 <div style="display:flex;align-items:center;gap:4px;color:#475569;">
-                    <span style="width:8px;height:8px;border-radius:2px;background:<?= $pie_colors_arr[$i] ?>;flex-shrink:0;"></span>
-                    <?= $pl ?>
+                    <span style="width:8px;height:8px;background:<?= $pipelineColors[$status] ?? '#94a3b8' ?>;flex-shrink:0;"></span>
+                    <?= htmlspecialchars(ucwords(str_replace('_', ' ', $status))) ?>
                 </div>
-                <strong style="color:#1a3a6b;"><?= $pie_data[$i] ?></strong>
+                <strong style="color:#1a3a6b;"><?= (int)$count ?></strong>
             </div>
             <?php endforeach; ?>
         </div>
@@ -218,20 +217,21 @@ $kpi = [
     </div>
 
     <!-- KRA avg bars -->
-    <div class="neon-card" style="padding:1.1rem 1.25rem;">
+    <div class="neon-card rounded-0 shadow-none" style="padding:1.1rem 1.25rem;">
         <div style="font-weight:700;color:#1a3a6b;font-size:0.88rem;margin-bottom:0.25rem;">
             KRA Averages
         </div>
         <div style="font-size:0.7rem;color:#94a3b8;margin-bottom:0.9rem;">Avg pts per KRA category</div>
         <?php
         $kra_display = [
-            'Instruction'              => ['KRA I',   '#1a3a6b', 100],
-            'Research'                 => ['KRA II',  '#1a3a6b', 100],
-            'Extension'                => ['KRA III', '#1a3a6b', 100],
-            'Professional Development' => ['KRA IV',  '#1a3a6b', 100],
+            'Instruction'              => ['KRA I',   '#1a3a6b'],
+            'Research'                 => ['KRA II',  '#1a3a6b'],
+            'Extension'                => ['KRA III', '#1a3a6b'],
+            'Professional Development' => ['KRA IV',  '#1a3a6b'],
         ];
         foreach ($kra_map as $kra => $pts):
-            [$short, $col, $max] = $kra_display[$kra] ?? [$kra, '#94a3b8', 100];
+            [$short, $col] = $kra_display[$kra] ?? [$kra, '#94a3b8'];
+            $max = kraMaximumPoints()[$kra] ?? 0;
             $pct = $max > 0 ? min(100, round(($pts / $max) * 100)) : 0;
         ?>
         <div style="margin-bottom:0.7rem;">
@@ -239,8 +239,8 @@ $kpi = [
                 <div style="font-size:0.72rem;font-weight:700;color:#1a3a6b;"><?= $short ?></div>
                 <div style="font-size:0.72rem;font-weight:700;color:#1a3a6b;"><?= $pts ?></div>
             </div>
-            <div style="height:8px;background:#f1f5f9;border-radius:99px;overflow:hidden;">
-                <div style="height:100%;width:<?= $pct ?>%;background:<?= $col ?>;border-radius:99px;"></div>
+            <div style="height:8px;background:#f1f5f9;border-radius:0;overflow:hidden;">
+                <div style="height:100%;width:<?= $pct ?>%;background:<?= $col ?>;border-radius:0;"></div>
             </div>
         </div>
         <?php endforeach; ?>
@@ -253,7 +253,7 @@ $kpi = [
 <div style="display:grid;grid-template-columns:1fr 360px;gap:1rem;margin-bottom:1.5rem;">
 
     <!-- Campus breakdown -->
-    <div class="neon-card" style="padding:0;overflow:hidden;">
+    <div class="neon-card rounded-0 shadow-none" style="padding:0;overflow:hidden;">
         <div style="padding:0.9rem 1.25rem;border-bottom:1px solid #f1f5f9;
                     display:flex;align-items:center;justify-content:space-between;">
             <div>
@@ -326,8 +326,8 @@ $kpi = [
                 </td>
                 <td style="padding:0.75rem 0.75rem;">
                     <div style="display:flex;align-items:center;gap:0.5rem;">
-                        <div style="flex:1;height:7px;background:#f1f5f9;border-radius:99px;overflow:hidden;">
-                            <div style="height:100%;width:<?= $prog ?>%;background:<?= $prog_col ?>;border-radius:99px;"></div>
+                        <div style="flex:1;height:7px;background:#f1f5f9;border-radius:0;overflow:hidden;">
+                            <div style="height:100%;width:<?= $prog ?>%;background:<?= $prog_col ?>;border-radius:0;"></div>
                         </div>
                         <span style="font-size:0.68rem;font-weight:700;color:<?= $prog_col ?>;min-width:30px;"><?= $prog ?>%</span>
                     </div>
@@ -342,7 +342,7 @@ $kpi = [
     </div>
 
     <!-- Recent activity -->
-    <div class="neon-card" style="padding:0;overflow:hidden;">
+    <div class="neon-card rounded-0 shadow-none" style="padding:0;overflow:hidden;">
         <div style="padding:0.9rem 1.25rem;border-bottom:1px solid #f1f5f9;
                     display:flex;align-items:center;justify-content:space-between;">
             <div>
@@ -353,7 +353,7 @@ $kpi = [
             </div>
             <a href="?page=audit"
                style="font-size:0.72rem;font-weight:600;color:#1e4d8c;text-decoration:none;
-                      padding:0.3rem 0.8rem;border-radius:6px;border:1px solid #dbeafe;background:#eff6ff;">
+                      padding:0.3rem 0.8rem;border-radius:0;border:1px solid #dbeafe;background:#eff6ff;">
                 View All
             </a>
         </div>
@@ -416,7 +416,7 @@ $kpi = [
                         padding:0.6rem 1.1rem;border-bottom:1px solid #f8fafc;
                         transition:background 0.15s;"
                  onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background=''">
-                <div style="width:32px;height:32px;border-radius:50%;background:#f0f4fb;
+                <div style="width:32px;height:32px;border-radius:0;background:#f0f4fb;
                             display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px;">
                     <i class="bi <?= $icon ?>" style="color:#1e4d8c;font-size:0.78rem;"></i>
                 </div>
@@ -430,7 +430,7 @@ $kpi = [
                     </div>
                     <div style="display:flex;align-items:center;gap:0.35rem;flex-wrap:wrap;">
                         <span style="background:<?= $rb ?>;color:<?= $rc ?>;font-size:0.6rem;font-weight:700;
-                                     border-radius:4px;padding:1px 5px;border:1px solid <?= $rc ?>33;flex-shrink:0;">
+                                     border-radius:0;padding:1px 5px;border:1px solid <?= $rc ?>33;flex-shrink:0;">
                             <?= sanitize($log['role_at_time'] ?? ' - ') ?>
                         </span>
                         <span style="font-size:0.72rem;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
@@ -450,7 +450,7 @@ $kpi = [
 <!-- ══════════════════════════════════════════════
      QUICK ACTIONS
 ═══════════════════════════════════════════════ -->
-<div class="neon-card" style="padding:1rem 1.25rem;">
+<div class="neon-card rounded-0 shadow-none" style="padding:1rem 1.25rem;">
     <div style="font-weight:700;color:#1a3a6b;font-size:0.85rem;margin-bottom:0.9rem;">Quick Actions</div>
     <div style="display:flex;flex-wrap:wrap;gap:0.5rem;">
         <?php
@@ -464,7 +464,7 @@ $kpi = [
         ];
         foreach ($actions as [$lbl,$href]): ?>
         <a href="<?= $href ?>"
-           style="display:inline-flex;align-items:center;padding:0.4rem 0.85rem;border-radius:8px;
+           style="display:inline-flex;align-items:center;padding:0.4rem 0.85rem;border-radius:0;
                   background:#fff;color:#1a3a6b;font-size:0.75rem;font-weight:600;
                   text-decoration:none;border:1px solid #e2e8f0;transition:border-color .15s;"
            onmouseover="this.style.borderColor='#1a3a6b'"
@@ -475,78 +475,9 @@ $kpi = [
     </div>
 </div>
 
-<!-- ══════════════════════════════════════════════
-     CHARTS JS
-═══════════════════════════════════════════════ -->
-<script>
-document.addEventListener('DOMContentLoaded', function () {
-    const tick = '#64748b';
-    const grid = '#f1f5f9';
-    const tooltipBase = {
-        backgroundColor:'#1e293b',titleColor:'#f1f5f9',
-        bodyColor:'#cbd5e1',cornerRadius:8,padding:10
-    };
-
-    // Trend line
-    new Chart(document.getElementById('trendLineChart'), {
-        type: 'line',
-        data: {
-            labels: <?= json_encode($trend_labels) ?>,
-            datasets: [{
-                data: <?= json_encode($trend_data) ?>,
-                borderColor: '#1e4d8c',
-                backgroundColor: 'rgba(30,77,140,0.07)',
-                borderWidth: 2.5,
-                pointBackgroundColor: '#1e4d8c',
-                pointBorderColor: '#fff',
-                pointBorderWidth: 2,
-                pointRadius: 5,
-                tension: 0.4,
-                fill: true
-            }]
-        },
-        options: {
-            responsive: true, maintainAspectRatio: false,
-            scales: {
-                y: { beginAtZero: true, ticks: { stepSize: 1, color: tick, font:{size:11} }, grid: { color: grid, drawBorder: false } },
-                x: { grid: { display: false }, ticks: { color: tick, font:{size:11} } }
-            },
-            plugins: { legend: { display: false }, tooltip: tooltipBase }
-        }
-    });
-
-    // Status donut
-    <?php if (!empty($pie_data) && array_sum($pie_data) > 0): ?>
-    new Chart(document.getElementById('statusPieChart'), {
-        type: 'doughnut',
-        data: {
-            labels: <?= json_encode($pie_labels) ?>,
-            datasets: [{
-                data: <?= json_encode($pie_data) ?>,
-                backgroundColor: <?= json_encode($pie_colors_arr) ?>,
-                borderColor: '#fff',
-                borderWidth: 3,
-                hoverOffset: 5
-            }]
-        },
-        options: {
-            responsive: true, maintainAspectRatio: false,
-            cutout: '70%',
-            plugins: { legend: { display: false }, tooltip: tooltipBase }
-        }
-    });
-    <?php endif; ?>
-});
-</script>
-
 <style>
 /* -- Admin dashboard mobile responsive -- */
 @media (max-width: 767.98px) {
-    /* Charts row: stack all 3 columns vertically */
-    div[style*="grid-template-columns:1fr 300px 300px"] {
-        display: flex !important;
-        flex-direction: column !important;
-    }
     /* Campus + activity row: stack vertically */
     div[style*="grid-template-columns:1fr 360px"] {
         display: flex !important;
@@ -565,8 +496,6 @@ document.addEventListener('DOMContentLoaded', function () {
     div[style*="background:#1a3a6b;border-radius:10px"] > div[style*="display:flex;align-items:center;gap:1rem"] {
         flex-wrap: wrap;
     }
-    /* Charts: reduce height on mobile */
-    #trendLineChart { height: 150px !important; }
     /* Table: horizontal scroll */
     .neon-card table { min-width: 480px; }
     .neon-card .table-responsive,

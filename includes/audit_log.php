@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 $uid    = $_SESSION['user_id'];
 $role   = $_SESSION['role'] ?? 'faculty';
 
@@ -145,11 +145,11 @@ function auditDisplayText(?string $text): string {
 <div class="neon-card mb-3" style="padding:0.85rem 1.1rem;border-radius:0;box-shadow:none;">
     <form method="GET" action="index.php">
         <input type="hidden" name="page" value="<?= $role === 'admin' ? 'audit' : 'my_audit' ?>">
-        <div style="display:flex;flex-wrap:wrap;gap:0.6rem;align-items:flex-end;">
+        <div class="audit-filters">
             <!-- Search -->
-            <div style="flex:1;min-width:180px;">
+            <div class="audit-filter audit-filter-search">
                 <label style="font-size:0.6rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.07em;display:block;margin-bottom:3px;">Search</label>
-                <div style="display:flex;align-items:center;border:1px solid #e2e8f0;background:#f8fafc;">
+                <div class="audit-filter-search-box" style="display:flex;align-items:center;border:1px solid #e2e8f0;background:#f8fafc;">
                     <span style="padding:0 0.6rem;color:#94a3b8;font-size:0.8rem;"><i class="bi bi-search"></i></span>
                     <input type="text" name="search" value="<?= sanitize($search) ?>"
                            placeholder="Action or details..."
@@ -161,14 +161,14 @@ function auditDisplayText(?string $text): string {
             $inp_style = "border:1px solid #e2e8f0;padding:0.45rem 0.6rem;font-size:0.8rem;color:#1e293b;background:#f8fafc;outline:none;width:100%;border-radius:0;";
             ?>
             <!-- Date (single) -->
-            <div style="min-width:130px;">
+            <div class="audit-filter audit-filter-date">
                 <label style="font-size:0.6rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.07em;display:block;margin-bottom:3px;">Date</label>
                 <input type="date" name="date_from" value="<?= sanitize($filter_date_from) ?>"
                        style="<?= $inp_style ?>" onchange="this.form.submit()">
             </div>
             <?php if ($role === 'admin'): ?>
             <!-- User -->
-            <div style="min-width:180px;">
+            <div class="audit-filter">
                 <label style="font-size:0.6rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.07em;display:block;margin-bottom:3px;">User</label>
                 <select name="filter_user" style="<?= $sel_style ?>" onchange="this.form.submit()">
                     <option value="">All Users</option>
@@ -178,7 +178,8 @@ function auditDisplayText(?string $text): string {
                     </option>
                     <?php endforeach; ?>
                 </select>
-            </div>            <div style="min-width:110px;">
+            </div>
+            <div class="audit-filter audit-filter-role">
                 <label style="font-size:0.6rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.07em;display:block;margin-bottom:3px;">Role</label>
                 <select name="filter_role" style="<?= $sel_style ?>" onchange="this.form.submit()">
                     <option value="">All Roles</option>
@@ -187,7 +188,7 @@ function auditDisplayText(?string $text): string {
                     <option value="faculty" <?= $filter_role==='faculty' ?'selected':'' ?>>Faculty</option>
                 </select>
             </div>
-            <div style="min-width:140px;">
+            <div class="audit-filter">
                 <label style="font-size:0.6rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.07em;display:block;margin-bottom:3px;">Campus</label>
                 <select name="campus_id" style="<?= $sel_style ?>" onchange="this.form.submit()">
                     <option value="">All Campuses</option>
@@ -196,7 +197,7 @@ function auditDisplayText(?string $text): string {
                     <?php endforeach; ?>
                 </select>
             </div>
-            <div style="min-width:150px;">
+            <div class="audit-filter">
                 <label style="font-size:0.6rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.07em;display:block;margin-bottom:3px;">Action Type</label>
                 <select name="filter_action" style="<?= $sel_style ?>" onchange="this.form.submit()">
                     <option value="">All Actions</option>
@@ -206,7 +207,7 @@ function auditDisplayText(?string $text): string {
                 </select>
             </div>
             <?php endif; ?>
-            <div style="min-width:100px;">
+            <div class="audit-filter audit-filter-page-size">
                 <label style="font-size:0.6rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.07em;display:block;margin-bottom:3px;">Per Page</label>
                 <select name="per_page" style="<?= $sel_style ?>" onchange="this.form.submit()">
                     <?php foreach ([10,25,50,100] as $n): ?>
@@ -214,14 +215,14 @@ function auditDisplayText(?string $text): string {
                     <?php endforeach; ?>
                 </select>
             </div>
-            <div style="display:flex;gap:0.4rem;align-items:flex-end;">
+            <div class="audit-filter-actions">
                 <button type="submit"
-                        style="background:#1a3a6b;color:#fff;border:none;border-radius:0;padding:0.45rem 1rem;font-size:0.8rem;font-weight:600;cursor:pointer;">
+                        style="background:#1a3a6b;color:#fff;border:none;border-radius:0;font-size:0.8rem;font-weight:600;cursor:pointer;">
                     Search
                 </button>
                 <?php if ($search || $filter_role || $filter_action || $filter_campus || $filter_date_from || $filter_user): ?>
                 <a href="index.php?page=<?= $role === 'admin' ? 'audit' : 'my_audit' ?>"
-                   style="background:#f8fafc;color:#64748b;border:1px solid #e2e8f0;border-radius:0;padding:0.45rem 0.85rem;font-size:0.8rem;font-weight:600;text-decoration:none;">
+                   style="background:#f8fafc;color:#64748b;border:1px solid #e2e8f0;border-radius:0;font-size:0.8rem;font-weight:600;text-decoration:none;">
                     Clear
                 </a>
                 <?php endif; ?>

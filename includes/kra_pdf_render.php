@@ -6,6 +6,9 @@
  */
 
 require_once __DIR__ . '/../fpdf/fpdf.php';
+require_once __DIR__ . '/kra_numbering.php';
+require_once __DIR__ . '/scoring/entry_scores.php';
+require_once __DIR__ . '/criteria_pdf_rows.php';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // KRA DEFINITIONS  -  one row per official indicator (fixed-form summary, not a
@@ -15,164 +18,12 @@ require_once __DIR__ . '/../fpdf/fpdf.php';
 
 function kraDefinitions(): array {
     return [
-        'I' => [
-            'number' => 'I', 'label' => 'TEACHING EFFECTIVENESS',
-            'category' => 'Instruction', 'max_points' => 100,
-            'criteria' => [
-                'A' => [
-                    'title' => 'CRITERION A - TEACHING EFFECTIVENESS (SET + SEF) (MAX = 60 POINTS)',
-                    'max' => 60,
-                    'items' => [
-                        ['label' => '1. STUDENT EVALUATION OF TEACHING (SET) AND SUPERVISOR EVALUATION FORM (SEF) RATING', 'types' => ['A-set-sef', 'A-set-sef-sem', 'A-set-sem', 'A-sef-sem']],
-                    ],
-                ],
-                'B' => [
-                    'title' => 'CRITERION B - INSTRUCTIONAL MATERIALS / CURRICULUM DEVELOPMENT (MAX = 30 POINTS)',
-                    'max' => 30,
-                    'items' => [
-                        ['label' => '1. DEVELOPMENT OF INSTRUCTIONAL MATERIALS / CURRICULUM PROGRAMS', 'types' => ['B-material']],
-                    ],
-                ],
-                'C' => [
-                    'title' => 'CRITERION C - THESIS / DISSERTATION / MENTORSHIP (MAX = 10 POINTS)',
-                    'max' => 10,
-                    'items' => [
-                        ['label' => '1. THESIS/DISSERTATION ADVISING, PANEL MEMBERSHIP, AND RESEARCH-RELATED MENTORSHIP', 'types' => ['C-thesis', 'C-mentor']],
-                    ],
-                ],
-            ],
-        ],
-        'II' => [
-            'number' => 'II', 'label' => 'RESEARCH, INNOVATION & CREATIVE WORK',
-            'category' => 'Research', 'max_points' => 100,
-            'criteria' => [
-                'A' => [
-                    'title' => 'CRITERION A - RESEARCH, INNOVATION & CREATIVE WORK (MAX = 100 POINTS)',
-                    'max' => 100,
-                    'items' => [
-                        ['label' => '1. RESEARCH OUTPUTS, INVENTIONS, AND CREATIVE WORKS', 'types' => null],
-                    ],
-                ],
-            ],
-        ],
-        'III' => [
-            'number' => 'III', 'label' => 'EXTENSION SERVICES',
-            'category' => 'Extension', 'max_points' => 100,
-            'criteria' => [
-                'A' => [
-                    'title' => 'CRITERION A - EXTENSION SERVICES (MAX = 100 POINTS)',
-                    'max' => 100,
-                    'items' => [
-                        ['label' => '1. EXTENSION SERVICES AND COMMUNITY ENGAGEMENT ACTIVITIES', 'types' => null],
-                    ],
-                ],
-            ],
-        ],
-        'IV' => [
-            'number' => 'IV', 'label' => 'PROFESSIONAL DEVELOPMENT',
-            'category' => 'Professional Development', 'max_points' => 100,
-            'criteria' => [
-                'A' => [
-                    'title' => 'CRITERION A - INVOLVEMENT IN PROFESSIONAL ORGANIZATIONS (MAX = 20 POINTS)',
-                    'max' => 20,
-                    'items' => [
-                        ['label' => '1. FOR CURRENT INDIVIDUAL MEMBERSHIP AND ACTIVE ROLE/CONTRIBUTION IN RELEVANT, RECOGNIZED/ REGISTERED PROFESSIONAL ORGANIZATION, LEARNED/HONOR/SCIENTIFIC SOCIETY', 'types' => ['A-org']],
-                    ],
-                ],
-                'B' => [
-                    'title' => 'CRITERION B - CONTINUING DEVELOPMENT (MAX = 60 POINTS)',
-                    'max' => 60,
-                    'items' => [
-                        [
-                            'label' => '1. EDUCATIONAL QUALIFICATIONS (MAX - 40 POINTS)',
-                            'types' => ['B-degree'],
-                            'subgroups' => [
-                                ['label' => '1.1 FOR DOCTORATE DEGREE', 'test' => function ($v) { return $v >= 40; }],
-                                ['label' => '1.2 FOR ADDITIONAL DEGREES', 'test' => function ($v) { return $v < 40; }],
-                            ],
-                        ],
-                        ['label' => '2. FOR EVERY PARTICIPATION IN CONFERENCES, SEMINARS, WORKSHOPS, INDUSTRY IMMERSION (MAX = 10 POINTS)', 'types' => ['B-training']],
-                        ['label' => '3. FOR EVERY PAPER PRESENTATION IN CONFERENCES (MAX = 10 POINTS)', 'types' => ['B-paper']],
-                    ],
-                ],
-                'C' => [
-                    'title' => 'CRITERION C - AWARDS AND RECOGNITION (MAX = 20 POINTS)',
-                    'max' => 20,
-                    'items' => [
-                        ['label' => '1. FOR EVERY AWARD OF DISTINCTION RECEIVED IN RECOGNITION OF ACHIEVEMENT IN RELEVANT AREAS OF SPECIALIZATION/PROFESSION AND/OR ASSIGNMENT OF THE FACULTY CONCERNED.', 'types' => ['C-award']],
-                    ],
-                ],
-                'D' => [
-                    'title' => 'CRITERION D - BONUS INDICATOR FOR NEWLY HIRED FACULTY (MAX = 20 POINTS)',
-                    'max' => 20,
-                    'items' => [
-                        ['label' => '1. FOR EVERY YEAR OF FULL-TIME ACADEMIC SERVICE IN AN INSTITUTION OF HIGHER LEARNING AS:', 'types' => ['D-prior-academic']],
-                        ['label' => '2. FOR EVERY YEAR OF INDUSTRY EXPERIENCE (NON-ACADEMIC ORGANIZATION) IN:', 'types' => ['D-prior-industry']],
-                    ],
-                ],
-            ],
-        ],
+        'I' => ['number'=>'I', 'label'=>'TEACHING EFFECTIVENESS', 'category'=>'Instruction', 'max_points'=>\Scoring\KRA1Scorer::CAP],
+        'II' => ['number'=>'II', 'label'=>'RESEARCH, INNOVATION & CREATIVE WORK', 'category'=>'Research', 'max_points'=>\Scoring\KRA2Scorer::CAP],
+        'III' => ['number'=>'III', 'label'=>'EXTENSION SERVICES', 'category'=>'Extension', 'max_points'=>\Scoring\KRA3Scorer::CAP],
+        'IV' => ['number'=>'IV', 'label'=>'PROFESSIONAL DEVELOPMENT', 'category'=>'Professional Development', 'max_points'=>\Scoring\KRA4Scorer::CAP],
     ];
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// ENTRY HELPERS
-// ═══════════════════════════════════════════════════════════════════════════════
-
-function kraEntryType(array $entry): string {
-    $parts = explode('|||', $entry['remarks'] ?? '');
-    return trim($parts[0] ?? '');
-}
-
-function kraEntrySubVal(array $entry): float {
-    $parts = array_map('trim', explode('|||', $entry['remarks'] ?? ''));
-    return (float)($parts[2] ?? 0);
-}
-
-/**
- * Bucket every entry (for one KRA's category) into [criterion_letter][item_index] => [entries].
- * A type prefix (e.g. 'B-training') is matched against every item's declared types across
- * the whole KRA definition; a catch-all item (types === null) absorbs anything unmatched.
- */
-function kraBucketEntries(array $def, array $entries): array {
-    $buckets = [];
-    $catch_all = null; // [letter, idx] of a catch-all item, if any
-    $type_map = [];     // lowercased type => [letter, idx]
-
-    foreach ($def['criteria'] as $letter => $criterion) {
-        foreach ($criterion['items'] as $idx => $item) {
-            $buckets[$letter][$idx] = [];
-            if ($item['types'] === null) {
-                $catch_all = [$letter, $idx];
-                continue;
-            }
-            foreach ($item['types'] as $t) {
-                $type_map[strtolower($t)] = [$letter, $idx];
-            }
-        }
-    }
-
-    $first_letter = array_key_first($def['criteria']);
-
-    foreach ($entries as $entry) {
-        $type = strtolower(kraEntryType($entry));
-        if (isset($type_map[$type])) {
-            [$letter, $idx] = $type_map[$type];
-        } elseif ($catch_all !== null) {
-            [$letter, $idx] = $catch_all;
-        } else {
-            $letter = $first_letter;
-            $idx = 0;
-        }
-        $buckets[$letter][$idx][] = $entry;
-    }
-
-    return $buckets;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// PDF CLASS  -  plain black/white/gray, Times font, matches the CHED printed form
-// ═══════════════════════════════════════════════════════════════════════════════
 
 class KRA_PDF extends FPDF {
     public $kra_number = '';
@@ -247,14 +98,15 @@ class KRA_PDF extends FPDF {
 
     // -- Criterion band (full-width, gray) ------------------------------
     function CriterionBand($text) {
-        $this->CheckPageBreak(self::ROW_H);
         $this->SetFillColor(...self::GRAY_BAND);
         $this->SetTextColor(0, 0, 0);
         $this->SetFont('Times', 'B', 9.5);
         $this->SetDrawColor(0, 0, 0);
         $this->SetLineWidth(0.2);
         $total_w = self::COL_CRITERIA + self::COL_POINTS + self::COL_ALLOWABLE;
-        $this->Cell($total_w, self::ROW_H, '  ' . $text, 1, 1, 'L', true);
+        $label = '  ' . $text;
+        $this->CheckPageBreak(self::ROW_H * $this->NbLines($total_w, $label) + self::ROW_H);
+        $this->MultiCell($total_w, self::ROW_H, $label, 1, 'L', true);
     }
 
     // -- Item header row: item label | "Points" | "Allowable Points" ----
@@ -569,7 +421,7 @@ class KRA_PDF extends FPDF {
  * @param string   $suc_name       University name for the "Name of SUC" row
  * @return KRA_PDF  (caller decides Output mode/filename)
  */
-function renderKraPdf(array $faculty, array $subs_by_cat, array $kras_to_print, string $suc_name = 'Carlos Hilado Memorial State University', ?array $iss = null, ?array $score_iss = null): KRA_PDF {
+function renderKraPdf(array $faculty, array $subs_by_cat, array $kras_to_print, string $suc_name = 'Carlos Hilado Memorial State University', ?array $iss = null, ?array $score_iss = null, ?array $criteria = null): KRA_PDF {
     $definitions = kraDefinitions();
 
     $pdf = new KRA_PDF('P', 'mm', 'A4');
@@ -588,59 +440,48 @@ function renderKraPdf(array $faculty, array $subs_by_cat, array $kras_to_print, 
     foreach ($kras_to_print as $num) {
         if (!isset($definitions[$num])) continue;
         $def = $definitions[$num];
-        $entries = $subs_by_cat[$def['category']] ?? [];
+        $category = $def['category'];
+        $categoryCriteria = array_filter($criteria ?? [], static fn(array $row): bool => $row['kra_category'] === $category);
+        $entries = $subs_by_cat[$category] ?? [];
+        $summary = $score_iss ?? $iss;
+        if ($criteria !== null && !in_array($summary['application_status'] ?? '', ['approved','reclassified','admin_rejected'], true)) {
+            $entries = kraCurrentCriterionEntries($entries, $categoryCriteria);
+        }
+        $buckets = criteriaEntryBuckets($category, $categoryCriteria, $entries);
+        $parentScores = $summary['parent_scores'][$category] ?? [];
 
         $pdf->kra_number = $def['number'];
-        $pdf->kra_label  = $def['label'];
+        $pdf->kra_label = $def['label'];
         $pdf->AddPage();
 
-        $grand_total = 0.0;
-        $buckets = kraBucketEntries($def, $entries);
-
-        foreach ($def['criteria'] as $letter => $criterion) {
-            $pdf->CriterionBand($criterion['title']);
-
-            $item_entries = $buckets[$letter];
-            $multi_item = count($criterion['items']) > 1;
-            $criterion_raw = 0.0;
-
-            foreach ($criterion['items'] as $idx => $item) {
-                $pdf->ItemHeaderRow($item['label']);
-                $entries_here = $item_entries[$idx];
-
-                if (!empty($item['subgroups'])) {
-                    $item_total = 0.0;
-                    foreach ($item['subgroups'] as $sg) {
-                        $sub_sum = 0.0;
-                        foreach ($entries_here as $e) {
-                            if ($sg['test'](kraEntrySubVal($e))) $sub_sum += (float)$e['computed_points'];
-                        }
-                        $pdf->DataRow($sg['label'], $sub_sum);
-                        $item_total += $sub_sum;
-                    }
-                } else {
-                    $item_total = array_sum(array_column($entries_here, 'computed_points'));
-                    $pdf->DataRow('', $item_total);
-                }
-
-                if ($multi_item) $pdf->ItemTotalRow($item_total);
-                $criterion_raw += $item_total;
+        $grandTotal = 0.0;
+        foreach (criteriaGroups($categoryCriteria) as $code => $parent) {
+            $name = $code === '' ? $parent['name'] : 'CRITERION ' . $code . ' - ' . $parent['name'];
+            $pdf->CriterionBand(kraPdfText($name));
+            $raw = 0.0;
+            foreach ($parent['children'] as $child) {
+                $assessed = $buckets[$child['criterion_key']] ?? [];
+                $points = array_sum(array_column($assessed, 'computed_points'));
+                $pdf->ItemHeaderRow(kraPdfText($child['criterion_label']));
+                $pdf->DataRow($assessed ? '' : 'Not assessed', $assessed ? $points : null, number_format((float)$child['max_points'], 2));
+                $raw += $points;
             }
-
-            $criterion_capped = min($criterion['max'], $criterion_raw);
-            $pdf->CriterionTotalRow($letter, $criterion_raw, $criterion_capped);
-            $grand_total += $criterion_capped;
+            $subtotal = $parentScores[$code] ?? min($parent['max'] ?? $def['max_points'], $raw);
+            $pdf->CriterionTotalRow($code, $subtotal, $parent['max'] ?? $def['max_points']);
+            $grandTotal += $subtotal;
+        }
+        foreach ($buckets[''] ?? [] as $entry) {
+            $remarks = $entry['remarks'] ?? '';
+            $description = function_exists('formatKraRemarks') ? strip_tags(formatKraRemarks($category, $remarks)) : $remarks;
+            $pdf->DataRow(kraPdfText(html_entity_decode($description, ENT_QUOTES, 'UTF-8')), $entry['computed_points']);
+            $grandTotal += (float)$entry['computed_points'];
         }
 
-        $grand_total_capped = min($def['max_points'], $grand_total);
-        $iss_for_totals = $score_iss ?? $iss;
-        $iss_key_by_num = ['I' => 'kra1', 'II' => 'kra2', 'III' => 'kra3', 'IV' => 'kra4'];
-        $iss_key = $iss_key_by_num[$def['number']] ?? null;
-        if ($iss_key && isset($iss_for_totals['kra_raw_points'][$iss_key])) {
-            $grand_total_capped = (float)$iss_for_totals['kra_raw_points'][$iss_key];
-        }
+        $issKey = 'kra' . (array_search($num, array_keys($definitions), true) + 1);
+        $maximum = $summary['kra_scores'][$issKey]['cap'] ?? $def['max_points'];
+        $grandTotal = $summary['kra_raw_points'][$issKey] ?? min($maximum, $grandTotal);
         $pdf->Ln(2);
-        $pdf->GrandTotalRow($def['number'], $grand_total_capped, $def['max_points']);
+        $pdf->GrandTotalRow($def['number'], $grandTotal, $maximum);
 
         $pdf->SignatureBlock($pdf->faculty_name);
     }

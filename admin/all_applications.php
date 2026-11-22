@@ -1,50 +1,28 @@
 <?php
-$search          = trim($_GET['search'] ?? '');
+if (!isAdmin()) { echo '<div class="alert alert-danger">Access denied.</div>'; return; }
+$search          = is_string($_GET['search'] ?? null) ? trim($_GET['search']) : '';
 $filter          = $_GET['filter'] ?? '';
 $filter_campus   = intval($_GET['campus_id'] ?? 0);
-$allowed = ['draft','submitted','under_review','talisay_review','approved','rejected','reclassified','admin_rejected','needs_revision'];
-if ($filter && !in_array($filter, $allowed)) $filter = '';
+$tabs = [
+    '' => 'All', 'draft' => 'Draft', 'submitted' => 'Submitted', 'under_review' => 'Under Review',
+    'approved' => 'Evaluation Complete', 'rejected' => 'Returned for Revision', 'needs_revision' => 'Needs Revision',
+    'admin_rejected' => 'Returned by Admin', 'edit_requested' => 'Edit Requested', 'expired' => 'Expired',
+    'reclassified' => 'Reclassified',
+];
+if (!is_string($filter) || !isset($tabs[$filter])) $filter = '';
 
 // Fetch all campuses for dropdown
 $campuses = $pdo->query("SELECT campus_id, campus_name FROM campuses ORDER BY campus_name ASC")->fetchAll();
 
-// Handle admin actions
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $action = $_POST['action'] ?? '';
-    $app_id = intval($_POST['app_id'] ?? 0);
-
-    if ($action === 'admin_approve_edit' && $app_id) {
-        $pdo->prepare("UPDATE applications SET status='draft', checker_remarks='Edit request allowed by admin. Please update and resubmit.' WHERE application_id=?")
-            ->execute([$app_id]);
-        logAudit($pdo, $_SESSION['user_id'], 'Edit Request Allowed', "Admin allowed edit for Application #{$app_id}.");
-        flashMessage('success', 'Edit request allowed. Faculty can now edit and resubmit.');
-        echo "<script>window.location.href='index.php?page=all_applications&filter=edit_requested';</script>"; exit;
-    } elseif ($action === 'admin_deny_edit' && $app_id) {
-        $deny_reason = trim($_POST['deny_reason'] ?? 'Edit request denied by admin.');
-        $check = $pdo->prepare("SELECT reviewed_at FROM applications WHERE application_id=?");
-        $check->execute([$app_id]);
-        $prev  = $check->fetch();
-        $revert_status = (!empty($prev['reviewed_at'])) ? 'approved' : 'submitted';
-        $pdo->prepare("UPDATE applications SET status=?, checker_remarks=? WHERE application_id=?")
-            ->execute([$revert_status, $deny_reason, $app_id]);
-        logAudit($pdo, $_SESSION['user_id'], 'Edit Request Denied', "Admin denied edit for Application #{$app_id}. Reverted to {$revert_status}.");
-        flashMessage('warning', 'Edit request denied.');
-        echo "<script>window.location.href='index.php?page=all_applications&filter=edit_requested';</script>"; exit;
-    } elseif ($action === 'admin_reject' && $app_id) {
-        $admin_remarks = trim($_POST['admin_remarks'] ?? '');
-        $pdo->prepare("UPDATE applications SET status='admin_rejected', checker_remarks=?, reviewed_at=NOW() WHERE application_id=? AND status='approved'")
-            ->execute([$admin_remarks ?: 'Returned by admin.', $app_id]);
-        logAudit($pdo, $_SESSION['user_id'], 'Application Returned by Admin', "Admin returned Application #{$app_id}. Remarks: {$admin_remarks}");
-        flashMessage('warning', 'Application has been returned for revision.');
-        echo "<script>window.location.href='index.php?page=all_applications&filter=approved';</script>"; exit;
-    }
-    echo "<script>window.location.href='index.php?page=all_applications&filter=edit_requested';</script>"; exit;
-}
-
 $where  = 'WHERE 1=1';
 $params = [];
 
-if ($filter) { $where .= ' AND a.status = ?'; $params[] = $filter; }
+if ($filter === 'approved') {
+    $where .= " AND a.status IN ('approved','reclassified')";
+} elseif ($filter !== '') {
+    $where .= ' AND a.status = ?';
+    $params[] = $filter;
+}
 if ($filter_campus) { $where .= ' AND u.campus_id = ?'; $params[] = $filter_campus; }
 if ($search) {
     $where .= ' AND (u.full_name LIKE ? OR u.employee_id LIKE ? OR camp.campus_name LIKE ?)';
@@ -81,18 +59,11 @@ $apps = $stmt->fetchAll();
 $counts = $pdo->query("SELECT a.status, COUNT(*) as cnt FROM applications a JOIN users u ON a.user_id = u.user_id AND u.role = 'faculty' GROUP BY a.status")->fetchAll(PDO::FETCH_KEY_PAIR);
 $total  = array_sum($counts);
 
-// Status tab config
-$tabs = [
-    ''               => ['label'=>'All',                  'icon'=>'bi-grid-3x3-gap',          'color'=>'#1a3a6b'],
-    'draft'          => ['label'=>'Draft',                'icon'=>'bi-file-earmark',           'color'=>'#94a3b8'],
-    'submitted'      => ['label'=>'Submitted',            'icon'=>'bi-send',                   'color'=>'#1a3a6b'],
-    'under_review'   => ['label'=>'Under Review',         'icon'=>'bi-hourglass-split',        'color'=>'#1a3a6b'],
-    'talisay_review' => ['label'=>'ITC Review',           'icon'=>'bi-building-up',            'color'=>'#1a3a6b'],
-    'approved'       => ['label'=>'Evaluation Complete',  'icon'=>'bi-clipboard-check',        'color'=>'#1a3a6b'],
-    'rejected'       => ['label'=>'Returned for Revision','icon'=>'bi-arrow-counterclockwise', 'color'=>'#1a3a6b'],
-    'needs_revision' => ['label'=>'Needs Revision',       'icon'=>'bi-pencil-square',          'color'=>'#1a3a6b'],
-    'admin_rejected' => ['label'=>'Returned by Admin',    'icon'=>'bi-x-circle',               'color'=>'#dc2626'],
-];
+$counts['approved'] = ($counts['approved'] ?? 0) + ($counts['reclassified'] ?? 0);
+foreach (['edit_requested','expired'] as $optionalStatus) {
+    if ($filter !== $optionalStatus && empty($counts[$optionalStatus])) unset($tabs[$optionalStatus]);
+}
+if ($filter !== 'reclassified') unset($tabs['reclassified']);
 
 // Score color helper
 function scoreColor(float $s): string {
@@ -136,95 +107,66 @@ function scoreColor(float $s): string {
 </div>
 
 <!-- -- Search & Filter bar -- -->
-<div class="neon-card mb-3" style="padding:1rem 1.25rem;">
-    <form method="GET">
+<div class="applications-toolbar">
+    <form class="applications-filters" method="GET">
         <input type="hidden" name="page" value="all_applications">
         <input type="hidden" name="filter" value="<?= sanitize($filter) ?>">
-        <div style="display:flex;flex-wrap:wrap;gap:0.75rem;align-items:flex-end;">
-            <!-- Search -->
-            <div style="flex:1;min-width:200px;">
-                <label style="font-size:0.72rem;font-weight:600;color:#64748b;text-transform:uppercase;
-                               letter-spacing:0.05em;display:block;margin-bottom:5px;">Search</label>
-                <div style="display:flex;align-items:center;border:1px solid #e2e8f0;
-                            overflow:hidden;background:#f8fafc;"
-                     onfocusin="this.style.borderColor='#1a3a6b'" onfocusout="this.style.borderColor='#e2e8f0'">
-                    <span style="padding:0 0.65rem;color:#94a3b8;font-size:0.85rem;">
-                        <i class="bi bi-search"></i>
-                    </span>
-                    <input type="text" name="search" value="<?= sanitize($search) ?>"
-                           placeholder="Faculty name, ID, campus..."
-                           style="flex:1;border:none;outline:none;background:transparent;
-                                  padding:0.5rem 0.5rem 0.5rem 0;font-size:0.85rem;color:#1e293b;">
-                    <?php if ($search): ?>
-                    <a href="?page=all_applications&filter=<?= urlencode($filter) ?><?= $filter_campus ? '&campus_id='.$filter_campus : '' ?>"
-                       style="padding:0 0.65rem;color:#94a3b8;text-decoration:none;font-size:0.85rem;">
-                        <i class="bi bi-x"></i>
-                    </a>
-                    <?php endif; ?>
-                </div>
+        <!-- Search -->
+        <div class="applications-search-field">
+            <label for="applications-search">Search</label>
+            <div class="applications-search-box">
+                <i class="bi bi-search" aria-hidden="true"></i>
+                <input id="applications-search" type="text" name="search" value="<?= sanitize($search) ?>"
+                       placeholder="Faculty name, ID, campus...">
+                <?php if ($search): ?>
+                <a href="?page=all_applications&amp;filter=<?= urlencode($filter) ?><?= $filter_campus ? '&amp;campus_id='.$filter_campus : '' ?>"
+                   aria-label="Clear search">
+                    <i class="bi bi-x-lg" aria-hidden="true"></i>
+                </a>
+                <?php endif; ?>
             </div>
-            <!-- Campus filter -->
-            <div style="min-width:180px;">
-                <label style="font-size:0.72rem;font-weight:600;color:#64748b;text-transform:uppercase;
-                               letter-spacing:0.05em;display:block;margin-bottom:5px;">Campus</label>
-                <select name="campus_id"
-                        style="width:100%;border:1px solid #e2e8f0;padding:0.42rem 0.75rem;
-                               font-size:0.82rem;color:#1e293b;background:#f8fafc;outline:none;cursor:pointer;"
-                        onchange="this.form.submit()">
-                    <option value="">All Campuses</option>
-                    <?php foreach ($campuses as $c): ?>
-                    <option value="<?= $c['campus_id'] ?>" <?= $filter_campus === (int)$c['campus_id'] ? 'selected' : '' ?>>
-                        <?= sanitize($c['campus_name']) ?>
-                    </option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-            <!-- Submit -->
-            <button type="submit"
-                    style="background:#1a3a6b;color:#fff;border:none;
-                           padding:0.42rem 1.1rem;font-size:0.82rem;font-weight:600;cursor:pointer;
-                           display:flex;align-items:center;gap:0.4rem;white-space:nowrap;"
-                    onmouseover="this.style.background='#152d54'" onmouseout="this.style.background='#1a3a6b'">
-                <i class="bi bi-search"></i> Search
-            </button>
+        </div>
+        <!-- Campus filter -->
+        <div>
+            <label for="applications-campus">Campus</label>
+            <select id="applications-campus" name="campus_id"
+                    onchange="this.form.submit()">
+                <option value="">All Campuses</option>
+                <?php foreach ($campuses as $c): ?>
+                <option value="<?= $c['campus_id'] ?>" <?= $filter_campus === (int)$c['campus_id'] ? 'selected' : '' ?>>
+                    <?= sanitize($c['campus_name']) ?>
+                </option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+        <!-- Submit -->
+        <div class="applications-filter-actions">
+            <button type="submit"><i class="bi bi-search" aria-hidden="true"></i> Search</button>
             <?php if ($search || $filter_campus): ?>
-            <a href="?page=all_applications&filter=<?= urlencode($filter) ?>"
-               style="background:#fff;color:#475569;border:1px solid #e2e8f0;
-                      padding:0.42rem 0.9rem;font-size:0.8rem;font-weight:600;text-decoration:none;
-                      display:flex;align-items:center;gap:0.4rem;white-space:nowrap;"
-               onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background='#fff'">
-                <i class="bi bi-x-circle"></i> Clear
-            </a>
+            <a href="?page=all_applications&amp;filter=<?= urlencode($filter) ?>">Clear</a>
             <?php endif; ?>
         </div>
     </form>
-</div>
 
-<!-- -- Status filter tabs -- -->
-<div style="display:flex;flex-wrap:wrap;gap:0.4rem;margin-bottom:1.25rem;">
-    <?php foreach ($tabs as $key => $t):
-        $cnt    = $key === '' ? $total : ($counts[$key] ?? 0);
-        $active = $filter === $key;
-        $url    = '?page=all_applications&filter=' . $key
-                . ($search      ? '&search='.urlencode($search) : '')
-                . ($filter_campus ? '&campus_id='.$filter_campus  : '');
-    ?>
-    <a href="<?= $url ?>"
-       style="display:inline-flex;align-items:center;gap:0.4rem;padding:0.35rem 0.85rem;
-              font-size:0.75rem;font-weight:600;text-decoration:none;transition:all 0.15s;
-              <?= $active
-                ? 'background:#1a3a6b;color:#fff;'
-                : 'background:#fff;color:#475569;border:1px solid #e2e8f0;' ?>">
-        <?= $t['label'] ?>
-        <?php if ($cnt): ?>
-        <span style="display:inline-flex;align-items:center;justify-content:center;
-                     min-width:16px;height:16px;padding:0 3px;font-size:0.62rem;font-weight:700;
-                     <?= $active ? 'background:rgba(255,255,255,0.25);color:#fff;' : 'background:#f1f5f9;color:#64748b;' ?>">
-            <?= $cnt ?>
-        </span>
-        <?php endif; ?>
-    </a>
-    <?php endforeach; ?>
+    <!-- -- Status filter tabs -- -->
+    <nav class="applications-status-filters" aria-label="Filter by application status">
+        <?php foreach ($tabs as $key => $label):
+            $cnt    = $key === '' ? $total : ($counts[$key] ?? 0);
+            $active = $filter === $key;
+            $url    = '?page=all_applications&filter=' . $key
+                    . ($search      ? '&search='.urlencode($search) : '')
+                    . ($filter_campus ? '&campus_id='.$filter_campus  : '');
+        ?>
+        <a href="<?= htmlspecialchars($url, ENT_QUOTES) ?>"<?= $active ? ' aria-current="page"' : '' ?>>
+            <?= $label ?>
+            <?php if ($cnt): ?>
+            <span>
+                <?= $cnt ?>
+            </span>
+            <?php endif; ?>
+        </a>
+        <?php endforeach; ?>
+    </nav>
 </div>
 
 <!-- -- Applications table / empty state -- -->
@@ -285,7 +227,7 @@ function scoreColor(float $s): string {
                         $colors = ['#1a3a6b','#334155','#1e4d8c','#475569','#1a3a6b','#334155'];
                         $bg = $colors[crc32($a['user_id']) % count($colors)];
                         ?>
-                        <div style="width:36px;height:36px;border-radius:50%;background:<?= $bg ?>;
+                        <div class="account-avatar" style="width:36px;height:36px;border-radius:50%;background:<?= $bg ?>;
                                     display:flex;align-items:center;justify-content:center;
                                     font-size:0.78rem;font-weight:700;color:#fff;flex-shrink:0;">
                             <?= $initials ?>
@@ -335,7 +277,7 @@ function scoreColor(float $s): string {
                 <!-- Status -->
                 <td style="padding:0.85rem 0.75rem;vertical-align:middle;">
                     <?= statusBadge($a['status']) ?>
-                    <?php if (($a['approvals_count'] ?? 0) > 0 && in_array($a['status'],['under_review','talisay_review'])): ?>
+                    <?php if (($a['approvals_count'] ?? 0) > 0 && in_array($a['status'],['under_review'])): ?>
                     <div style="font-size:0.65rem;color:#94a3b8;margin-top:3px;">
                         <i class="bi bi-check-circle me-1"></i><?= $a['approvals_count'] ?> evaluator completion<?= $a['approvals_count']>1?'s':'' ?>
                     </div>

@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/scoring/entry_metadata.php';
 /**
  * Presentation-only numbering for KRA entry labels.
  * These values are never used as database keys or scoring inputs.
@@ -9,8 +10,8 @@ function kraNumberingConfig(): array {
     if ($map !== null) return $map;
 
     $map = [
-        'kra1_a_set' => ['criterion'=>'A', 'group_no'=>1, 'group_title'=>'Faculty Performance Evaluation by Students and Supervisor', 'item_no'=>1, 'sub_label'=>'Student Evaluation (60%)'],
-        'kra1_a_sef' => ['criterion'=>'A', 'group_no'=>1, 'group_title'=>'Faculty Performance Evaluation by Students and Supervisor', 'item_no'=>2, 'sub_label'=>"Supervisor's Evaluation (40%)"],
+        'kra1_a_set' => ['criterion'=>'A', 'group_no'=>1, 'group_title'=>'Faculty Performance Evaluation by Students and Supervisor', 'item_no'=>1, 'sub_label'=>'Student Evaluation of Teaching (SET) (60%)'],
+        'kra1_a_sef' => ['criterion'=>'A', 'group_no'=>1, 'group_title'=>'Faculty Performance Evaluation by Students and Supervisor', 'item_no'=>2, 'sub_label'=>'Supervisor Evaluation Form (SEF) (40%)'],
         'kra1_b_textbook_sole' => ['criterion'=>'B', 'group_no'=>1, 'group_title'=>'Instructional Materials (IM) Development', 'item_no'=>1, 'sub_label'=>'Sole authorship'],
         'kra1_b_chapter_sole' => ['criterion'=>'B', 'group_no'=>1, 'group_title'=>'Instructional Materials (IM) Development', 'item_no'=>1, 'sub_label'=>'Sole authorship'],
         'kra1_b_manual_sole' => ['criterion'=>'B', 'group_no'=>1, 'group_title'=>'Instructional Materials (IM) Development', 'item_no'=>1, 'sub_label'=>'Sole authorship'],
@@ -160,14 +161,7 @@ function kraCleanEntryDisplayTitle(string $title): string {
     return trim($title);
 }
 
-function kraCriterionDisplayHeader(string $criterionLabel, ?array $numbering = null): string {
-    $letter = '';
-    if (preg_match('/Criterion\s+([A-Z])/i', $criterionLabel, $m)) {
-        $letter = strtoupper($m[1]);
-    } elseif ($numbering && !empty($numbering['criterion'])) {
-        $letter = strtoupper($numbering['criterion']);
-    }
-
+function kraCriterionGroupTitles(string $category): array {
     $titles = [
         'A' => [
             'Instruction' => 'Teaching Effectiveness',
@@ -192,6 +186,64 @@ function kraCriterionDisplayHeader(string $criterionLabel, ?array $numbering = n
             'Professional Development' => 'Bonus Indicators for Newly Hired Faculty',
         ],
     ];
+    return array_filter(array_map(
+        static fn(array $categories): ?string => $categories[$category] ?? null, $titles
+    ));
+}
+
+function kraAdditionalCriteria(array $rows): array {
+    return array_filter($rows, static fn(array $row): bool => kraIsAdditionalCriterionKey($row['criterion_key']));
+}
+
+function kraIsAdditionalCriterionKey(string $key): bool {
+    return $key !== '' && kraNumberingEntryByKey($key) === null
+        && !in_array($key, ['kra3_d_coordinator_inst', 'kra3_d_coordinator_dept'], true);
+}
+
+function kraAdditionalCriterionRemarks(array $criterion, string $details = ''): string {
+    $label = str_replace('|||', ' / ', $criterion['criterion_label']);
+    preg_match('/^Criterion\s+([A-Z])\b/i', $label, $match);
+    $parts = ['CUSTOM', $criterion['parent_code'] ?? strtoupper($match[1] ?? '?'), $criterion['criterion_key'], $label, $criterion['max_points'], str_replace('|||', ' / ', $details)];
+    if (isset($criterion['parent_max'])) $parts[] = 'PARENT_MAX=' . $criterion['parent_max'];
+    return implode('|||', $parts);
+}
+
+function kraCurrentCriterionEntries(array $entries, array $criteria): array {
+    $active = array_column($criteria, null, 'criterion_key');
+    $current = [];
+    foreach ($entries as $entry) {
+        $parts = explode('|||', $entry['remarks'] ?? '');
+        $key = \Scoring\EntryMetadata::criterionKey($parts);
+        if ($key !== '' && !isset($active[$key])) continue;
+        if (($parts[0] ?? '') === 'CUSTOM' && kraIsAdditionalCriterionKey($key)) {
+            $entry['remarks'] = kraAdditionalCriterionRemarks($active[$key], $parts[5] ?? '');
+            if (empty($entry['verified']) && empty($entry['verified_by']) && !isset($entry['faculty_original_score'])) {
+                $entry['computed_points'] = $active[$key]['max_points'];
+            }
+        }
+        $current[] = $entry;
+    }
+    return $current;
+}
+
+function kraAdditionalCriterionScores(array $entries): array {
+    $scores = [];
+    foreach ($entries as $entry) {
+        $parts = explode('|||', $entry['remarks'] ?? '');
+        if (($parts[0] ?? '') !== 'CUSTOM' || !kraIsAdditionalCriterionKey($parts[2] ?? '')) continue;
+        $key = $parts[2];
+        $scores[$key] = ($scores[$key] ?? 0.0) + (float)$entry['computed_points'];
+    }
+    return $scores;
+}
+
+function kraCriterionDisplayHeader(string $criterionLabel, ?array $numbering = null): string {
+    $letter = '';
+    if (preg_match('/Criterion\s+([A-Z])/i', $criterionLabel, $m)) {
+        $letter = strtoupper($m[1]);
+    } elseif ($numbering && !empty($numbering['criterion'])) {
+        $letter = strtoupper($numbering['criterion']);
+    }
 
     $category = null;
     foreach (['Instruction', 'Research', 'Extension', 'Professional Development'] as $cat) {
@@ -210,8 +262,9 @@ function kraCriterionDisplayHeader(string $criterionLabel, ?array $numbering = n
         }
     }
 
-    if ($letter && $category && isset($titles[$letter][$category])) {
-        return 'Criterion ' . $letter . '. ' . $titles[$letter][$category];
+    $titles = $category ? kraCriterionGroupTitles($category) : [];
+    if ($letter && isset($titles[$letter])) {
+        return 'Criterion ' . $letter . '. ' . $titles[$letter];
     }
 
     return preg_replace('/\s*\(.*$/', '', str_replace(' - ', '. ', $criterionLabel));

@@ -5,6 +5,17 @@ $category_tabs = ['Instruction'=>'instruction', 'Research'=>'research', 'Extensi
 $active_tab = $_GET['tab'] ?? ($category_tabs[$_POST['kra_category'] ?? ''] ?? 'instruction');
 $valid_tabs = ['instruction','research','extension','profdev','autosubrank','posreq'];
 if (!in_array($active_tab, $valid_tabs)) $active_tab = 'instruction';
+$requested_edit_sid = (int)($_GET['edit_sid'] ?? 0);
+$edit_sid = 0;
+if ($requested_edit_sid > 0 && $_SERVER['REQUEST_METHOD'] === 'GET') {
+    $target = $pdo->prepare('SELECT kra_category FROM kra_submissions WHERE submission_id=? AND application_id=?');
+    $target->execute([$requested_edit_sid, $app_id]);
+    $tab = $category_tabs[$target->fetchColumn()] ?? null;
+    if ($tab) {
+        $active_tab = $tab;
+        $edit_sid = $requested_edit_sid;
+    }
+}
 $return_criterion = (string)($_GET['criterion'] ?? '');
 $criterion_query = $return_criterion !== '' ? '&criterion=' . rawurlencode($return_criterion) : '';
 
@@ -82,7 +93,7 @@ function step2OfficialKraTotals(PDO $pdo, int $application_id): array {
     }
     if (class_exists('\Scoring\KRA1Scorer')) {
         $ctx = $pdo->prepare("
-            SELECT a.cycle_id, COALESCE(a.position_title, u.`rank`) AS position_rank
+            SELECT a.cycle_id, a.status, COALESCE(NULLIF(a.position_title, ''), u.`rank`) AS position_rank
             FROM applications a
             JOIN users u ON u.user_id = a.user_id
             WHERE a.application_id = ?
@@ -120,6 +131,11 @@ function step2OfficialKraTotals(PDO $pdo, int $application_id): array {
     $by_cat = [];
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
         $by_cat[$row['kra_category']][] = $row;
+    }
+    if (!in_array($ctx_row['status'] ?? '', ['approved','reclassified','admin_rejected'], true)) {
+        foreach ($by_cat as $category => $entries) {
+            $by_cat[$category] = kraCurrentCriterionEntries($entries, CriteriaSnapshots::rows($pdo, (int)($ctx_row['cycle_id'] ?? 0), $ctx_row['position_rank'] ?? null, $category));
+        }
     }
 
     $fallback = fn($cat) => min(100, array_sum(array_map(
@@ -219,6 +235,12 @@ $can_edit = !$locked
     && (!$_deadline_passed || in_array($app['status'], ['needs_revision', 'rejected']));
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $can_edit) {
+    foreach (['evidence','evidence[]','cav_file','article_file','cert_file'] as $field) {
+        if (isset($_FILES[$field]) && ($error = pdfUploadBatchError($_FILES[$field]))) {
+            flashMessage('danger', $error);
+            echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}{$criterion_query}';</script>"; exit;
+        }
+    }
     $kra_action = $_POST['kra_action'] ?? '';
     if ($app['status'] === 'needs_revision' && !in_array($kra_action, ['save_kra', 'submit_application'], true)) {
         flashMessage('danger', 'Only the entries flagged for revision can be changed.');
@@ -239,6 +261,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $can_edit) {
         $valid_cats = ['Instruction','Research','Extension','Professional Development'];
         if (in_array($category, $valid_cats)) {
             $remarks_parts = array_map('trim', explode('|||', $remarks));
+            if (($remarks_parts[0] ?? '') === 'CUSTOM') {
+                $remarks = configuredCustomCriterionRemarks($pdo, (int)($app['cycle_id'] ?? 0),
+                    ($app['position_title'] ?? '') ?: ($faculty['rank'] ?? null), $category, $remarks_parts[2] ?? '', $remarks_parts[5] ?? '') ?? '';
+                $remarks_parts = explode('|||', $remarks);
+            }
             $remarks_type = $remarks_parts[0] ?? '';
             $meaningful_remarks = $remarks_type !== '';
             if ($meaningful_remarks && $category === 'Instruction') {
@@ -312,7 +339,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $can_edit) {
             $kra_num   = array_search($category, $valid_cats) + 1;
             $folder    = __DIR__ . '/../../uploads/kra' . $kra_num . '/';
             $rel_path  = 'uploads/kra' . $kra_num . '/';
-            $allowed_exts = ['pdf','jpg','jpeg','png'];
+            $allowed_exts = ['pdf'];
 
             // Collect all successfully moved files to attach after save
             $files_to_insert = [];
@@ -452,7 +479,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $can_edit) {
         foreach ($files as $file_field => $status_field) {
             if (!empty($_FILES[$file_field]['name']) && $_FILES[$file_field]['error'] === UPLOAD_ERR_OK) {
                 $ext = strtolower(pathinfo($_FILES[$file_field]['name'], PATHINFO_EXTENSION));
-                $allowed_exts = ['pdf','jpg','jpeg','png'];
+                $allowed_exts = ['pdf'];
                 if (in_array($ext, $allowed_exts)) {
                     $folder = __DIR__ . '/../../uploads/pos_req/';
                     if (!is_dir($folder)) mkdir($folder, 0755, true);
@@ -497,7 +524,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $can_edit) {
                 logAudit($pdo, $uid, 'Revision Resubmitted', "Revised entries resubmitted for Application #{$app_id}");
                 flashMessage('success', 'Revised entries submitted. Your evaluator will review the corrections.');
             } catch (RuntimeException $e) {
-                flashMessage('danger', $e->getMessage());
+                flashMessage('danger', htmlspecialchars($e->getMessage(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'));
             }
             echo "<script>window.location.href='index.php?page=dashboard';</script>"; exit;
         }
@@ -520,15 +547,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $can_edit) {
             flashMessage('danger', 'Your weighted score (' . number_format($score_check['weighted_score'], 2) . ') is below the minimum of <strong>41.00</strong> required for reclassification. Improve your KRA scores before submitting.');
             echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}{$criterion_query}';</script>"; exit;
         }
-        // If checker already assigned, go straight back to under_review
-        $new_status = !empty($app['checker_id']) ? 'under_review' : 'submitted';
-        $pdo->prepare("UPDATE applications SET status=?, submitted_at=NOW() WHERE application_id=?")
-            ->execute([$new_status, $app_id]);
-        // Stamp faculty_original_score on every submission so checker edits can be diffed
-        $pdo->prepare("UPDATE kra_submissions
-            SET faculty_original_score = computed_points
-            WHERE application_id = ? AND faculty_original_score IS NULL")
-            ->execute([$app_id]);
+        try {
+            $new_status = submitApplicationForReview($pdo, $app);
+        } catch (Throwable $error) {
+            error_log('SUCFRMS application submission: ' . $error->getMessage());
+            flashMessage('danger', 'The application could not be submitted. Refresh the page and try again.');
+            echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}{$criterion_query}';</script>"; exit;
+        }
         logAudit($pdo, $uid, 'Application Submitted', "Application {$app_id} submitted. Status: {$new_status}");
         // Notify all active Subcommittee reviewers
         $campus_checkers = $pdo->query("SELECT user_id FROM users WHERE role = 'evaluator' AND status='active'")->fetchAll(PDO::FETCH_COLUMN);
@@ -580,7 +605,6 @@ if (!$target_position && !empty($app['position_title'])) {
 }
 $cycle_id_for_criteria = $app['cycle_id'] ?? null;
 
-$criteria_order_sql = "CASE WHEN criterion_label LIKE 'Criterion A%' THEN 1 WHEN criterion_label LIKE 'Criterion B%' THEN 2 WHEN criterion_label LIKE 'Criterion C%' THEN 3 WHEN criterion_label LIKE 'Criterion D%' THEN 4 ELSE 5 END ASC, max_points DESC";
 $criteria_by_key = [];
 $criteria_order = [];
 $mergeCriteriaRows = function (array $rows) use (&$criteria_by_key, &$criteria_order): void {
@@ -596,24 +620,7 @@ $mergeCriteriaRows = function (array $rows) use (&$criteria_by_key, &$criteria_o
     }
 };
 
-// Load least-specific first, then let cycle/position rows override by key.
-// This keeps newly added global criteria visible on existing seeded cycles,
-// while preserving cycle/position customisations where they exist.
-$cs = $pdo->prepare("SELECT * FROM scoring_criteria WHERE cycle_id IS NULL AND position_rank IS NULL AND kra_category=? AND is_active=1 ORDER BY {$criteria_order_sql}");
-$cs->execute([$cur_cat]);
-$mergeCriteriaRows($cs->fetchAll());
-
-if ($cycle_id_for_criteria) {
-    $cs = $pdo->prepare("SELECT * FROM scoring_criteria WHERE cycle_id=? AND position_rank IS NULL AND kra_category=? AND is_active=1 ORDER BY {$criteria_order_sql}");
-    $cs->execute([$cycle_id_for_criteria, $cur_cat]);
-    $mergeCriteriaRows($cs->fetchAll());
-}
-
-if ($cycle_id_for_criteria && $target_position) {
-    $cs = $pdo->prepare("SELECT * FROM scoring_criteria WHERE cycle_id=? AND position_rank=? AND kra_category=? AND is_active=1 ORDER BY {$criteria_order_sql}");
-    $cs->execute([$cycle_id_for_criteria, $target_position, $cur_cat]);
-    $mergeCriteriaRows($cs->fetchAll());
-}
+$mergeCriteriaRows(CriteriaSnapshots::rows($pdo,(int)$cycle_id_for_criteria,$target_position,$cur_cat));
 
 $criteria_list = array_values(array_filter(array_map(
     fn($key) => $criteria_by_key[$key] ?? null,
@@ -625,6 +632,7 @@ $criteria_list = array_values(array_filter(array_map(
 // could duplicate Criterion A SET/SEF and other criteria.
 $criteria_seen = [];
 $criteria_list = array_values(array_filter($criteria_list, function ($c) use (&$criteria_seen) {
+    if (kraIsAdditionalCriterionKey($c['criterion_key'])) return true;
     $key = implode('|', [
         $c['cycle_id'] ?? '',
         $c['position_rank'] ?? '',
@@ -647,7 +655,9 @@ usort($criteria_list, function ($a, $b) {
             $fallback_criterion = strtoupper($m[1]);
         }
         return [
-            'criterion' => (string)($numbering['criterion'] ?? $fallback_criterion),
+            'criterion' => (string)($row['parent_code'] ?? $numbering['criterion'] ?? $fallback_criterion),
+            'parent_order' => $row['parent_sort_order'] ?? PHP_INT_MAX,
+            'sort_order' => (int)($row['sort_order'] ?? 0),
             'group_no'  => isset($numbering['group_no']) ? (int)$numbering['group_no'] : 99,
             'item_no'   => isset($numbering['item_no']) && $numbering['item_no'] !== null ? (int)$numbering['item_no'] : 0,
             'label'     => $label,
@@ -655,15 +665,18 @@ usort($criteria_list, function ($a, $b) {
     };
     $na = $normaliseNumbering(is_array($a) ? $a : []);
     $nb = $normaliseNumbering(is_array($b) ? $b : []);
-    $letterOrder = ['A' => 1, 'B' => 2, 'C' => 3, 'D' => 4];
     $oa = [
-        $letterOrder[$na['criterion']] ?? 9,
+        $na['parent_order'],
+        $na['criterion'],
+        $na['sort_order'],
         $na['group_no'],
         $na['item_no'],
         $na['label'],
     ];
     $ob = [
-        $letterOrder[$nb['criterion']] ?? 9,
+        $nb['parent_order'],
+        $nb['criterion'],
+        $nb['sort_order'],
         $nb['group_no'],
         $nb['item_no'],
         $nb['label'],
@@ -690,7 +703,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
 <!-- -- KRA Entries Card -------------------------------------- -->
 <div class="neon-card p-0 mb-3" style="overflow:hidden;">
   <!-- Card Header -->
-  <div style="background:linear-gradient(135deg,#1e3a6b,#1e4d8c);padding:1rem 1.5rem;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.75rem;">
+  <div class="kra-entry-header" style="background:linear-gradient(135deg,#1e3a6b,#1e4d8c);">
     <div>
       <h5 style="color:#fff;font-weight:700;font-size:0.97rem;margin:0;line-height:1.3;display:flex;align-items:center;gap:0.5rem;">
         <i class="bi bi-file-earmark-arrow-up" style="font-size:1.1rem;opacity:0.9;"></i>
@@ -699,9 +712,9 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
       </h5>
       <?php if (!empty($_effective_deadline)): ?>
       <?php $dl_ts = strtotime($_effective_deadline . ' 23:59:59'); ?>
-      <div style="margin-top:0.3rem;font-size:0.78rem;color:rgba(255,255,255,0.75);display:flex;align-items:center;gap:0.4rem;">
-        <i class="bi bi-clock"></i>
-        Submission deadline: <strong style="color:<?= time() > $dl_ts ? '#94a3b8' : '#e2e8f0' ?>;"><?= date('M d, Y', strtotime($_effective_deadline)) ?></strong>
+      <div class="kra-entry-deadline" style="margin-top:0.3rem;font-size:0.78rem;color:rgba(255,255,255,0.75);">
+        <span><i class="bi bi-clock me-1" aria-hidden="true"></i>Submission deadline:</span>
+        <strong style="color:<?= time() > $dl_ts ? '#94a3b8' : '#e2e8f0' ?>;"><?= date('M d, Y', strtotime($_effective_deadline)) ?></strong>
         <?php if ($_submission_not_open): ?>
         <span style="background:#334155;color:#fff;border-radius:20px;padding:0.1rem 0.5rem;font-size:0.65rem;font-weight:700;">Not open</span>
         <?php elseif (time() > $dl_ts): ?>
@@ -712,7 +725,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
       </div>
       <?php endif; ?>
     </div>
-    <div style="display:flex;gap:0.5rem;align-items:center;" id="kra-entry-actions">
+    <div id="kra-entry-actions">
       <a href="index.php?page=dashboard"
          style="background:rgba(255,255,255,0.12);color:#fff;border:1px solid rgba(255,255,255,0.25);border-radius:7px;padding:0.4rem 0.9rem;font-size:0.82rem;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:0.35rem;white-space:nowrap;transition:background 0.15s;">
         <i class="bi bi-arrow-left"></i>Back
@@ -762,6 +775,11 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
 
   <!-- Alert banners -->
   <div style="padding:0 1.25rem;">
+  <?php if ($requested_edit_sid > 0): ?>
+  <div id="kraLinkedEntryUnavailable" class="alert alert-info mt-3 mb-0" <?= $edit_sid > 0 ? 'hidden' : '' ?>>
+    The linked entry is no longer available in this application.
+  </div>
+  <?php endif; ?>
   <?php if ($locked): ?>
   <div style="margin-top:0.85rem;padding:0.65rem 1rem;background:#eff6ff;border:1px solid #bfdbfe;border-left:4px solid #1e4d8c;border-radius:8px;font-size:0.82rem;color:#1e4d8c;">
     <i class="bi bi-lock-fill me-2"></i>Evaluation complete - scores are locked.
@@ -793,9 +811,8 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
   $app_config   = json_decode($app['config_incomplete'] ?? '[]', true) ?: [];
   $app_double_raw = json_decode($app['double_counting_flags'] ?? '[]', true) ?: [];
   $app_previous_reuse = array_values(array_filter($app_double_raw, fn($d) => ($d['type'] ?? '') === 'previous_unsuccessful_reuse'));
-  $app_double = array_values(array_filter($app_double_raw, fn($d) => ($d['type'] ?? '') !== 'previous_unsuccessful_reuse'));
   $eval_period_ok = isset($app['evaluation_period_ok']) ? (bool)$app['evaluation_period_ok'] : true;
-  $has_advisory = !$eval_period_ok || !empty($app_pending) || !empty($app_config) || !empty($app_double) || !empty($app_previous_reuse);
+  $has_advisory = !$eval_period_ok || !empty($app_pending) || !empty($app_config) || !empty($app_previous_reuse);
 
   if ($has_advisory && !$locked):
   ?>
@@ -811,17 +828,13 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
       <?php foreach (array_slice($app_previous_reuse, 0, 5) as $reuse): ?>
       <div style="color:#dc2626;margin-bottom:0.25rem;"><i class="bi bi-file-earmark-x me-1"></i><strong>Previous unsuccessful application reuse:</strong> <?= htmlspecialchars($reuse['message'] ?? ($reuse['title'] ?? 'Evidence file')) ?></div>
       <?php endforeach; ?>
-      <?php foreach (array_slice($app_double, 0, 3) as $d): ?>
-      <div style="color:#c2410c;margin-bottom:0.25rem;"><i class="bi bi-copy me-1"></i><strong>Double-counting flagged:</strong> "<?= htmlspecialchars($d['title'] ?? '') ?>"</div>
-      <?php endforeach; ?>
       <?php foreach (array_slice($app_pending, 0, 5) as $pd): ?>
       <div style="color:#92400e;margin-bottom:0.2rem;"><i class="bi bi-file-earmark-x me-1"></i><?= htmlspecialchars($pd) ?></div>
       <?php endforeach; ?>
       <?php foreach (array_slice($app_config, 0, 3) as $ci): ?>
       <div style="color:#7c3aed;margin-bottom:0.2rem;"><i class="bi bi-wrench me-1"></i><?= htmlspecialchars($ci) ?></div>
       <?php endforeach; ?>
-      <?php $total_items = count($app_pending) + count($app_config) + count($app_double) + count($app_previous_reuse); ?>
-      <?php if ($total_items > 16): ?>
+      <?php if (count($app_pending) > 5 || count($app_config) > 3 || count($app_previous_reuse) > 5): ?>
       <div style="color:#94a3b8;font-size:0.72rem;margin-top:0.25rem;">+ more items ... full details visible to your evaluator.</div>
       <?php endif; ?>
     </div>
@@ -1156,7 +1169,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
               <td style="padding:0.75rem;text-align:center;font-weight:700;color:#64748b;">1</td>
               <td style="padding:0.75rem;font-weight:600;color:#1e293b;">CAV Transcript of Records</td>
               <td style="padding:0.75rem;">
-                <input type="file" name="cav_file" accept=".pdf,.jpg,.jpeg,.png" style="font-size:0.78rem;">
+                <input type="file" name="cav_file" accept=".pdf,application/pdf" style="font-size:0.78rem;">
                 <?php if (!empty($pos_data['cav_file'])): ?>
                 <div style="margin-top:0.3rem;">
                   <a href="<?= $pos_data['cav_file'] ?>" target="_blank" style="font-size:0.7rem;color:#1e4d8c;"><i class="bi bi-file-earmark"></i> View Current</a>
@@ -1179,7 +1192,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
                 <div style="font-size:0.75rem;color:#64748b;font-weight:normal;margin-top:0.2rem;">Scopus, WoS, or ACI, published within the last 3 years</div>
               </td>
               <td style="padding:0.75rem;">
-                <input type="file" name="article_file" accept=".pdf,.jpg,.jpeg,.png" style="font-size:0.78rem;">
+                <input type="file" name="article_file" accept=".pdf,application/pdf" style="font-size:0.78rem;">
                 <?php if (!empty($pos_data['article_file'])): ?>
                 <div style="margin-top:0.3rem;">
                   <a href="<?= $pos_data['article_file'] ?>" target="_blank" style="font-size:0.7rem;color:#1e4d8c;"><i class="bi bi-file-earmark"></i> View Current</a>
@@ -1245,7 +1258,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
               <td style="padding:0.75rem;text-align:center;font-weight:700;color:#64748b;">1</td>
               <td style="padding:0.75rem;font-weight:600;color:#1e293b;">College/University Professor Certification Form</td>
               <td style="padding:0.75rem;">
-                <input type="file" name="cert_file" accept=".pdf,.jpg,.jpeg,.png" style="font-size:0.78rem;">
+                <input type="file" name="cert_file" accept=".pdf,application/pdf" style="font-size:0.78rem;">
                 <?php if (!empty($pos_data['cert_file'])): ?>
                 <div style="margin-top:0.3rem;">
                   <a href="<?= $pos_data['cert_file'] ?>" target="_blank" style="font-size:0.7rem;color:#1e4d8c;"><i class="bi bi-file-earmark"></i> View Current</a>
@@ -1287,86 +1300,6 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
 
     <?php else: ?>
     <!-- REGULAR KRA TAB CONTENT (dark-themed criterion-grouped layout) -->
-    <?php
-    $crit_headers = [
-        'Instruction'              => 'Teaching Effectiveness',
-        'Research'                 => 'Research, Invention & Creative Work',
-        'Extension'                => 'Extension Services',
-        'Professional Development' => 'Professional Development',
-    ];
-    $crit_max = [
-        'Instruction'              => 60,
-        'Research'                 => 100,
-        'Extension'                => 100,
-        'Professional Development' => 100,
-    ];
-
-    // Map entries to criterion groups using criteria_list labels
-    // Build a lookup: criterion_label => [entries]
-    $entries_by_crit = [];
-    foreach ($cur_entries as $s) {
-        $rem = $s['remarks'] ?? '';
-        $parts = explode('|||', $rem);
-        $matched = false;
-        foreach ($criteria_list as $c) {
-            // Try to match the stored remarks against criterion label keywords
-            $lbl = $c['criterion_label'];
-            $critType = $parts[0] ?? '';
-            // Match by first segment of remarks against criterion label
-            if (stripos($lbl, $critType) !== false || stripos($critType, substr($lbl, 0, 10)) !== false) {
-                $entries_by_crit[$lbl][] = $s;
-                $matched = true;
-                break;
-            }
-        }
-        if (!$matched) {
-            $entries_by_crit['Other'][] = $s;
-        }
-    }
-
-    // Group criteria by Criterion letter (A, B, C, D...)
-    $crit_groups = [];
-    foreach ($criteria_list as $c) {
-        $lbl = $c['criterion_label'];
-        // Extract criterion letter from label e.g. "Criterion A..." or just first word
-        if (preg_match('/Criterion\s+([A-Z])/i', $lbl, $m)) {
-            $letter = strtoupper($m[1]);
-        } else {
-            $letter = '?';
-        }
-        if (!isset($crit_groups[$letter])) {
-            $crit_groups[$letter] = ['label' => $lbl, 'max' => $c['max_points'], 'items' => []];
-        }
-        $crit_groups[$letter]['items'][] = $c;
-    }
-
-    // Compute criterion totals from submitted entries
-    $crit_totals = [];
-    foreach ($cur_entries as $s) {
-        $rem = $s['remarks'] ?? '';
-        $parts = explode('|||', $rem);
-        $critType = $parts[0] ?? '';
-        foreach ($criteria_list as $c) {
-            $lbl = $c['criterion_label'];
-            if (preg_match('/Criterion\s+([A-Z])/i', $lbl, $m)) {
-                $letter = strtoupper($m[1]);
-            } else {
-                $letter = '?';
-            }
-            // Simple heuristic: map critType prefix to letter
-            $map = ['A' => ['A-set-sef','A-set-sef-sem','A-set-sem','A-sef-sem','A-org'], 'B' => ['B|','B-material','B-training','B-paper','B-degree'], 'C' => ['C|','C-thesis','C-award'], 'D' => ['D-']];
-            foreach ($map as $l => $prefixes) {
-                foreach ($prefixes as $p) {
-                    if (strpos($critType, $p) === 0 || $critType === $p) {
-                        if (!isset($crit_totals[$l])) $crit_totals[$l] = 0;
-                        $crit_totals[$l] += (float)$s['computed_points'];
-                    }
-                }
-            }
-        }
-    }
-    ?>
-
     <?php if (empty($criteria_list)): ?>
     <!-- No criteria configured -->
     <div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:8px;padding:2rem;text-align:center;color:#94a3b8;font-size:0.85rem;">
@@ -1380,35 +1313,15 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
     // letter group; custom/unmapped rows use the stable DB criterion_key so new
     // criteria don't collapse into the same "?" bucket.
     $dark_groups = [];  // key = display group id, value = ['letter'=>string, 'header'=>string, 'max'=>float, 'items'=>[], '_seen'=>[]]
-    $criterion_title_map = [
-        'Instruction' => [
-            'A' => 'Teaching Effectiveness',
-            'B' => 'Curriculum and Instructional Materials Developed',
-            'C' => 'Special Projects, Capstone Projects, Thesis, Dissertation and Mentorship Services',
-        ],
-        'Research' => [
-            'A' => 'Research Outputs Published',
-            'B' => 'Inventions',
-            'C' => 'Creative Works',
-        ],
-        'Extension' => [
-            'A' => 'Service to the Institution',
-            'B' => 'Service to the Community',
-            'C' => 'Quality of Extension Services',
-            'D' => 'Bonus Criterion',
-        ],
-        'Professional Development' => [
-            'A' => 'Involvement in Professional Organization',
-            'B' => 'Continuing Development',
-            'C' => 'Awards and Recognition',
-            'D' => 'Bonus Indicators for Newly Hired Faculty',
-        ],
-    ];
     foreach ($criteria_list as $c) {
         $lbl = $c['criterion_label'];
         $criterion_key = trim((string)($c['criterion_key'] ?? ''));
         // Extract letter: "Criterion A. Teaching..." or "Criterion B ..."
-        if (preg_match('/Criterion\s+([A-Z])[\.:\s]/i', $lbl, $m)) {
+        if (isset($c['parent_code'])) {
+            $letter = $c['parent_code'];
+            $group_key = $letter;
+            $header = 'Criterion ' . $letter . '. ' . $c['parent_name'];
+        } elseif (preg_match('/Criterion\s+([A-Z])[\.:\s]/i', $lbl, $m)) {
             $letter = strtoupper($m[1]);
             $group_key = $letter;
             // Build a clean header: everything up to the first ( or end
@@ -1418,9 +1331,6 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
             $letter = '?';
             $group_key = 'custom:' . ($criterion_key !== '' ? $criterion_key : md5((string)$lbl));
             $header = $lbl;
-        }
-        if (isset($criterion_title_map[$cur_cat][$letter])) {
-            $header = 'Criterion ' . $letter . '. ' . $criterion_title_map[$cur_cat][$letter];
         }
         if (!isset($dark_groups[$group_key])) {
             $dark_groups[$group_key] = ['letter' => $letter, 'header' => $header, 'max' => 0.0, 'items' => [], '_seen' => []];
@@ -1432,6 +1342,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
         $dark_groups[$group_key]['_seen'][$item_key] = true;
         $dark_groups[$group_key]['items'][] = $c;
         $dark_groups[$group_key]['max'] += (float)$c['max_points'];
+        $dark_groups[$group_key]['configured_max'] = $c['parent_max'] ?? null;
     }
 
     // Build a flat list of all entries with their evidence
@@ -1587,6 +1498,13 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
         'kra4_c_award_national'    => ['type'=>'C-award',    'sub'=>'4'],
         'kra4_c_award_international'=> ['type'=>'C-award',   'sub'=>'5'],
         'kra4_c_award_prestigious' => ['type'=>'C-award',    'sub'=>'0'],
+        'kra4_d_academic_president'   => ['type'=>'D-prior-academic', 'sub'=>'', 'role'=>'President'],
+        'kra4_d_academic_vp_dean'     => ['type'=>'D-prior-academic', 'sub'=>'', 'role'=>'VP/Dean/Director'],
+        'kra4_d_academic_dept_head'   => ['type'=>'D-prior-academic', 'sub'=>'', 'role'=>'Dept/Program Head'],
+        'kra4_d_academic_faculty'     => ['type'=>'D-prior-academic', 'sub'=>'', 'role'=>'Faculty Member'],
+        'kra4_d_industry_managerial'  => ['type'=>'D-prior-industry', 'sub'=>'', 'role'=>'Managerial/Supervisory'],
+        'kra4_d_industry_technical'   => ['type'=>'D-prior-industry', 'sub'=>'', 'role'=>'Technical/Skilled'],
+        'kra4_d_industry_support'     => ['type'=>'D-prior-industry', 'sub'=>'', 'role'=>'Support/Administrative Staff'],
     ];
     $key_to_pd_default_max = [
         'kra4_a_org_membership' => 5.00,
@@ -1629,10 +1547,10 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
                 background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;">
         <span style="font-size:0.68rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.06em;margin-right:0.25rem;">Criterion:</span>
         <?php foreach ($dark_groups as $gk => $g): $gi = array_search($gk, $group_keys); ?>
-        <button type="button"
+        <button type="button" class="criterion-step-button"
                 onclick="goCriterion(<?= $gi ?>)"
                 id="criterionPill_<?= $gi ?>"
-                style="padding:0.3rem 0.85rem;border-radius:20px;font-size:0.75rem;font-weight:700;cursor:pointer;transition:all 0.15s;
+                style="font-size:0.75rem;font-weight:700;cursor:pointer;transition:all 0.15s;
                        <?= $gi === $initial_criterion_index ? 'background:#1e3a5f;color:#fff;border:1px solid #1e3a5f;' : 'background:#fff;color:#64748b;border:1px solid #e2e8f0;' ?>">
             <?= htmlspecialchars($g['letter']) ?>
         </button>
@@ -1674,8 +1592,10 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
     }
     // Compute group score from the already-collected entries
     $group_score = 0;
+    $has_uncounted_entries = false;
     foreach ($group_entries as $s) {
         $group_score += kraApplyEffectiveComputedPoints($s);
+        $has_uncounted_entries = $has_uncounted_entries || !isset($score_summary['scoring_claims'][$s['submission_id']]);
     }
     if ($cur_cat === 'Instruction' && $letter === 'A') {
         if (!class_exists('\Scoring\KRA1Scorer')) {
@@ -1686,7 +1606,11 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
         $kra1_group_score = \Scoring\KRA1Scorer::score($group_entries);
         $group_score = (float)($kra1_group_score['criterion_a'] ?? $group_score);
     }
-    $group_max = $group['max'];
+    $group_max = $group['configured_max'] ?? $group['max'];
+    $saved_group_score = min($group_score, $group_max);
+    $group_score = $score_summary['parent_scores'][$cur_cat][$letter] ?? $saved_group_score;
+    $show_saved_total = $cur_cat === 'Instruction' && $letter === 'A' && $has_uncounted_entries
+        && round($saved_group_score, 2) !== round($group_score, 2);
     ?>
     <?php
     // For KRA I Criterion A, pre-compute per-sub-item scores (SET score vs SEF score)
@@ -1746,14 +1670,14 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
           $ci_group_no   = $ci_numbering['group_no'] ?? null;
           $ci_item_no    = $ci_numbering['item_no'] ?? null;
           $ci_item_label = kraCleanEntryDisplayTitle((string)$ci['criterion_label']);
+          $ci_abbreviation = ['kra1_a_set'=>'SET', 'kra1_a_sef'=>'SEF'][$ci_key] ?? '';
+          if ($ci_abbreviation !== '' && stripos($ci_item_label, '(' . $ci_abbreviation . ')') === false) {
+              $ci_item_label .= ' (' . $ci_abbreviation . ')';
+          }
           $ci_number     = $ci_numbering ? '' : $ci_idx . '.';
           $ci_entry_type = '';   // 'set', 'sef', or '' (non-A criteria)
           if ($cur_cat === 'Instruction' && $letter === 'A') {
-              if (str_contains($ci_key, '_a_set') || str_contains(strtolower($ci['criterion_label']), '(set)')) {
-                  $ci_entry_type = 'set';
-              } elseif (str_contains($ci_key, '_a_sef') || str_contains(strtolower($ci['criterion_label']), '(sef)')) {
-                  $ci_entry_type = 'sef';
-              }
+              $ci_entry_type = ['kra1_a_set'=>'set', 'kra1_a_sef'=>'sef'][$ci_key] ?? '';
           }
 
           // Build per-button values from the pre-declared maps. These are also
@@ -1805,7 +1729,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
           } elseif ($cur_cat === 'Instruction' && $flat_crit_value !== '') {
               // Instruction B/C sub-item -> pre-select and lock
               $btn_onclick = htmlspecialchars("openCriterionEntryWithCrit(" . json_encode($letter) . ", " . json_encode(['key'=>$ci_key,'kra'=>'instruction','flat'=>$flat_crit_value]) . ")", ENT_QUOTES);
-          } elseif ($cur_cat === 'Research' && $res_label !== '') {
+          } elseif ($cur_cat === 'Research' && $res_label !== '' && $ci_numbering) {
               // Research sub-item -> pre-select by label
               $btn_onclick = htmlspecialchars("openCriterionEntryWithCrit(" . json_encode($letter) . ", " . json_encode(['key'=>$ci_key,'kra'=>'research','label'=>$res_label,'pts'=>(float)$ci['max_points']]) . ")", ENT_QUOTES);
           } elseif ($cur_cat === 'Extension' && $ext_subtype !== '') {
@@ -1813,7 +1737,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
               $btn_onclick = htmlspecialchars("openCriterionEntryWithCrit(" . json_encode($letter) . ", " . json_encode(['key'=>$ci_key,'kra'=>'extension','subtype'=>$ext_subtype]) . ")", ENT_QUOTES);
           } elseif ($cur_cat === 'Professional Development' && $pd_entry !== null) {
               // PD sub-item -> pre-select type + sub-value
-              $btn_onclick = htmlspecialchars("openCriterionEntryWithCrit(" . json_encode($letter) . ", " . json_encode(['key'=>$ci_key,'kra'=>'pd','type'=>$pd_entry['type'],'sub'=>$pd_entry['sub']]) . ")", ENT_QUOTES);
+              $btn_onclick = htmlspecialchars("openCriterionEntryWithCrit(" . json_encode($letter) . ", " . json_encode(['key'=>$ci_key,'kra'=>'pd'] + $pd_entry) . ")", ENT_QUOTES);
           } else {
               $btn_onclick = htmlspecialchars("openCriterionEntryWithCrit(" . json_encode($letter) . ", " . json_encode(['kra'=>'custom','letter'=>$letter,'key'=>$ci_key,'label'=>$ci['criterion_label'] ?? '', 'pts'=>(float)$ci['max_points']]) . ")", ENT_QUOTES);
           }
@@ -1850,7 +1774,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
             <div style="margin-top:0.45rem;display:flex;flex-direction:column;gap:0.25rem;">
             <?php foreach ($ci_entries as $_ce):
                 $_ce_parts = explode('|||', $_ce['remarks'] ?? '');
-                $_ce_title = trim($_ce_parts[1] ?? '');
+                $_ce_title = trim(($_ce_parts[0] ?? '') === 'CUSTOM' ? ($_ce_parts[5] ?? '') : ($_ce_parts[1] ?? ''));
                 $_ce_value = trim($_ce_parts[2] ?? '');
                 $_ce_meta = '';
                 if ($cur_cat === 'Extension' && ($_ce_parts[0] ?? '') === 'income' && $_ce_value !== '') {
@@ -1880,7 +1804,8 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
                     'evidence_files'  => $_ev_files_btn,
                 ]), ENT_QUOTES);
             ?>
-            <div style="display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap;">
+            <div data-kra-submission-id="<?= (int)$_ce['submission_id'] ?>"
+                 style="display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap;">
               <?php if ($_ce_title !== ''): ?>
               <span style="color:#1e293b;font-size:0.72rem;font-weight:700;"><?= htmlspecialchars($_ce_title) ?></span>
               <?php endif; ?>
@@ -1995,10 +1920,10 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
         <div></div>
         <?php endif; ?>
         <!-- Total -->
-        <div style="display:flex;align-items:center;gap:2rem;">
+        <div style="display:flex;align-items:center;justify-content:flex-end;gap:0.5rem 1.25rem;flex-wrap:wrap;">
             <span style="color:rgba(255,255,255,0.55);font-size:0.72rem;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;">Total criterion</span>
             <span style="color:#fff;font-weight:800;font-size:0.92rem;min-width:80px;text-align:right;">
-                <?= number_format($group_score, 2) ?> &nbsp;/&nbsp; <?= number_format($group_max, 2) ?>
+                <?= number_format($show_saved_total ? $saved_group_score : $group_score, 2) ?> &nbsp;/&nbsp; <?= number_format($group_max, 2) ?>
             </span>
         </div>
       </div>
@@ -2172,7 +2097,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
                 <span style="font-size:0.8rem;font-weight:700;color:#1a3a6b;">Student Evaluation of Teaching (SET)</span>
                 <span style="background:#eff6ff;color:#1e4d8c;font-size:0.65rem;font-weight:700;padding:2px 8px;border-radius:4px;border:1px solid #bfdbfe;"><?= number_format($kra1_a_caps['set'], 2) ?> pts max</span>
               </div>
-              <button type="button" data-add-type="set" onclick="addKraRow('set')" title="Add SET entry"
+              <button type="button" data-add-type="set" onclick="addKraRow('set')" title="Add Student Evaluation of Teaching entry"
                       style="height:28px;padding:0 10px;background:#1a3a6b;border:none;border-radius:5px;color:#fff;font-size:0.72rem;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:4px;white-space:nowrap;"
                       onmouseover="this.style.background='#1e4d8c'" onmouseout="this.style.background='#1a3a6b'">
                 <i class="bi bi-plus-lg"></i> Add Entry
@@ -2202,8 +2127,8 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
                 </tr></thead>
                 <tbody id="criteriaASetBody"></tbody>
                 <tfoot><tr style="background:#f8fafc;border-top:1px solid #e2e8f0;">
-                  <td colspan="6" style="padding:0.6rem 0.75rem;font-size:0.75rem;font-weight:700;color:#475569;text-align:right;">SET AVG: <span id="kraSetAverage" style="color:#1a3a6b;font-size:0.95rem;font-weight:800;">0.00</span></td>
-                  <td colspan="2" style="padding:0.6rem 0.75rem;font-size:0.75rem;font-weight:700;color:#475569;text-align:right;">SET SUBTOTAL: <span id="kraSetSubtotal" style="color:#1a3a6b;font-size:0.95rem;font-weight:800;">0.00</span></td>
+                  <td colspan="6" style="padding:0.6rem 0.75rem;font-size:0.75rem;font-weight:700;color:#475569;text-align:right;">SET Average: <span id="kraSetAverage" style="color:#1a3a6b;font-size:0.95rem;font-weight:800;">0.00</span></td>
+                  <td colspan="2" style="padding:0.6rem 0.75rem;font-size:0.75rem;font-weight:700;color:#475569;text-align:right;">SET Subtotal: <span id="kraSetSubtotal" style="color:#1a3a6b;font-size:0.95rem;font-weight:800;">0.00</span></td>
                 </tr></tfoot>
               </table>
             </div>
@@ -2214,7 +2139,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
                 <span style="font-size:0.8rem;font-weight:700;color:#1a3a6b;">Supervisor Evaluation Form (SEF)</span>
                 <span style="background:#f0fdfa;color:#0f766e;font-size:0.65rem;font-weight:700;padding:2px 8px;border-radius:4px;border:1px solid #99f6e4;"><?= number_format($kra1_a_caps['sef'], 2) ?> pts max</span>
               </div>
-              <button type="button" data-add-type="sef" onclick="addKraRow('sef')" title="Add SEF entry"
+              <button type="button" data-add-type="sef" onclick="addKraRow('sef')" title="Add Supervisor Evaluation Form entry"
                       style="height:28px;padding:0 10px;background:#0f766e;border:none;border-radius:5px;color:#fff;font-size:0.72rem;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:4px;white-space:nowrap;"
                       onmouseover="this.style.background='#115e59'" onmouseout="this.style.background='#0f766e'">
                 <i class="bi bi-plus-lg"></i> Add Entry
@@ -2244,8 +2169,8 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
                 </tr></thead>
                 <tbody id="criteriaASefBody"></tbody>
                 <tfoot><tr style="background:#f8fafc;border-top:1px solid #e2e8f0;">
-                  <td colspan="6" style="padding:0.6rem 0.75rem;font-size:0.75rem;font-weight:700;color:#475569;text-align:right;">SEF AVG: <span id="kraSefAverage" style="color:#0f766e;font-size:0.95rem;font-weight:800;">0.00</span></td>
-                  <td colspan="2" style="padding:0.6rem 0.75rem;font-size:0.75rem;font-weight:700;color:#475569;text-align:right;">SEF SUBTOTAL: <span id="kraSefSubtotal" style="color:#0f766e;font-size:0.95rem;font-weight:800;">0.00</span></td>
+                  <td colspan="6" style="padding:0.6rem 0.75rem;font-size:0.75rem;font-weight:700;color:#475569;text-align:right;">SEF Average: <span id="kraSefAverage" style="color:#0f766e;font-size:0.95rem;font-weight:800;">0.00</span></td>
+                  <td colspan="2" style="padding:0.6rem 0.75rem;font-size:0.75rem;font-weight:700;color:#475569;text-align:right;">SEF Subtotal: <span id="kraSefSubtotal" style="color:#0f766e;font-size:0.95rem;font-weight:800;">0.00</span></td>
                 </tr></tfoot>
               </table>
             </div>
@@ -2328,11 +2253,11 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
             <i class="bi bi-paperclip" style="color:#1a3a6b;font-size:0.75rem;"></i>
             <span id="uploadCapText" style="font-size:0.75rem;color:#1a3a6b;font-weight:600;">0 / 10 files</span>
           </div>
-          <span style="font-size:0.68rem;color:#64748b;">PDF, JPG, PNG · max 50 MB each</span>
+          <span style="font-size:0.68rem;color:#64748b;">PDF only · max 50 MB each</span>
         </div>
 
         <!-- File input (outside drop zone — prevents Bootstrap focus re-trigger) -->
-        <input type="file" id="uploadFileInput" class="d-none" accept=".pdf,.jpg,.jpeg,.png" multiple onchange="handleFileSelect(this)">
+        <input type="file" id="uploadFileInput" class="d-none" accept=".pdf,application/pdf" multiple onchange="handleFileSelect(this)">
 
         <!-- Drop zone -->
         <div id="uploadDropZone"
@@ -2707,10 +2632,10 @@ function cleanRemarkLabel(remarks, kra) {
 
     // Instruction A types
     const instrMap = {
-        'A-set-sef':     'Teaching Effectiveness (SET + SEF)',
-        'A-set-sef-sem': 'Teaching Effectiveness (SET + SEF)',
-        'A-set-sem':     'Teaching Effectiveness (SET)',
-        'A-sef-sem':     'Teaching Effectiveness (SEF)',
+        'A-set-sef':     'Teaching Effectiveness (Student Evaluation of Teaching + Supervisor Evaluation Form)',
+        'A-set-sef-sem': 'Teaching Effectiveness (Student Evaluation of Teaching + Supervisor Evaluation Form)',
+        'A-set-sem':     'Teaching Effectiveness (Student Evaluation of Teaching)',
+        'A-sef-sem':     'Teaching Effectiveness (Supervisor Evaluation Form)',
         'B-material':    'Instructional Material',
         'C-thesis':      'Thesis/Dissertation Adviser',
         'C-mentor':      'Thesis/Dissertation Co-Adviser',
@@ -2880,10 +2805,10 @@ async function handleDone() {
         }
 
         // Instruction A: SET and SEF required
-        const setEl = tr.querySelector('.ri-d1[placeholder*="SET"]');
-        const sefEl = tr.querySelector('.ri-d2[placeholder*="SEF"]');
-        if (setEl && !setEl.value.trim()) issues.push(`Row ${rowNum}: SET average is required.`);
-        if (sefEl && !sefEl.value.trim()) issues.push(`Row ${rowNum}: SEF average is required.`);
+        const setEl = tr.querySelector('.ri-d1[placeholder*="Student Evaluation of Teaching"]');
+        const sefEl = tr.querySelector('.ri-d2[placeholder*="Supervisor Evaluation Form"]');
+        if (setEl && !setEl.value.trim()) issues.push(`Row ${rowNum}: Student Evaluation of Teaching average is required.`);
+        if (sefEl && !sefEl.value.trim()) issues.push(`Row ${rowNum}: Supervisor Evaluation Form average is required.`);
     });
 
     if (issues.length > 0) {
@@ -2962,7 +2887,7 @@ const SCORE_URL   = 'index.php?page=apply&ajax_score=1&app_id=<?= $app_id ?>';
 document.getElementById('submitConfirmModal').addEventListener('click', function(e) {
     if (e.target === this) this.style.display = 'none';
 });
-const EDIT_SID    = <?= intval($_GET['edit_sid'] ?? 0) ?>;
+const EDIT_SID    = <?= $edit_sid ?>;
 // Cycle-based Evaluation Period generation for KRA I Criterion A
 // Derived from the active cycle's start_date; 0 = no cycle / fallback to current year
 const CYCLE_START_YEAR = <?= !empty($cycle['start_date']) ? (int)date('Y', strtotime($cycle['start_date'])) : date('Y') ?>;
@@ -2971,8 +2896,12 @@ const KRA1_A_SET_CAP   = <?= json_encode((float)$kra1_a_caps['set']) ?>;
 const KRA1_A_SEF_CAP   = <?= json_encode((float)$kra1_a_caps['sef']) ?>;
 <?php
 $cjs = [];
-foreach ($criteria_list as $c) $cjs[] = ['label'=>$c['criterion_label'],'pts'=>(float)$c['max_points']];
-echo 'const CRIT = ' . json_encode($cjs) . ';';
+foreach ($criteria_list as $c) {
+    // Custom rows use the key-based editor opened from their own Data Entry action.
+    if (kraIsAdditionalCriterionKey($c['criterion_key'])) continue;
+    $cjs[] = ['label'=>$c['criterion_label'], 'pts'=>(float)$c['max_points'], 'parent'=>$c['parent_code'] ?? null];
+}
+echo 'const CRIT = ' . json_encode($cjs, JSON_HEX_TAG) . ';';
 ?>
 
 function kraEntryScrollStorageKey() {
@@ -3001,7 +2930,7 @@ function restoreKraEntryScroll() {
     } catch (_) {}
 }
 
-restoreKraEntryScroll();
+if (EDIT_SID === 0) restoreKraEntryScroll();
 
 // -- Live sidebar score refresh --------------------------------
 function refreshSidebarScore() {
@@ -3055,7 +2984,7 @@ function setKraModalCriterion(letter) {
 }
 
 function isCriteriaATableMode() {
-    return KRA_CAT === 'Instruction' && activeKraCriterion === 'A';
+    return KRA_CAT === 'Instruction' && activeKraCriterion === 'A' && !activeKraCustomCrit;
 }
 
 // If the modal is still open or mid fade-in/out, opening another criterion
@@ -3205,7 +3134,7 @@ function entryCriterionLetter(entry) {
         if (m) return m[1].toUpperCase();
         const stored = normalizeResearchLabel(parts[0] || '');
         const criterion = CRIT.find(c => normalizeResearchLabel(c.label) === stored);
-        return String(criterion?.label || '').match(/^Criterion\s+([A-Z])/i)?.[1]?.toUpperCase() || '';
+        return criterion?.parent || String(criterion?.label || '').match(/^Criterion\s+([A-Z])/i)?.[1]?.toUpperCase() || '';
     }
     if (KRA_CAT === 'Extension') {
         const subtype = parts[0] || '';
@@ -3222,6 +3151,12 @@ function visibleEntriesForActiveCriterion(entries) {
     const usable = (entries || []).filter(e => !isBlankKraEntry(e)
         && (!KRA_REVISION_MODE || e.revision_status === 'needs_revision'));
     if (isCriteriaATableMode()) return usable;
+    if (activeKraCustomCrit?.key) {
+        return usable.filter(entry => {
+            const parts = (entry.remarks || '').split('|||');
+            return parts[0] === 'CUSTOM' && parts[2] === activeKraCustomCrit.key;
+        });
+    }
     if (!activeKraCriterion) {
         return KRA_CAT === 'Instruction'
             ? usable.filter(e => entryCriterionLetter(e) !== 'A')
@@ -3239,7 +3174,7 @@ function criteriaABodyForType(type) {
 }
 
 function criteriaAEmptyRow(type) {
-    const label = type === 'sef' ? 'SEF' : 'SET';
+    const label = type === 'sef' ? 'Supervisor Evaluation Form' : 'Student Evaluation of Teaching';
     return `<tr class="kra-a-empty-row"><td colspan="8" class="text-center text-muted py-5"><i class="bi bi-inbox fs-2 d-block mb-2 text-secondary"></i>No ${label} entries yet. Click <strong>Add Entry</strong> to add a row.</td></tr>`;
 }
 
@@ -3432,8 +3367,8 @@ function criteriaAScoreFields(entry, sem, type) {
     const value = type === 'sef' ? (entry.sef || '') : (entry.set || '');
     const label = type === 'sef' ? 'SEF:' : 'SET:';
     return `<div class="kra-a-scores sem-${sem}" style="display:flex;align-items:center;justify-content:center;min-height:58px;max-width:120px;margin:0 auto;">
-        <label style="display:flex;align-items:center;gap:5px;margin:0;font-size:0.74rem;color:#64748b;font-weight:700;">
-            <span style="width:28px;">${label}</span>
+        <label style="display:flex;flex-direction:column;align-items:center;gap:5px;margin:0;max-width:100%;font-size:0.74rem;color:#64748b;font-weight:700;">
+            <span style="white-space:normal;text-align:center;">${label}</span>
             <input type="text" inputmode="decimal" class="${cls} sem-${sem}" value="${esc(value)}" placeholder="0.00" oninput="calcCriteriaARow(this)"
                    style="width:76px;text-align:center;" ${dis}>
         </label>
@@ -3450,10 +3385,11 @@ function buildCriteriaARow(group, num) {
     const typeLabel = isSef ? 'SEF' : 'SET';
     return `
         <td style="padding:0.5rem 1rem;"></td>
-        <td style="padding:0.5rem 0.5rem;color:#94a3b8;font-size:0.75rem;font-weight:600;">${num}<div style="margin-top:4px;"><span style="display:inline-flex;align-items:center;justify-content:center;padding:2px 7px;border-radius:999px;background:${badgeBg};color:${badgeColor};font-size:0.64rem;font-weight:800;">${typeLabel}</span></div></td>
+        <td style="padding:0.5rem 0.5rem;color:#94a3b8;font-size:0.75rem;font-weight:600;">${num}</td>
         <td style="padding:0.5rem 0.75rem;">
             <input class="kra-a-period" value="${esc(group.period || '')}" placeholder="AY 2023-2024" oninput="syncCriteriaAPeriod(this)"
                    readonly style="min-width:145px;font-weight:600;color:#1e293b;background:#f1f5f9;cursor:default;border-color:#cbd5e1;" title="Auto-generated from cycle start year">
+            <div style="margin-top:4px;"><span style="display:inline-block;max-width:100%;white-space:normal;padding:2px 7px;border-radius:6px;background:${badgeBg};color:${badgeColor};font-size:0.64rem;font-weight:800;">${typeLabel}</span></div>
         </td>
         <td style="padding:0.55rem 0.55rem;text-align:center;">${criteriaAScoreFields(first, 1, type)}</td>
         <td style="padding:0.55rem 0.45rem;text-align:center;">${criteriaAUploadButton(first, 1)}</td>
@@ -3574,6 +3510,7 @@ function buildRow(e, num) {
         const customLabel  = customPending?.label || parts[3] || 'Custom criterion';
         const customPts    = parseFloat(customPending?.pts ?? parts[4] ?? score) || 0;
         const customDetail = parts[5] || '';
+        const detailColumns = KRA_CAT === 'Research' || KRA_CAT === 'Extension' ? 1 : 2;
         if (score <= 0 && customPts > 0) score = customPts;
 
         cells += `
@@ -3585,7 +3522,7 @@ function buildRow(e, num) {
             <div style="font-size:0.78rem;color:#1e293b;font-weight:700;line-height:1.3;">${esc(customLabel)}</div>
             <div style="font-size:0.72rem;color:#64748b;margin-top:0.15rem;">${customPts.toFixed(2)} pts</div>
         </td>
-        <td style="padding:0.4rem;" colspan="2">
+        <td style="padding:0.4rem;" colspan="${detailColumns}">
             <input class="custom-detail" value="${esc(customDetail)}" placeholder="Entry title / details / notes">
         </td>`;
     } else if (KRA_CAT === 'Research') {
@@ -3607,6 +3544,7 @@ function buildRow(e, num) {
         // Filter CRIT to only show items belonging to the active criterion letter
         const filteredCrit = _resLetter
             ? CRIT.filter(c => {
+                if (c.parent) return c.parent === _resLetter;
                 const m = String(c.label || '').match(/^Criterion\s+([A-Z])/i);
                 return m ? m[1].toUpperCase() === _resLetter : true;
               })
@@ -3625,7 +3563,7 @@ function buildRow(e, num) {
             const isSelected = _resPending
                 ? (c.label === _resPending.label)
                 : optionSelectedFromStored(storedLabel, c.label, c.pts);
-            return `<option value="${c.pts}" data-label="${esc(c.label)}" ${isSelected ? 'selected' : ''}>${cleanLabel} (${c.pts}pts)</option>`;
+            return `<option value="${c.pts}" data-label="${esc(c.label)}" ${isSelected ? 'selected' : ''}>${esc(cleanLabel)} (${c.pts}pts)</option>`;
         }).join('');
 
         // When locked to a specific sub-item: show a hidden <select> (for
@@ -3717,6 +3655,7 @@ function buildRow(e, num) {
         // Effective values: pending (new row) or stored (edit)
         const effectivePdType = _pdPending ? _pdPending.type : critType;
         const effectivePdSub  = _pdPending ? _pdPending.sub  : subVal;
+        const priorService = ['D-prior-academic', 'D-prior-industry'].includes(effectivePdType);
 
         const ALL_PD_CRIT_OPTS = [
             ['A-org',       'Criterion A - Professional Org Membership (5 pts each, max 20)'],
@@ -3736,7 +3675,10 @@ function buildRow(e, num) {
         const _pdLockedEntry = _pdPending
             ? ALL_PD_CRIT_OPTS.find(([v]) => v === effectivePdType)
             : null;
-        const pdSelectHtml = _pdLockedEntry
+        const pdSelectHtml = priorService
+            ? `<input type="hidden" class="rpd-crit" value="${esc(effectivePdType)}">
+               <div style="font-size:0.78rem;color:#1e293b;font-weight:600;">${effectivePdType === 'D-prior-academic' ? 'Academic Service' : 'Industry Experience'}</div>`
+            : _pdLockedEntry
             ? `<select class="rpd-crit" style="display:none;" aria-hidden="true">
                  <option value="${esc(_pdLockedEntry[0])}" selected>${esc(_pdLockedEntry[1])}</option>
                </select>
@@ -3745,7 +3687,10 @@ function buildRow(e, num) {
 
         // Sub-value options  -  when locked and sub is pre-set, render hidden input + label
         let subField = '';
-        if (effectivePdType === 'B-degree') {
+        if (priorService) {
+            subField = `<input type="number" class="rpd-sub" min="1" step="any" required
+                               value="${esc(critType ? (parts[2] ?? '') : '')}" placeholder="Years served" aria-label="Years served">`;
+        } else if (effectivePdType === 'B-degree') {
             const degOpts = [['0','None (0 pts)'],['10','Post-Master\'s / Post-Doctoral (10 pts)'],['20','Additional Master\'s Degree (20 pts)'],['40','Doctorate / Additional Doctorate (40 pts)']]
                 .map(([v,l]) => `<option value="${v}" ${effectivePdSub===v?'selected':''}>${l}</option>`).join('');
             if (_pdPending && effectivePdSub) {
@@ -3792,7 +3737,9 @@ function buildRow(e, num) {
 
         cells += `
         <td style="padding:0.4rem;">${pdSelectHtml}</td>
-        <td style="padding:0.4rem;"><input class="rpd-desc" value="${esc(desc)}" placeholder="Name / title / organization"></td>
+        <td style="padding:0.4rem;">${priorService
+            ? `<input class="rpd-desc" value="${esc(critType ? desc : (activeKraRowCrit?.role || ''))}" aria-label="Role" readonly>`
+            : `<input class="rpd-desc" value="${esc(desc)}" placeholder="Name / title / organization">`}</td>
         <td style="padding:0.4rem;">${subField}</td>`;
     } else {
         // KRA I - Instruction: Criterion selector
@@ -3804,7 +3751,7 @@ function buildRow(e, num) {
 
         // Flat criterion options  -  B and C sub-items shown directly
         const ALL_CRIT_OPTS = [
-            ['A-set-sef',   'Criterion A - Teaching Effectiveness (SET + SEF)'],
+            ['A-set-sef',   'Criterion A - Teaching Effectiveness (Student Evaluation of Teaching + Supervisor Evaluation Form)'],
             ['B|30|Textbook, Sole Author',                         'B - Textbook, Sole Author (30 pts)'],
             ['B|30co|Textbook, Co-Author',                         'B - Textbook, Co-Author (30 x contrib%)'],
             ['B|0|Textbook Chapter, Sole Author',                  'B - Textbook Chapter, Sole Author (Pending confirmation, not counted)'],
@@ -3893,7 +3840,7 @@ function buildRow(e, num) {
                 'B-material': 'Instructional Material',
                 'C-thesis':   'Thesis / Advisory',
                 'C-mentor':   'Mentorship',
-                'A-set-sef':  'Teaching Effectiveness (SET + SEF)',
+                'A-set-sef':  'Teaching Effectiveness (Student Evaluation of Teaching + Supervisor Evaluation Form)',
             };
             if (map[ct]) return map[ct];
             // Generic cleanup: strip leading letter prefix and dashes
@@ -3911,8 +3858,8 @@ function buildRow(e, num) {
         let detailFields = '';
         if (critType === 'A-set-sef') {
             detailFields = `
-            <input type="text" inputmode="decimal" class="ri-d1" value="${esc(d1)}" placeholder="SET avg % (e.g. 92.5)" oninput="calcRow(this)" style="margin-bottom:3px;">
-            <input type="text" inputmode="decimal" class="ri-d2" value="${esc(d2)}" placeholder="SEF avg % (e.g. 88.0)" oninput="calcRow(this)">`;
+            <input type="text" inputmode="decimal" class="ri-d1" value="${esc(d1)}" placeholder="Student Evaluation of Teaching avg % (e.g. 92.5)" oninput="calcRow(this)" style="margin-bottom:3px;">
+            <input type="text" inputmode="decimal" class="ri-d2" value="${esc(d2)}" placeholder="Supervisor Evaluation Form avg % (e.g. 88.0)" oninput="calcRow(this)">`;
         } else if (isBco) {
             detailFields = `<input type="text" inputmode="decimal" class="ri-d2" value="${esc(contribVal || '100')}" placeholder="Contrib % (co-author)" oninput="calcRow(this)">`;
         } else {
@@ -4182,8 +4129,8 @@ function updateGrandTotal() {
     let sum = 0;
     document.querySelectorAll('#kraTableBody .kra-score-badge').forEach(el => sum += parseFloat(el.textContent) || 0);
     // JC01 s.2026: each KRA capped at 100 (Extension was 120 under old JC3 rules)
-    const capMap = {'Instruction':100, 'Research':100, 'Extension':100, 'Professional Development':100};
-    const cap = capMap[KRA_CAT] ?? 100;
+    const capMap = <?= json_encode(kraMaximumPoints(), JSON_HEX_TAG) ?>;
+    const cap = capMap[KRA_CAT];
     setKraGrandTotal(Math.min(sum, cap).toFixed(2));
 }
 
@@ -4376,7 +4323,7 @@ async function saveCriteriaARow(btn) {
 
 function deleteCriteriaARow(btn) {
     if (KRA_REVISION_MODE) { showKraAlert('Edit the flagged entry and resubmit it.'); return; }
-    const rowType = btn.closest('tr')?.dataset.entryType === 'sef' ? 'SEF' : 'SET';
+    const rowType = btn.closest('tr')?.dataset.entryType === 'sef' ? 'Supervisor Evaluation Form' : 'Student Evaluation of Teaching';
     confirmAction(`Remove this ${rowType} entry? This removes its semester entries and evidence.`, function() {
         pendingKraScrollState = captureKraScrollState();
         const tr = btn.closest('tr');
@@ -4449,62 +4396,14 @@ function updateInstrFlatDetail(sel) {
     const val = sel.value || '';
     if (val === 'A-set-sef') {
         detailCell.innerHTML = `
-            <input type="text" inputmode="decimal" class="ri-d1" placeholder="SET avg % (e.g. 92.5)" oninput="calcRow(this)" style="margin-bottom:3px;">
-            <input type="text" inputmode="decimal" class="ri-d2" placeholder="SEF avg % (e.g. 88.0)" oninput="calcRow(this)">`;
+            <input type="text" inputmode="decimal" class="ri-d1" placeholder="Student Evaluation of Teaching avg % (e.g. 92.5)" oninput="calcRow(this)" style="margin-bottom:3px;">
+            <input type="text" inputmode="decimal" class="ri-d2" placeholder="Supervisor Evaluation Form avg % (e.g. 88.0)" oninput="calcRow(this)">`;
         if (notesCell) notesCell.innerHTML = `<input type="text" class="ri-notes" placeholder="Notes (optional)">`;
     } else if (val.startsWith('B|') && val.split('|')[1]?.endsWith('co')) {
         detailCell.innerHTML = `<input type="text" inputmode="decimal" class="ri-d2" value="100" placeholder="Contrib % (co-author)" oninput="calcRow(this)">`;
         if (notesCell) notesCell.innerHTML = `<span class="text-muted small">-</span>`;
     } else {
         detailCell.innerHTML = `<span class="text-muted small">-</span>`;
-        if (notesCell) notesCell.innerHTML = `<span class="text-muted small">-</span>`;
-    }
-    calcRow(sel);
-}
-
-// Rebuild the detail fields when Instruction criterion changes
-function updateInstrSubField(sel) {
-    const tr        = sel.closest('tr');
-    const detailCell = tr.querySelectorAll('td')[3]; // 4th td = details
-    const notesCell  = tr.querySelectorAll('td')[4]; // 5th td = notes/sub
-    if (!detailCell) return;
-    const critType = sel.value;
-    if (critType === 'A-set-sef') {
-        detailCell.innerHTML = `
-            <input type="text" inputmode="decimal" class="ri-d1" placeholder="SET avg % (e.g. 92.5)" oninput="calcRow(this)" style="margin-bottom:3px;">
-            <input type="text" inputmode="decimal" class="ri-d2" placeholder="SEF avg % (e.g. 88.0)" oninput="calcRow(this)">`;
-        if (notesCell) notesCell.innerHTML = `<input type="text" class="ri-notes" placeholder="Notes (optional)">`;
-    } else if (critType === 'B-material') {
-        detailCell.innerHTML = `
-            <select class="ri-d1-sel" onchange="calcRow(this)" style="margin-bottom:3px;">
-                <option value="" disabled selected>- Select material type -</option>
-                <option value="30">Textbook, Sole Author (30 pts)</option>
-                <option value="30co">Textbook, Co-Author (30 x contrib%)</option>
-                <option value="10">Textbook Chapter, Sole Author (10 pts)</option>
-                <option value="10co">Textbook Chapter, Co-Author (10 x contrib%)</option>
-                <option value="16">Manual / Module, Sole Author (16 pts)</option>
-                <option value="16co">Manual / Module, Co-Author (16 x contrib%)</option>
-                <option value="16">Multimedia Teaching Materials (16 pts)</option>
-                <option value="10">Validated Testing Materials (10 pts)</option>
-                <option value="10">Academic Program Dev/Revision, Lead (10 pts)</option>
-                <option value="5">Academic Program Dev/Revision, Contributor (5 pts)</option>
-            </select>
-            <input type="text" inputmode="decimal" class="ri-d2" placeholder="Contrib % (if co-author)" oninput="calcRow(this)">`;
-        if (notesCell) notesCell.innerHTML = `<span class="text-muted small">-</span>`;
-    } else if (critType === 'C-thesis') {
-        detailCell.innerHTML = `
-            <select class="ri-d1-sel" onchange="calcRow(this)">
-                <option value="" disabled selected>- Select role -</option>
-                <option value="3">Adviser: Special Project / Capstone (3 pts)</option>
-                <option value="5">Adviser: Undergraduate Thesis (5 pts)</option>
-                <option value="8">Adviser: Master's Thesis (8 pts)</option>
-                <option value="10">Adviser: Doctoral Dissertation (10 pts)</option>
-                <option value="1">Panel Member: Special Project / Capstone (1 pt)</option>
-                <option value="2">Panel Member: Undergraduate Thesis (2 pts)</option>
-                <option value="4">Panel Member: Master's Thesis (4 pts)</option>
-                <option value="6">Panel Member: Doctoral Dissertation (6 pts)</option>
-                <option value="0">Mentor: Student/Team Competition Winner (Pending confirmation, not counted)</option>
-            </select>`;
         if (notesCell) notesCell.innerHTML = `<span class="text-muted small">-</span>`;
     }
     calcRow(sel);
@@ -4551,7 +4450,8 @@ function loadRows() {
     const modalBody = document.querySelector('#kraEntryModal .modal-body');
     const hadRows = !!tbody?.querySelector('tr[data-sid]');
     if (tbody && !hadRows) {
-        tbody.innerHTML = `<tr id="kraEmptyRow"><td colspan="20" class="text-center text-muted py-5">Loading entries...</td></tr>`;
+        const columnCount = tbody.parentElement.tHead.rows[0].cells.length;
+        tbody.innerHTML = `<tr id="kraEmptyRow"><td colspan="${columnCount}" class="text-center text-muted py-5">Loading entries...</td></tr>`;
     }
     fetch(`${AJAX_URL}?kra_action=get_entries&app_id=${APP_ID}&cat=${encodeURIComponent(KRA_CAT)}`)
         .then(r => r.json())
@@ -4615,25 +4515,13 @@ function loadRows() {
 
             // If we have a pending scroll target, scroll to it now
             if (pendingScrollToSid > 0) {
-                setTimeout(() => scrollToEntry(pendingScrollToSid), 150);
+                const targetSid = pendingScrollToSid;
+                setTimeout(() => scrollToEntry(targetSid), 150);
                 pendingScrollToSid = 0; // Clear the flag
-            }
-            pendingLegacyCriteriaAEditEntry = null;
-
-            // If arriving from "Edit" link, scroll to and highlight the target row
-            if (EDIT_SID > 0) {
-                const target = tbody.querySelector(`tr[data-sid="${EDIT_SID}"]`);
-                if (target) {
-                    setTimeout(() => {
-                        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                        target.style.transition = 'background 0.3s';
-                        target.style.background = '#f1f5f9';
-                        setTimeout(() => { target.style.background = ''; }, 2000);
-                    }, 150);
-                }
             } else {
                 restoreKraScrollState(scrollState);
             }
+            pendingLegacyCriteriaAEditEntry = null;
         });
 }
 
@@ -4748,7 +4636,7 @@ function applyCriteriaAFocus() {
 
     // Update the inline badge next to the modal title (if it exists)
     if (focusLabel) {
-        focusLabel.textContent = showSet ? 'SET only' : 'SEF only';
+        focusLabel.textContent = showSet ? 'Student Evaluation of Teaching only' : 'Supervisor Evaluation Form only';
         focusLabel.style.display = 'inline-flex';
     }
 }
@@ -5252,7 +5140,7 @@ function handleFileSelect(input) {
  */
 async function processUploadFiles(fileList) {
     const files   = Array.from(fileList);
-    const allowed = ['pdf', 'jpg', 'jpeg', 'png'];
+    const allowed = ['pdf'];
 
     // -- Validate all files before starting ------------------
     const invalid = [];
@@ -5263,7 +5151,7 @@ async function processUploadFiles(fileList) {
         else if (f.size > 50 * 1024 * 1024) tooBig.push(f.name);
     });
     if (invalid.length) {
-        showKraAlert(`<strong>Invalid file type</strong> ... only PDF, JPG, PNG allowed:<br>${invalid.map(n=>`<code>${esc(n)}</code>`).join(', ')}`);
+        showKraAlert(`<strong>Invalid file type</strong> ... only PDF documents are allowed:<br>${invalid.map(n=>`<code>${esc(n)}</code>`).join(', ')}`);
         return;
     }
     if (tooBig.length) {
@@ -5507,7 +5395,13 @@ function kraRemarksLookMeaningful(remarks) {
     if (KRA_CAT === 'Extension') {
         return ALL_EXT_CRIT_OPTS.some(([, value]) => value === type);
     }
-    if (KRA_CAT === 'Professional Development') return ['A-org', 'B-training', 'B-paper', 'B-degree', 'C-award'].includes(type);
+    if (KRA_CAT === 'Professional Development') {
+        if (['D-prior-academic', 'D-prior-industry'].includes(type)) {
+            const years = Number(parts[2]);
+            return !!parts[1] && Number.isFinite(years) && years >= 1;
+        }
+        return ['A-org', 'B-training', 'B-paper', 'B-degree', 'C-award'].includes(type);
+    }
     return false;
 }
 
@@ -5626,6 +5520,8 @@ document.getElementById('kraEntryModal').addEventListener('hidden.bs.modal', fun
     pendingKraResCrit  = null;
     pendingKraExtSubtype = null;
     pendingKraPdCrit   = null;
+    pendingKraCustomCrit = null;
+    activeKraCustomCrit = null;
     applyCriteriaAFocus();
     setKraTableHeaderForDefault();
 });
@@ -5648,7 +5544,9 @@ function openEditModal(submissionId) {
     // Get entry data from the button's data-entry attribute
     const btn = document.getElementById('editBtn_' + submissionId);
     const step = btn?.closest('.criterion-step');
-    if (step) goCriterion(Number(step.dataset.step), false);
+    if (step && Number(step.dataset.step) !== currentCriterionIndex) {
+        goCriterion(Number(step.dataset.step), false);
+    }
     let entryData = null;
     try {
         entryData = btn ? JSON.parse(btn.getAttribute('data-entry') || '{}') : null;
@@ -5772,5 +5670,19 @@ function toggleCriteria(btn) {
     btn.innerHTML = expanded
         ? 'Show all <?= count($criteria_list) ?> criteria'
         : 'Show less';
+}
+
+if (EDIT_SID > 0) {
+    window.addEventListener('DOMContentLoaded', () => {
+        const entry = document.querySelector(`[data-kra-submission-id="${EDIT_SID}"]`);
+        if (!entry) {
+            document.getElementById('kraLinkedEntryUnavailable').hidden = false;
+            return;
+        }
+        const step = entry.closest('.criterion-step');
+        if (step) goCriterion(Number(step.dataset.step), false);
+        entry.scrollIntoView({block:'center'});
+        if (document.getElementById(`editBtn_${EDIT_SID}`)) openEditModal(EDIT_SID);
+    }, {once:true});
 }
 </script>

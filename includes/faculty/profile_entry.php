@@ -168,8 +168,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['last_name'] = $last_name;
             $_SESSION['full_name'] = formatDisplayName(['first_name'=>$first_name,'middle_name'=>$middle_name,'last_name'=>$last_name]);
             $_SESSION['profile_pic'] = $pic_path;
+            $_SESSION['show_welcome'] = true;
             flashMessage('success', 'Profile completed successfully.');
-            echo "<script>window.location.href='index.php?page=dashboard';</script>";
+            echo "<script>window.location.href='pages/portal.php';</script>";
             exit;
         } catch (\Exception $e) {
             if ($pdo->inTransaction()) $pdo->rollBack();
@@ -196,363 +197,615 @@ if ($errors) {
 }
 ?>
 
-<div style="background:#f8fafc;border:1px solid #e2e8f0;border-left:4px solid #1e4d8c;border-radius:8px;padding:0.65rem 1rem;margin-bottom:1.25rem;color:#475569;font-size:0.84rem;">
-    <i class="bi bi-lock-fill me-1" style="color:#1e4d8c;"></i>Complete all three steps to unlock your account.
+<div style="background:#fff;border:1px solid #e5e7eb;padding:0 1.1rem;margin-bottom:1.25rem;
+            display:flex;align-items:center;justify-content:space-between;min-height:58px;gap:1rem;">
+    <div style="display:flex;align-items:center;gap:0.75rem;">
+        <div style="width:36px;height:36px;background:#1a3a6b;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+            <i class="bi bi-person-lines-fill" style="color:#fff;font-size:0.9rem;"></i>
+        </div>
+        <div>
+            <div style="font-weight:700;color:#1a3a6b;font-size:0.95rem;line-height:1.2;">Profile Setup</div>
+            <div style="font-size:0.72rem;color:#9ca3af;margin-top:1px;">
+                Complete all steps to unlock your account and begin your reclassification application.
+                <a href="#" onclick="document.getElementById('peInfoModal').style.display='flex';return false;"
+                   style="color:#1a3a6b;font-weight:600;text-decoration:underline;margin-left:3px;">Why do we need this?</a>
+            </div>
+        </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:0.4rem;border:1px solid #e5e7eb;background:#fff;padding:0.2rem 0.65rem;flex-shrink:0;">
+        <i class="bi bi-lock" style="color:#6b7280;font-size:0.65rem;"></i>
+        <span style="font-size:0.68rem;font-weight:700;color:#374151;white-space:nowrap;letter-spacing:0.04em;">3 STEPS</span>
+    </div>
 </div>
 
 <?php if ($errors): ?>
-<div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:0.8rem 1rem;margin-bottom:1rem;color:#dc2626;font-size:0.84rem;">
-    <strong>Please fix the following:</strong>
-    <ul style="margin:0.35rem 0 0;padding-left:1.2rem;">
+<div style="border:1px solid #e2e8f0;border-left:3px solid #dc2626;padding:0.7rem 1rem;margin-bottom:1rem;background:#fff;">
+    <div style="font-size:0.78rem;font-weight:700;color:#dc2626;margin-bottom:0.3rem;">Please fix the following:</div>
+    <ul style="margin:0;padding-left:1.1rem;font-size:0.78rem;color:#475569;">
         <?php foreach ($errors as $err): ?><li><?= htmlspecialchars($err) ?></li><?php endforeach; ?>
     </ul>
 </div>
 <?php endif; ?>
 
-<!-- ── STEP INDICATOR ───────────────────────────────────────── -->
-<div style="display:flex;align-items:center;gap:0;margin-bottom:1.5rem;" id="stepIndicator">
-    <?php
-    $steps = ['Personal & Account', 'Education', 'Employment', 'Review'];
-    foreach ($steps as $si => $slabel):
-        $sn = $si + 1;
-    ?>
-    <div style="display:flex;align-items:center;flex:1;min-width:0;" id="stepWrap<?= $sn ?>">
-        <div style="display:flex;flex-direction:column;align-items:center;flex:1;min-width:0;">
-            <div id="stepCircle<?= $sn ?>"
-                 style="width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;
-                        font-size:0.78rem;font-weight:700;flex-shrink:0;transition:all 0.2s;
-                        background:#e2e8f0;color:#94a3b8;border:2px solid #e2e8f0;">
-                <?= $sn ?>
-            </div>
-            <div id="stepLabel<?= $sn ?>"
-                 style="font-size:0.68rem;font-weight:600;margin-top:4px;color:#94a3b8;
-                        white-space:nowrap;transition:color 0.2s;">
-                <?= $slabel ?>
-            </div>
+<!-- Ã¢â€â‚¬Ã¢â€â‚¬ STEP INDICATOR Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ -->
+<div style="display:grid;grid-template-columns:repeat(4,1fr);margin-bottom:1.75rem;position:relative;" id="stepIndicator">
+    <div style="position:absolute;top:14px;left:calc(12.5%);right:calc(12.5%);height:1px;background:#e5e7eb;z-index:0;" id="stepTrack"></div>
+    <?php $steps = ['Personal & Account','Education','Employment','Review'];
+    foreach ($steps as $si => $slabel): $sn = $si+1; ?>
+    <div style="display:flex;flex-direction:column;align-items:center;position:relative;z-index:1;" id="stepWrap<?= $sn ?>">
+        <div class="profile-setup-step-icon" id="stepCircle<?= $sn ?>"
+             style="width:28px;height:28px;border-radius:50%;border:2px solid #d1d5db;display:flex;align-items:center;justify-content:center;
+                    font-size:0.75rem;font-weight:700;color:#9ca3af;background:#fff;flex-shrink:0;">
+            <?= $sn ?>
         </div>
-        <?php if ($sn < count($steps)): ?>
-        <div id="stepLine<?= $sn ?>"
-             style="flex:1;height:2px;background:#e2e8f0;margin:0 4px;margin-bottom:22px;transition:background 0.2s;max-width:80px;"></div>
-        <?php endif; ?>
+        <div id="stepLabel<?= $sn ?>"
+             style="font-size:0.65rem;font-weight:600;margin-top:5px;color:#9ca3af;text-align:center;white-space:nowrap;">
+            <?= $slabel ?>
+        </div>
     </div>
     <?php endforeach; ?>
-</div>
-
-<form method="POST" enctype="multipart/form-data" id="profileWizard">
+</div><form method="POST" id="profileWizard">
 <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['profile_entry_csrf']) ?>">
 
-<!-- ══════════════════════════════════════════════
-     STEP 1 — Personal & Account
-══════════════════════════════════════════════ -->
-<div id="step1" class="wizard-step neon-card" style="padding:1.25rem 1.5rem;">
-    <div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;
-                color:#94a3b8;margin-bottom:1rem;padding-bottom:0.5rem;border-bottom:1px solid #f1f5f9;">
-        Personal &amp; Account
-    </div>
-    <div class="row g-3">
-        <div class="col-md-3">
-            <label class="form-label">Profile Photo</label>
-            <input type="file" name="profile_pic" class="form-control" accept=".jpg,.jpeg,.png,.webp">
-            <div style="font-size:0.72rem;color:#94a3b8;margin-top:4px;">JPG, PNG, WEBP. Max 2 MB.</div>
+<?php
+/* Ã¢â€â‚¬Ã¢â€â‚¬ shared label/input styles as PHP vars for DRY HTML Ã¢â€â‚¬Ã¢â€â‚¬ */
+$lbl = 'display:block;font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#6b7280;margin-bottom:4px;';
+$inp = 'width:100%;border:1px solid #e5e7eb;padding:0.38rem 0.55rem;font-size:0.82rem;color:#111827;background:#fff;outline:none;box-sizing:border-box;';
+$req = '<span style="color:#374151;">*</span>';
+
+function peBox(string $title): string {
+    return '<div style="border:1px solid #e5e7eb;overflow:hidden;margin-bottom:0.65rem;">
+        <div style="background:#f9fafb;border-bottom:1px solid #e5e7eb;padding:0.4rem 0.9rem;">
+            <span style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#374151;">'.$title.'</span>
         </div>
-        <div class="col-md-3">
-            <label class="form-label">First Name <span class="text-danger">*</span></label>
-            <input type="text" name="first_name" class="form-control" value="<?= $val('first_name') ?>" required>
+        <div style="padding:0.85rem 0.9rem;">';
+}
+function peBoxEnd(): string { return '</div></div>'; }
+?>
+
+<!-- Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
+     STEP 1
+Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â -->
+<div id="step1" class="wizard-step">
+
+    <?= peBox('Identity') ?>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 90px;gap:0.65rem;align-items:start;">
+
+
+        <div>
+            <label style="<?= $lbl ?>">First Name <?= $req ?></label>
+            <input type="text" name="first_name" value="<?= $val('first_name') ?>" required
+                   style="<?= $inp ?>" onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
         </div>
-        <div class="col-md-3">
-            <label class="form-label">Middle Name</label>
-            <input type="text" name="middle_name" id="peMiddle" class="form-control" value="<?= $val('middle_name') ?>">
-            <label style="font-size:0.74rem;color:#475569;margin-top:4px;display:flex;gap:0.35rem;align-items:center;cursor:pointer;">
-                <input type="checkbox" name="no_middle_name" onchange="document.getElementById('peMiddle').disabled=this.checked"> No middle name
+        <div>
+            <label style="<?= $lbl ?>">Middle Name</label>
+            <input type="text" name="middle_name" id="peMiddle" value="<?= $val('middle_name') ?>"
+                   style="<?= $inp ?>" onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
+            <label style="font-size:0.7rem;color:#6b7280;margin-top:4px;display:flex;gap:4px;align-items:center;cursor:pointer;">
+                <input type="checkbox" name="no_middle_name"
+                       onchange="document.getElementById('peMiddle').disabled=this.checked;document.getElementById('peMiddle').style.background=this.checked?'#f9fafb':'#fff'">
+                No middle name
             </label>
         </div>
-        <div class="col-md-3">
-            <label class="form-label">Last Name <span class="text-danger">*</span></label>
-            <input type="text" name="last_name" class="form-control" value="<?= $val('last_name') ?>" required>
+        <div>
+            <label style="<?= $lbl ?>">Last Name <?= $req ?></label>
+            <input type="text" name="last_name" value="<?= $val('last_name') ?>" required
+                   style="<?= $inp ?>" onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
         </div>
-        <div class="col-md-2">
-            <label class="form-label">Suffix</label>
-            <input type="text" name="suffix" class="form-control" value="<?= $val('suffix') ?>">
+        <div style="position:relative;">
+            <label style="<?= $lbl ?>">Suffix</label>
+            <select id="suffixSelect"
+                    style="<?= $inp ?>cursor:pointer;"
+                    onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'"
+                    onchange="handleSuffixChange(this)">
+                <option value="">None</option>
+                <?php
+                $suffixes = ['Jr.','Sr.','II','III','IV','V','VI','Ph.D.','M.D.','Esq.','DDS','DVM','RN','CPA','Other'];
+                $curSuffix = $val('suffix');
+                $isOther = $curSuffix !== '' && !in_array($curSuffix, array_slice($suffixes, 0, -1));
+                foreach ($suffixes as $sfx):
+                    $sel = (!$isOther && $curSuffix === $sfx) ? 'selected' : ($isOther && $sfx === 'Other' ? 'selected' : '');
+                ?>
+                <option value="<?= htmlspecialchars($sfx) ?>" <?= $sel ?>><?= htmlspecialchars($sfx) ?></option>
+                <?php endforeach; ?>
+            </select>
+            <input type="text" name="suffix" id="suffixInput"
+                   value="<?= $val('suffix') ?>"
+                   placeholder="Type suffixâ€¦"
+                   style="<?= $inp ?>margin-top:0.35rem;<?= (!$isOther && $curSuffix === '' || !$isOther) ? 'display:none;' : '' ?>"
+                   onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
         </div>
-        <div class="col-md-4">
-            <label class="form-label">Email</label>
-            <div class="input-group">
-                <span class="input-group-text"><i class="bi bi-lock-fill"></i></span>
-                <input type="email" class="form-control" value="<?= htmlspecialchars($user['email']) ?>" readonly>
+    </div>
+    <?= peBoxEnd() ?>
+
+    <?= peBox('Account &amp; Placement') ?>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.65rem;">
+        <div>
+            <label style="<?= $lbl ?>">Email</label>
+            <div style="display:flex;border:1px solid #e5e7eb;background:#f9fafb;">
+                <div style="padding:0.38rem 0.55rem;border-right:1px solid #e5e7eb;display:flex;align-items:center;">
+                    <i class="bi bi-lock" style="font-size:0.68rem;color:#9ca3af;"></i>
+                </div>
+                <input type="email" value="<?= htmlspecialchars($user['email']) ?>" readonly
+                       style="flex:1;border:none;background:transparent;padding:0.38rem 0.55rem;font-size:0.82rem;color:#9ca3af;outline:none;">
             </div>
-            <div style="font-size:0.72rem;color:#94a3b8;margin-top:4px;">Email can only be changed by the Administrator.</div>
+            <div style="font-size:0.62rem;color:#9ca3af;margin-top:3px;">Changed by Administrator only.</div>
         </div>
-        <div class="col-md-3">
-            <label class="form-label">Employee ID <span class="text-danger">*</span></label>
-            <input type="text" name="employee_id" class="form-control" value="<?= $val('employee_id') ?>" required>
+        <div>
+            <label style="<?= $lbl ?>">Employee ID <?= $req ?></label>
+            <input type="text" name="employee_id" value="<?= $val('employee_id') ?>" required
+                   style="<?= $inp ?>" onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
         </div>
-        <div class="col-md-3">
-            <label class="form-label">Campus <span class="text-danger">*</span></label>
-            <select name="campus_id" class="form-select" required>
+        <div>
+            <label style="<?= $lbl ?>">Campus <?= $req ?></label>
+            <select name="campus_id" required style="<?= $inp ?>cursor:pointer;"
+                    onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
                 <option value="">Select campus</option>
                 <?php foreach ($campuses as $c): ?>
-                <option value="<?= (int)$c['campus_id'] ?>" <?= $selected('campus_id', $c['campus_id']) ?>><?= htmlspecialchars($c['campus_name']) ?></option>
+                <option value="<?= (int)$c['campus_id'] ?>" <?= $selected('campus_id',$c['campus_id']) ?>><?= htmlspecialchars($c['campus_name']) ?></option>
                 <?php endforeach; ?>
-            </select>
-        </div>
-        <div class="col-md-4">
-            <label class="form-label">Faculty Rank <span class="text-danger">*</span></label>
-            <select name="rank" class="form-select" required>
-                <option value="">Select rank</option>
-                <?php foreach (facultyRanks() as $r): ?>
-                <option value="<?= htmlspecialchars($r) ?>" <?= $selected('rank', $r) ?>><?= htmlspecialchars($r) ?></option>
-                <?php endforeach; ?>
-            </select>
-        </div>
-        <div class="col-md-3">
-            <label class="form-label">Status <span class="text-danger">*</span></label>
-            <select name="faculty_status" class="form-select" required>
-                <option value="Existing Faculty" <?= $selected('faculty_status', 'Existing Faculty', 'New Faculty') ?>>Existing Faculty</option>
-                <option value="New Faculty" <?= $selected('faculty_status', 'New Faculty', 'New Faculty') ?>>New Faculty</option>
             </select>
         </div>
     </div>
+    <?= peBoxEnd() ?>
 
-    <div style="display:flex;justify-content:flex-end;padding-top:1rem;margin-top:0.5rem;border-top:1px solid #f1f5f9;">
-        <button type="button" class="btn btn-primary"
-                onclick="goStep(2)"
-                style="background:#1a3a6b;border-color:#1a3a6b;font-size:0.85rem;padding:0.5rem 1.4rem;">
-            Continue &rarr;
+    <?= peBox('Rank &amp; Status') ?>
+    <div style="display:grid;grid-template-columns:1fr 180px;gap:0.65rem;">
+        <div>
+            <label style="<?= $lbl ?>">Faculty Rank <?= $req ?></label>
+            <select name="rank" required style="<?= $inp ?>cursor:pointer;"
+                    onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
+                <option value="">Select rank</option>
+                <?php foreach (facultyRanks() as $r): ?>
+                <option value="<?= htmlspecialchars($r) ?>" <?= $selected('rank',$r) ?>><?= htmlspecialchars($r) ?></option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+        <div>
+            <label style="<?= $lbl ?>">Status <?= $req ?></label>
+            <select name="faculty_status" required style="<?= $inp ?>cursor:pointer;"
+                    onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
+                <option value="Existing Faculty" <?= $selected('faculty_status','Existing Faculty','New Faculty') ?>>Existing Faculty</option>
+                <option value="New Faculty"      <?= $selected('faculty_status','New Faculty','New Faculty') ?>>New Faculty</option>
+            </select>
+        </div>
+    </div>
+    <?= peBoxEnd() ?>
+
+    <div style="display:flex;justify-content:flex-end;margin-top:0.25rem;">
+        <button type="button" onclick="goStep(2)"
+                style="padding:0.45rem 1.4rem;background:#1a3a6b;color:#fff;border:none;font-size:0.82rem;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:5px;"
+                onmouseover="this.style.background='#152d54'" onmouseout="this.style.background='#1a3a6b'">
+            Continue <i class="bi bi-arrow-right" style="font-size:0.72rem;"></i>
         </button>
     </div>
 </div>
 
-<!-- ══════════════════════════════════════════════
-     STEP 2 — Educational Attainment
-══════════════════════════════════════════════ -->
-<div id="step2" class="wizard-step neon-card" style="padding:1.25rem 1.5rem;display:none;">
-    <div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;
-                color:#94a3b8;margin-bottom:1rem;padding-bottom:0.5rem;border-bottom:1px solid #f1f5f9;">
-        Educational Attainment
-    </div>
-    <div style="display:flex;flex-direction:column;gap:0.75rem;">
-        <?php
-        $edu_levels = [
-            'Bachelor'      => ['Undergrad',       true],
-            'Master'        => ['Masters',          false],
-            'Doctorate'     => ['Doctorate',        false],
-            'PostDoctorate' => ['Post-doctorate',   false],
-        ];
-        foreach ($edu_levels as $level_value => [$level_label, $is_required]):
-            $idx = array_search($level_value, $_POST['edu_level'] ?? [], true);
-            $degree_value = $idx !== false ? ($_POST['edu_degree'][$idx] ?? '') : '';
-            $school_value = $idx !== false ? ($_POST['edu_school'][$idx] ?? '') : '';
-            $year_value   = $idx !== false ? ($_POST['edu_year'][$idx]   ?? '') : '';
-        ?>
-        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:0.85rem;">
+<!-- Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
+     STEP 2
+Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â -->
+<div id="step2" class="wizard-step" style="display:none;">
+
+    <?= peBox('Educational Attainment') ?>
+    <?php
+    $edu_levels = [
+        'Bachelor'      => ['Undergrad',      true],
+        'Master'        => ['Masters',        false],
+        'Doctorate'     => ['Doctorate',      false],
+        'PostDoctorate' => ['Post-doctorate', false],
+    ];
+    foreach ($edu_levels as $level_value => [$level_label, $is_required]):
+        $idx          = array_search($level_value, $_POST['edu_level'] ?? [], true);
+        $degree_value = $idx !== false ? ($_POST['edu_degree'][$idx] ?? '') : '';
+        $school_value = $idx !== false ? ($_POST['edu_school'][$idx] ?? '') : '';
+        $year_value   = $idx !== false ? ($_POST['edu_year'][$idx]   ?? '') : '';
+    ?>
+    <div style="border:1px solid #e5e7eb;overflow:hidden;margin-bottom:0.5rem;">
+        <div style="background:#f9fafb;border-bottom:1px solid #e5e7eb;padding:0.32rem 0.75rem;display:flex;align-items:center;justify-content:space-between;">
+            <span style="font-size:0.7rem;font-weight:700;color:#374151;"><?= htmlspecialchars($level_label) ?></span>
+            <?php if (!$is_required): ?>
+            <span style="font-size:0.62rem;color:#9ca3af;font-style:italic;">optional &mdash; N/A if none</span>
+            <?php else: ?>
+            <span style="font-size:0.62rem;font-weight:700;color:#374151;border:1px solid #d1d5db;padding:0 5px;">Required</span>
+            <?php endif; ?>
+        </div>
+        <div style="padding:0.65rem 0.75rem;">
             <input type="hidden" name="edu_level[]" value="<?= htmlspecialchars($level_value) ?>">
-            <div style="font-size:0.8rem;font-weight:700;color:#1a3a6b;margin-bottom:0.6rem;">
-                <?= htmlspecialchars($level_label) ?>
-                <?= $is_required ? '' : '<span style="font-size:0.68rem;color:#94a3b8;font-weight:400;margin-left:4px;">(optional — enter N/A if none)</span>' ?>
-            </div>
-            <div class="row g-2">
-                <div class="col-md-5">
-                    <label class="form-label" style="font-size:0.78rem;">Name of Degree<?= $is_required ? ' <span class="text-danger">*</span>' : '' ?></label>
-                    <input name="edu_degree[]" class="form-control form-control-sm"
-                           value="<?= htmlspecialchars($degree_value) ?>"
+            <div style="display:grid;grid-template-columns:1fr 1fr 100px;gap:0.55rem;">
+                <div>
+                    <label style="<?= $lbl ?>">Name of Degree<?= $is_required ? ' '.$req : '' ?></label>
+                    <input name="edu_degree[]" value="<?= htmlspecialchars($degree_value) ?>"
                            placeholder="<?= $is_required ? 'Bachelor of Science in...' : 'N/A if none' ?>"
-                           <?= $is_required ? 'required' : '' ?>>
+                           <?= $is_required ? 'required' : '' ?>
+                           style="<?= $inp ?>" onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
                 </div>
-                <div class="col-md-5">
-                    <label class="form-label" style="font-size:0.78rem;">Name of SUC<?= $is_required ? ' <span class="text-danger">*</span>' : '' ?></label>
-                    <input name="edu_school[]" class="form-control form-control-sm"
-                           value="<?= htmlspecialchars($school_value) ?>"
+                <div>
+                    <label style="<?= $lbl ?>">School / University<?= $is_required ? ' '.$req : '' ?></label>
+                    <input name="edu_school[]" value="<?= htmlspecialchars($school_value) ?>"
                            placeholder="<?= $is_required ? 'School / University' : 'N/A if none' ?>"
-                           <?= $is_required ? 'required' : '' ?>>
+                           <?= $is_required ? 'required' : '' ?>
+                           style="<?= $inp ?>" onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
                 </div>
-                <div class="col-md-2">
-                    <label class="form-label" style="font-size:0.78rem;">Year<?= $is_required ? ' <span class="text-danger">*</span>' : '' ?></label>
-                    <input name="edu_year[]" class="form-control form-control-sm"
-                           value="<?= htmlspecialchars($year_value) ?>"
-                           placeholder="<?= $is_required ? 'YYYY' : 'N/A' ?>"
-                           <?= $is_required ? 'required' : '' ?>>
+                <div>
+                    <label style="<?= $lbl ?>">Year<?= $is_required ? ' '.$req : '' ?></label>
+                    <input name="edu_year[]" value="<?= htmlspecialchars($year_value) ?>"
+                           placeholder="YYYY" <?= $is_required ? 'required' : '' ?>
+                           style="<?= $inp ?>" onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
                 </div>
             </div>
         </div>
-        <?php endforeach; ?>
     </div>
+    <?php endforeach; ?>
+    <?= peBoxEnd() ?>
 
-    <div style="margin-top:0.85rem;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:0.75rem 0.85rem;">
-        <label class="form-label" style="font-size:0.82rem;margin-bottom:0.35rem;">Applied during 1st Cycle <span class="text-danger">*</span></label>
-        <select name="applied_first_cycle" class="form-select form-select-sm" style="max-width:220px;" required>
+    <?= peBox('Application History') ?>
+    <div style="display:flex;align-items:center;gap:1rem;">
+        <label style="<?= $lbl ?>margin-bottom:0;">Applied during 1st Cycle <?= $req ?></label>
+        <select name="applied_first_cycle" required style="border:1px solid #e5e7eb;padding:0.38rem 0.55rem;font-size:0.82rem;background:#fff;outline:none;cursor:pointer;width:100px;"
+                onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
             <option value="0" <?= (($_POST['applied_first_cycle'] ?? '0') === '0') ? 'selected' : '' ?>>NO</option>
             <option value="1" <?= (($_POST['applied_first_cycle'] ?? '0') === '1') ? 'selected' : '' ?>>YES</option>
         </select>
     </div>
+    <?= peBoxEnd() ?>
 
-    <div style="display:flex;justify-content:space-between;padding-top:1rem;margin-top:0.5rem;border-top:1px solid #f1f5f9;">
-        <button type="button" class="btn btn-outline-secondary"
-                onclick="goStep(1)"
-                style="font-size:0.85rem;padding:0.5rem 1.2rem;">
-            &larr; Back
+    <div style="display:flex;justify-content:space-between;margin-top:0.25rem;">
+        <button type="button" onclick="goStep(1)"
+                style="padding:0.45rem 1.2rem;background:#fff;color:#374151;border:1px solid #e5e7eb;font-size:0.82rem;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:5px;"
+                onmouseover="this.style.background='#f9fafb'" onmouseout="this.style.background='#fff'">
+            <i class="bi bi-arrow-left" style="font-size:0.72rem;"></i> Back
         </button>
-        <button type="button" class="btn btn-primary"
-                onclick="goStep(3)"
-                style="background:#1a3a6b;border-color:#1a3a6b;font-size:0.85rem;padding:0.5rem 1.4rem;">
-            Continue &rarr;
-        </button>
-    </div>
-</div>
-
-<!-- ══════════════════════════════════════════════
-     STEP 3 — Employment History
-══════════════════════════════════════════════ -->
-<div id="step3" class="wizard-step neon-card" style="padding:1.25rem 1.5rem;display:none;">
-    <div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;
-                color:#94a3b8;margin-bottom:1rem;padding-bottom:0.5rem;border-bottom:1px solid #f1f5f9;">
-        Employment History
-    </div>
-    <div class="row g-3">
-        <!-- Current Employment -->
-        <div class="col-lg-6">
-            <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:1rem;">
-                <div style="font-size:0.68rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.75rem;">Current Employment</div>
-                <div class="row g-2">
-                    <div class="col-md-6">
-                        <label class="form-label" style="font-size:0.78rem;">Faculty Rank <span class="text-danger">*</span></label>
-                        <input name="current_rank" class="form-control form-control-sm"
-                               value="<?= htmlspecialchars($old['current_rank'] ?? ($user['rank'] ?? '')) ?>"
-                               placeholder="Faculty Rank" required>
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label" style="font-size:0.78rem;">Mode of Appointment <span class="text-danger">*</span></label>
-                        <input name="current_mode" class="form-control form-control-sm"
-                               value="<?= htmlspecialchars($old['current_mode'] ?? '') ?>"
-                               placeholder="Permanent / Temporary" required>
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label" style="font-size:0.78rem;">Date of Appointment <span class="text-danger">*</span></label>
-                        <input type="date" name="current_date" class="form-control form-control-sm"
-                               value="<?= htmlspecialchars($old['current_date'] ?? '') ?>" required>
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label" style="font-size:0.78rem;">SUC <span class="text-danger">*</span></label>
-                        <input name="current_suc" class="form-control form-control-sm"
-                               value="<?= htmlspecialchars($old['current_suc'] ?? 'Carlos Hilado Memorial State University (CHMSU)') ?>" required>
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label" style="font-size:0.78rem;">Campus <span class="text-danger">*</span></label>
-                        <input name="current_campus" class="form-control form-control-sm"
-                               value="<?= htmlspecialchars($old['current_campus'] ?? ($campus_map[(int)($user['campus_id'] ?? 0)] ?? '')) ?>" required>
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label" style="font-size:0.78rem;">Address <span class="text-danger">*</span></label>
-                        <input name="current_address" class="form-control form-control-sm"
-                               value="<?= htmlspecialchars($old['current_address'] ?? '') ?>" required>
-                    </div>
-                </div>
-            </div>
-        </div>
-        <!-- Previous Employment -->
-        <div class="col-lg-6">
-            <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:1rem;">
-                <div style="font-size:0.68rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.75rem;">Previous Employment</div>
-                <div class="row g-2">
-                    <div class="col-md-6">
-                        <label class="form-label" style="font-size:0.78rem;">Previous Rank <span class="text-danger">*</span></label>
-                        <input name="previous_rank" class="form-control form-control-sm"
-                               value="<?= htmlspecialchars($old['previous_rank'] ?? '') ?>" placeholder="Previous Rank" required>
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label" style="font-size:0.78rem;">Mode of Appointment <span class="text-danger">*</span></label>
-                        <input name="previous_mode" class="form-control form-control-sm"
-                               value="<?= htmlspecialchars($old['previous_mode'] ?? '') ?>" placeholder="Permanent / Temporary" required>
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label" style="font-size:0.78rem;">Date of Appointment</label>
-                        <input type="date" name="previous_date" id="prevDate" class="form-control form-control-sm"
-                               value="<?= htmlspecialchars($old['previous_date'] ?? '') ?>">
-                        <label style="font-size:0.72rem;color:#475569;margin-top:3px;display:flex;gap:0.35rem;cursor:pointer;">
-                            <input type="checkbox" name="previous_date_na" <?= !empty($old['previous_date_na']) ? 'checked' : '' ?>
-                                   onchange="document.getElementById('prevDate').disabled=this.checked"> N/A
-                        </label>
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label" style="font-size:0.78rem;">Employment Sector <span class="text-danger">*</span></label>
-                        <input name="previous_sector" class="form-control form-control-sm"
-                               value="<?= htmlspecialchars($old['previous_sector'] ?? '') ?>" placeholder="Gov't / Private" required>
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label" style="font-size:0.78rem;">SUC <span class="text-danger">*</span></label>
-                        <input name="previous_suc" class="form-control form-control-sm"
-                               value="<?= htmlspecialchars($old['previous_suc'] ?? '') ?>" required>
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label" style="font-size:0.78rem;">Campus <span class="text-danger">*</span></label>
-                        <input name="previous_campus" class="form-control form-control-sm"
-                               value="<?= htmlspecialchars($old['previous_campus'] ?? '') ?>" required>
-                    </div>
-                    <div class="col-12">
-                        <label class="form-label" style="font-size:0.78rem;">Address <span class="text-danger">*</span></label>
-                        <input name="previous_address" class="form-control form-control-sm"
-                               value="<?= htmlspecialchars($old['previous_address'] ?? '') ?>" required>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Privacy acknowledgment moved to Step 4 review -->
-
-    <div style="display:flex;justify-content:space-between;padding-top:1rem;margin-top:0.5rem;border-top:1px solid #f1f5f9;">
-        <button type="button" class="btn btn-outline-secondary"
-                onclick="goStep(2)"
-                style="font-size:0.85rem;padding:0.5rem 1.2rem;">
-            &larr; Back
-        </button>
-        <button type="button" class="btn btn-primary"
-                onclick="goStep(4)"
-                style="background:#1a3a6b;border-color:#1a3a6b;font-size:0.85rem;padding:0.5rem 1.4rem;">
-            Review &rarr;
+        <button type="button" onclick="goStep(3)"
+                style="padding:0.45rem 1.4rem;background:#1a3a6b;color:#fff;border:none;font-size:0.82rem;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:5px;"
+                onmouseover="this.style.background='#152d54'" onmouseout="this.style.background='#1a3a6b'">
+            Continue <i class="bi bi-arrow-right" style="font-size:0.72rem;"></i>
         </button>
     </div>
 </div>
 
-<!-- ══════════════════════════════════════════════
-     STEP 4 — Review & Confirm
-══════════════════════════════════════════════ -->
-<div id="step4" class="wizard-step neon-card" style="padding:1.25rem 1.5rem;display:none;">
-    <div style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;
-                color:#94a3b8;margin-bottom:1rem;padding-bottom:0.5rem;border-bottom:1px solid #f1f5f9;">
-        Review Your Information
-    </div>
-    <div style="font-size:0.78rem;color:#64748b;margin-bottom:1.25rem;">
-        Check everything below before saving. Click <strong>Edit</strong> on any section to go back and make changes.
+<!-- Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
+     STEP 3
+Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â -->
+<div id="step3" class="wizard-step" style="display:none;">
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.65rem;margin-bottom:0.65rem;">
+
+        <!-- Current -->
+        <div style="border:1px solid #e5e7eb;overflow:hidden;">
+            <div style="background:#f9fafb;border-bottom:1px solid #e5e7eb;padding:0.4rem 0.9rem;">
+                <span style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#374151;">Current Employment</span>
+            </div>
+            <div style="padding:0.85rem 0.9rem;display:grid;grid-template-columns:1fr 1fr;gap:0.55rem;">
+                <div>
+                    <label style="<?= $lbl ?>">Faculty Rank <?= $req ?></label>
+                    <div style="border:1px solid #e5e7eb;background:#f9fafb;padding:0.38rem 0.55rem;font-size:0.82rem;color:#374151;display:flex;align-items:center;justify-content:space-between;gap:0.5rem;">
+                        <span id="currentRankDisplay" style="flex:1;"><?= htmlspecialchars($old['current_rank'] ?? ($user['rank'] ?? '—')) ?></span>
+                        <i class="bi bi-lock" style="color:#9ca3af;font-size:0.65rem;flex-shrink:0;"></i>
+                    </div>
+                    <input type="hidden" name="current_rank" id="currentRankHidden"
+                           value="<?= htmlspecialchars($old['current_rank'] ?? ($user['rank'] ?? '')) ?>">
+                    <div style="font-size:0.62rem;color:#9ca3af;margin-top:3px;">Reflects your rank from Step 1.</div>
+                </div>
+                <div>
+                    <label style="<?= $lbl ?>">Mode of Appointment <?= $req ?></label>
+                    <select name="current_mode" required style="<?= $inp ?>cursor:pointer;"
+                            onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
+                        <option value="">Select mode</option>
+                        <?php foreach (['Permanent','Temporary','Casual','Contractual','Co-terminus'] as $m):
+                            $sel = ($old['current_mode'] ?? '') === $m ? 'selected' : ''; ?>
+                        <option value="<?= $m ?>" <?= $sel ?>><?= $m ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div>
+                    <label style="<?= $lbl ?>">Date of Appointment <?= $req ?></label>
+                    <input type="date" name="current_date" value="<?= htmlspecialchars($old['current_date'] ?? '') ?>" required
+                           style="<?= $inp ?>" onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
+                </div>
+                <div>
+                    <label style="<?= $lbl ?>">SUC <?= $req ?></label>
+                    <select name="current_suc" required style="<?= $inp ?>cursor:pointer;"
+                            onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
+                        <option value="Carlos Hilado Memorial State University (CHMSU)" selected>Carlos Hilado Memorial State University (CHMSU)</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="<?= $lbl ?>">Campus <?= $req ?></label>
+                    <select name="current_campus" required style="<?= $inp ?>cursor:pointer;"
+                            onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
+                        <option value="">Select campus</option>
+                        <?php
+                        $cur_campus_val = $old['current_campus'] ?? ($campus_map[(int)($user['campus_id'] ?? 0)] ?? '');
+                        foreach ($campuses as $c): $sel = $cur_campus_val === $c['campus_name'] ? 'selected' : ''; ?>
+                        <option value="<?= htmlspecialchars($c['campus_name']) ?>" <?= $sel ?>><?= htmlspecialchars($c['campus_name']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div>
+                    <label style="<?= $lbl ?>">Address <?= $req ?></label>
+                    <select name="current_address" id="currentAddressSel" required style="<?= $inp ?>cursor:pointer;"
+                            onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
+                        <option value="">Select campus first</option>
+                        <?php
+                        // Build address options from campuses table, falling back to hardcoded values
+                        $addr_opts = [];
+                        foreach ($campuses as $c) {
+                            if (!empty($c['address'])) {
+                                $addr_opts[$c['campus_name']] = $c['address'];
+                            }
+                        }
+                        // Fallback hardcoded addresses for campuses without DB address
+                        $fallback_addrs = [
+                            'Fortune' => 'Sofia Gonzaga Street, Barangay Estefania, Bacolod City, Negros Occidental',
+                            'Alijis'  => 'Barangay Alijis, Bacolod City, Negros Occidental',
+                            'Binalbagan' => 'Enclaro, Binalbagan, Negros Occidental',
+                            'Talisay' => 'Talisay City, Negros Occidental',
+                        ];
+                        // Merge: DB addresses take priority; fill gaps with fallback
+                        $all_addrs = $addr_opts;
+                        foreach ($campuses as $c) {
+                            $found = false;
+                            foreach ($addr_opts as $cname => $addr) {
+                                if ($cname === $c['campus_name']) { $found = true; break; }
+                            }
+                            if (!$found) {
+                                foreach ($fallback_addrs as $keyword => $addr) {
+                                    if (stripos($c['campus_name'], $keyword) !== false) {
+                                        $all_addrs[$c['campus_name']] = $addr;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        $cur_addr_val = $old['current_address'] ?? '';
+                        foreach ($all_addrs as $cname => $address):
+                            $sel = $cur_addr_val === $address ? 'selected' : '';
+                        ?>
+                        <option value="<?= htmlspecialchars($address) ?>" data-campus="<?= htmlspecialchars($cname) ?>" <?= $sel ?>>
+                            <?= htmlspecialchars($address) ?>
+                        </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <!-- Previous -->
+        <div style="border:1px solid #e5e7eb;overflow:hidden;">
+            <div style="background:#f9fafb;border-bottom:1px solid #e5e7eb;padding:0.4rem 0.9rem;">
+                <span style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#374151;">Previous Employment</span>
+            </div>
+            <div style="padding:0.85rem 0.9rem;display:grid;grid-template-columns:1fr 1fr;gap:0.55rem;">
+                <div>
+                    <label style="<?= $lbl ?>">Previous Rank <?= $req ?></label>
+                    <select name="previous_rank" required style="<?= $inp ?>cursor:pointer;"
+                            onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
+                        <option value="">Select rank</option>
+                        <?php foreach (facultyRanks() as $r): $sel = ($old['previous_rank'] ?? '') === $r ? 'selected' : ''; ?>
+                        <option value="<?= htmlspecialchars($r) ?>" <?= $sel ?>><?= htmlspecialchars($r) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div>
+                    <label style="<?= $lbl ?>">Mode of Appointment <?= $req ?></label>
+                    <select name="previous_mode" required style="<?= $inp ?>cursor:pointer;"
+                            onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
+                        <option value="">Select mode</option>
+                        <?php foreach (['Permanent','Temporary','Casual','Contractual','Co-terminus'] as $m):
+                            $sel = ($old['previous_mode'] ?? '') === $m ? 'selected' : ''; ?>
+                        <option value="<?= $m ?>" <?= $sel ?>><?= $m ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div>
+                    <label style="<?= $lbl ?>">Date of Appointment</label>
+                    <input type="date" name="previous_date" id="prevDate" value="<?= htmlspecialchars($old['previous_date'] ?? '') ?>"
+                           style="<?= $inp ?>" onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
+                    <label style="font-size:0.7rem;color:#6b7280;margin-top:3px;display:flex;gap:4px;cursor:pointer;">
+                        <input type="checkbox" name="previous_date_na" <?= !empty($old['previous_date_na']) ? 'checked' : '' ?>
+                               onchange="document.getElementById('prevDate').disabled=this.checked"> N/A
+                    </label>
+                </div>
+                <div>
+                    <label style="<?= $lbl ?>">Employment Sector <?= $req ?></label>
+                    <select name="previous_sector" required style="<?= $inp ?>cursor:pointer;"
+                            onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
+                        <option value="">Select sector</option>
+                        <?php foreach (['Government','Private','NGO / Non-profit','Self-employed'] as $s):
+                            $sel = ($old['previous_sector'] ?? '') === $s ? 'selected' : ''; ?>
+                        <option value="<?= $s ?>" <?= $sel ?>><?= $s ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div>
+                    <label style="<?= $lbl ?>">SUC <?= $req ?></label>
+                    <input name="previous_suc" value="<?= htmlspecialchars($old['previous_suc'] ?? '') ?>" required
+                           style="<?= $inp ?>" onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
+                </div>
+                <div>
+                    <label style="<?= $lbl ?>">Campus <?= $req ?></label>
+                    <select name="previous_campus" required style="<?= $inp ?>cursor:pointer;"
+                            onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
+                        <option value="">Select campus</option>
+                        <?php foreach ($campuses as $c): $sel = ($old['previous_campus'] ?? '') === $c['campus_name'] ? 'selected' : ''; ?>
+                        <option value="<?= htmlspecialchars($c['campus_name']) ?>" <?= $sel ?>><?= htmlspecialchars($c['campus_name']) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-span-2" style="grid-column:span 2;">
+                    <label style="<?= $lbl ?>">Address <?= $req ?></label>
+                    <input name="previous_address" value="<?= htmlspecialchars($old['previous_address'] ?? '') ?>" required
+                           style="<?= $inp ?>" onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
+                </div>
+            </div>
+        </div>
     </div>
 
-    <!-- Review sections filled by JS -->
-    <div id="rv_personal" class="rv-section" style="margin-bottom:1rem;"></div>
-    <div id="rv_education" class="rv-section" style="margin-bottom:1rem;"></div>
-    <div id="rv_employment" class="rv-section" style="margin-bottom:1rem;"></div>
+    <div style="display:flex;justify-content:space-between;margin-top:0.25rem;">
+        <button type="button" onclick="goStep(2)"
+                style="padding:0.45rem 1.2rem;background:#fff;color:#374151;border:1px solid #e5e7eb;font-size:0.82rem;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:5px;"
+                onmouseover="this.style.background='#f9fafb'" onmouseout="this.style.background='#fff'">
+            <i class="bi bi-arrow-left" style="font-size:0.72rem;"></i> Back
+        </button>
+        <button type="button" onclick="goStep(4)"
+                style="padding:0.45rem 1.4rem;background:#1a3a6b;color:#fff;border:none;font-size:0.82rem;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:5px;"
+                onmouseover="this.style.background='#152d54'" onmouseout="this.style.background='#1a3a6b'">
+            Review <i class="bi bi-arrow-right" style="font-size:0.72rem;"></i>
+        </button>
+    </div>
+</div>
 
-    <!-- Privacy acknowledgment -->
-    <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:0.75rem 0.9rem;margin-top:0.5rem;margin-bottom:1rem;">
-        <label style="display:flex;gap:0.5rem;align-items:flex-start;color:#475569;font-size:0.84rem;cursor:pointer;">
-            <input type="checkbox" name="privacy_ack" required style="margin-top:2px;flex-shrink:0;">
-            I acknowledge that the information I provide will be used for faculty reclassification processing and account administration.
-        </label>
+<!-- Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
+     STEP 4
+Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â -->
+<div id="step4" class="wizard-step" style="display:none;">
+
+    <div style="border:1px solid #e5e7eb;overflow:hidden;margin-bottom:0.65rem;">
+        <div style="background:#f9fafb;border-bottom:1px solid #e5e7eb;padding:0.4rem 0.9rem;">
+            <span style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#374151;">Review Your Information</span>
+        </div>
+        <div style="padding:0.85rem 0.9rem;">
+            <p style="font-size:0.78rem;color:#6b7280;margin:0 0 0.9rem;">Check everything below before saving. Click <strong>Edit</strong> to go back.</p>
+            <div id="rv_personal" style="margin-bottom:0.65rem;"></div>
+            <div id="rv_education" style="margin-bottom:0.65rem;"></div>
+            <div id="rv_employment"></div>
+        </div>
     </div>
 
-    <div style="display:flex;justify-content:space-between;padding-top:1rem;border-top:1px solid #f1f5f9;">
-        <button type="button" class="btn btn-outline-secondary"
-                onclick="goStep(3)"
-                style="font-size:0.85rem;padding:0.5rem 1.2rem;">
-            &larr; Back
+    <div style="border:1px solid #e5e7eb;overflow:hidden;margin-bottom:0.65rem;">
+        <div style="background:#f9fafb;border-bottom:1px solid #e5e7eb;padding:0.4rem 0.9rem;">
+            <span style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#374151;">Data Privacy</span>
+        </div>
+        <div style="padding:0.75rem 0.9rem;">
+            <div style="font-size:0.78rem;color:#6b7280;margin-bottom:0.6rem;line-height:1.5;">
+                Before proceeding, please read our
+                <a href="#" id="privacyClauseLink"
+                   onclick="openPrivacyClause();return false;"
+                   style="color:#1a3a6b;font-weight:600;text-decoration:underline;">
+                    Data Privacy Statement
+                </a>
+                to understand how your information will be used.
+            </div>
+            <label id="privacyAckLabel"
+                   style="display:flex;gap:0.55rem;align-items:flex-start;font-size:0.8rem;line-height:1.5;
+                          opacity:0.4;user-select:none;color:#374151;cursor:not-allowed;">
+                <input type="checkbox" name="privacy_ack" id="privacyAckCheck"
+                       style="margin-top:3px;flex-shrink:0;pointer-events:none;" disabled>
+                I have read and acknowledge that the information I provide will be used for faculty reclassification processing and account administration.
+            </label>
+            <div id="privacyUnlockHint" style="display:none;"></div>
+            <!-- Nudge toast -->
+            <div id="privacyNudge"
+                 style="position:fixed;bottom:1.5rem;left:50%;transform:translateX(-50%) translateY(6px);
+                        background:#1a3a6b;color:#fff;padding:0.5rem 1rem;font-size:0.78rem;font-weight:600;
+                        display:flex;align-items:center;gap:0.5rem;z-index:99998;
+                        opacity:0;transition:opacity 0.25s,transform 0.25s;pointer-events:none;
+                        border:1px solid rgba(255,255,255,0.15);box-shadow:0 4px 16px rgba(0,0,0,0.25);">
+                <i class="bi bi-lock-fill" style="font-size:0.72rem;opacity:0.8;"></i>
+                You must open and read the Data Privacy Statement before saving.
+            </div>
+        </div>
+    </div>
+
+    <div style="display:flex;justify-content:space-between;">
+        <button type="button" onclick="goStep(3)"
+                style="padding:0.45rem 1.2rem;background:#fff;color:#374151;border:1px solid #e5e7eb;font-size:0.82rem;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:5px;"
+                onmouseover="this.style.background='#f9fafb'" onmouseout="this.style.background='#fff'">
+            <i class="bi bi-arrow-left" style="font-size:0.72rem;"></i> Back
         </button>
         <button type="submit"
-                style="background:#1a3a6b;border:none;color:#fff;border-radius:8px;
-                       font-size:0.85rem;font-weight:700;padding:0.5rem 1.6rem;cursor:pointer;">
-            Confirm &amp; Save Profile
+                style="padding:0.45rem 1.6rem;background:#1a3a6b;color:#fff;border:none;font-size:0.82rem;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:5px;"
+                onmouseover="this.style.background='#152d54'" onmouseout="this.style.background='#1a3a6b'">
+            <i class="bi bi-check2" style="font-size:0.72rem;"></i> Confirm &amp; Save Profile
         </button>
     </div>
 </div>
 
 </form>
+
+<!-- ── Why do we need this? Modal ──────────────────────── -->
+<div id="peInfoModal"
+     style="display:none;position:fixed;inset:0;z-index:99999;background:rgba(15,23,42,0.55);
+            align-items:center;justify-content:center;padding:1rem;"
+     onclick="if(event.target===this)this.style.display='none'">
+    <div style="background:#fff;width:100%;max-width:560px;border:1px solid #e5e7eb;overflow:hidden;max-height:90vh;display:flex;flex-direction:column;">
+
+        <!-- Header -->
+        <div style="background:#1a3a6b;padding:0.75rem 1rem;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;">
+            <div style="display:flex;align-items:center;gap:0.6rem;">
+                <i class="bi bi-info-circle-fill" style="color:rgba(255,255,255,0.75);font-size:0.9rem;"></i>
+                <div>
+                    <div style="font-size:0.85rem;font-weight:700;color:#fff;">How Your Information Is Used</div>
+                    <div style="font-size:0.62rem;color:rgba(255,255,255,0.5);margin-top:1px;">Faculty Reclassification Management System</div>
+                </div>
+            </div>
+            <button onclick="document.getElementById('peInfoModal').style.display='none'"
+                    style="background:none;border:none;color:rgba(255,255,255,0.6);font-size:1.1rem;cursor:pointer;line-height:1;padding:0;"
+                    onmouseover="this.style.color='#fff'" onmouseout="this.style.color='rgba(255,255,255,0.6)'">
+                <i class="bi bi-x-lg"></i>
+            </button>
+        </div>
+
+        <!-- Body -->
+        <div style="overflow-y:auto;padding:1.1rem 1.1rem 0.5rem;">
+
+            <?php
+            $infoSections = [
+                ['bi-person','Personal &amp; Account Details', [
+                    'Your name, employee ID, and campus are used to create your official faculty record in the system.',
+                    'Your email is used for system notifications such as cycle announcements, application status updates, and criteria change alerts.',
+                    'Your faculty rank and status determine which scoring criteria apply to your reclassification application.',
+                ]],
+                ['bi-mortarboard','Educational Attainment', [
+                    'Your educational background is a core requirement for faculty reclassification under CHED and CSC guidelines.',
+                    'Degree information is recorded in your application and evaluated by the reclassification committee.',
+                    'Higher educational attainment may qualify you for a higher faculty rank during the reclassification process.',
+                ]],
+                ['bi-briefcase','Employment History', [
+                    'Your current appointment details (rank, mode, date) form the baseline record for the reclassification evaluation.',
+                    'Previous employment history provides context for your career progression and is reviewed by evaluators.',
+                    'This information is submitted as part of your official reclassification dossier to the institution.',
+                ]],
+                ['bi-shield-lock','Data Privacy', [
+                    'All information you provide is stored securely and used exclusively for faculty reclassification processing.',
+                    'Your data will not be shared with third parties outside the institution.',
+                    'You may request a correction or update to your profile by contacting the system administrator.',
+                ]],
+            ];
+            foreach ($infoSections as [$icon, $title, $points]):
+            ?>
+            <div style="margin-bottom:1rem;">
+                <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.4rem;">
+                    <div style="width:24px;height:24px;background:#1a3a6b;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+                        <i class="bi <?= $icon ?>" style="color:#fff;font-size:0.65rem;"></i>
+                    </div>
+                    <span style="font-size:0.78rem;font-weight:700;color:#1a3a6b;"><?= $title ?></span>
+                </div>
+                <div style="border:1px solid #e5e7eb;overflow:hidden;">
+                    <?php foreach ($points as $i => $pt): ?>
+                    <div style="display:flex;align-items:flex-start;gap:0.6rem;padding:0.45rem 0.75rem;
+                                <?= $i < count($points)-1 ? 'border-bottom:1px solid #f3f4f6;' : '' ?>
+                                font-size:0.78rem;color:#374151;line-height:1.5;">
+                        <i class="bi bi-dot" style="color:#1a3a6b;font-size:1rem;flex-shrink:0;margin-top:-1px;"></i>
+                        <?= $pt ?>
+                    </div>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+            <?php endforeach; ?>
+
+        </div>
+
+        <!-- Footer -->
+        <div style="padding:0.65rem 1rem;border-top:1px solid #e5e7eb;background:#f9fafb;display:flex;justify-content:flex-end;flex-shrink:0;">
+            <button onclick="document.getElementById('peInfoModal').style.display='none'"
+                    style="padding:0.4rem 1.2rem;border:1px solid #e5e7eb;background:#fff;font-size:0.8rem;font-weight:600;color:#374151;cursor:pointer;"
+                    onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#fff'">
+                Close
+            </button>
+        </div>
+    </div>
+</div>
 
 <script>
 (function() {
@@ -574,153 +827,472 @@ if ($errors) {
     }
 
     function syncStep1ToEmployment() {
+        // Always sync rank from Step 1 into the display + hidden input
         const rankSel = document.querySelector('select[name="rank"]');
-        const currentRankInput = document.querySelector('input[name="current_rank"]');
-        if (rankSel && currentRankInput && currentRankInput.value === '') {
-            const v = rankSel.options[rankSel.selectedIndex]?.value || '';
-            if (v) currentRankInput.value = v;
+        const rankVal = rankSel?.options[rankSel.selectedIndex]?.value || '';
+        const hidden  = document.getElementById('currentRankHidden');
+        const display = document.getElementById('currentRankDisplay');
+        if (hidden)  hidden.value       = rankVal;
+        if (display) display.textContent = rankVal || '—';
+
+        // Sync campus from Step 1 into current_campus select (only if empty)
+        const campSel = document.querySelector('select[name="campus_id"]');
+        const ccSel   = document.querySelector('select[name="current_campus"]');
+        if (campSel && ccSel && !ccSel.value) {
+            const t = campSel.options[campSel.selectedIndex]?.text || '';
+            if (t && t !== 'Select campus') ccSel.value = t;
         }
-        const campusSel = document.querySelector('select[name="campus_id"]');
-        const currentCampusInput = document.querySelector('input[name="current_campus"]');
-        if (campusSel && currentCampusInput && currentCampusInput.value === '') {
-            const t = campusSel.options[campusSel.selectedIndex]?.text || '';
-            if (t && t !== 'Select campus') currentCampusInput.value = t;
+        // Auto-fill address when campus is already set
+        syncCampusAddress();
+    }
+
+    // Map campus name keywords → address option values
+    const campusAddressMap = <?php
+        $jsMap = [];
+        foreach ($all_addrs as $cname => $address) {
+            // Use first word of campus name as keyword
+            $parts = preg_split('/[-\s]+/', $cname);
+            foreach ($parts as $part) {
+                if (strlen($part) > 3 && strtolower($part) !== 'chmsu') {
+                    $jsMap[$part] = $address;
+                    break;
+                }
+            }
+        }
+        echo json_encode($jsMap, JSON_UNESCAPED_UNICODE);
+    ?>;
+
+    function syncCampusAddress() {
+        const ccSel   = document.querySelector('select[name="current_campus"]');
+        const addrSel = document.getElementById('currentAddressSel');
+        if (!ccSel || !addrSel) return;
+        const campus = ccSel.value || '';
+        for (const [keyword, address] of Object.entries(campusAddressMap)) {
+            if (campus.includes(keyword)) {
+                addrSel.value = address;
+                return;
+            }
         }
     }
 
-    // ── helpers ──────────────────────────────────────────────
+    // Wire privacy label click when locked → open modal + nudge
+    var privacyLbl = document.getElementById('privacyAckLabel');
+    if (privacyLbl) {
+        privacyLbl.addEventListener('click', function(e) {
+            var chk = document.getElementById('privacyAckCheck');
+            if (chk && chk.disabled) {
+                e.preventDefault();
+                openPrivacyClause();
+                showPrivacyNudge();
+            }
+        });
+    }
+
+    // Wire campus change → auto-fill address
+    var ccSel = document.querySelector('select[name="current_campus"]');
+    if (ccSel) ccSel.addEventListener('change', syncCampusAddress);
+
+    // Also wire Step 1 rank select to live-update the display
+    document.addEventListener('change', function(e) {
+        if (e.target && e.target.name === 'rank') {
+            const v = e.target.value;
+            const hidden  = document.getElementById('currentRankHidden');
+            const display = document.getElementById('currentRankDisplay');
+            if (hidden)  hidden.value       = v;
+            if (display) display.textContent = v || '—';
+        }
+    });
+
     function esc(s) {
         return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     }
     function field(label, value) {
-        const v = (value ?? '').toString().trim();
-        return `<div style="min-width:140px;flex:1;">
-            <div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#94a3b8;margin-bottom:2px;">${esc(label)}</div>
-            <div style="font-size:0.85rem;color:${v ? '#1e293b' : '#cbd5e1'};font-weight:${v ? '500' : '400'};">${v ? esc(v) : '—'}</div>
+        const v = (value ?? '').trim();
+        return `<div style="min-width:0;flex:1;">
+            <div style="font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#9ca3af;margin-bottom:2px;">${esc(label)}</div>
+            <div style="font-size:0.82rem;color:${v?'#111827':'#d1d5db'};font-weight:500;word-break:break-all;overflow-wrap:anywhere;">${v ? esc(v) : '&mdash;'}</div>
         </div>`;
     }
-    function section(title, stepNum, rows) {
-        return `<div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:1rem;">
-            <div style="display:flex;align-items:center;justify-content:space-between;
-                        padding:0.55rem 0.9rem;background:#f8fafc;border-bottom:1px solid #f1f5f9;">
-                <span style="font-size:0.7rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#475569;">${esc(title)}</span>
+    function rvSection(title, stepNum, rows) {
+        return `<div style="border:1px solid #e5e7eb;overflow:hidden;margin-bottom:0.5rem;">
+            <div style="background:#f9fafb;border-bottom:1px solid #e5e7eb;padding:0.35rem 0.75rem;
+                        display:flex;align-items:center;justify-content:space-between;">
+                <span style="font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#6b7280;">${esc(title)}</span>
                 <button type="button" onclick="goStep(${stepNum})"
-                        style="background:none;border:1px solid #e2e8f0;border-radius:6px;
-                               padding:2px 10px;font-size:0.72rem;font-weight:600;color:#1e4d8c;cursor:pointer;">
+                        style="padding:1px 10px;border:1px solid #e5e7eb;background:#fff;font-size:0.7rem;font-weight:600;color:#374151;cursor:pointer;">
                     Edit
                 </button>
             </div>
-            <div style="padding:0.75rem 0.9rem;display:flex;flex-wrap:wrap;gap:0.75rem 1.25rem;">${rows}</div>
+            <div style="padding:0.65rem 0.75rem;display:flex;flex-wrap:wrap;gap:0.6rem 1.1rem;">${rows}</div>
         </div>`;
     }
 
     function buildReview() {
-        // ── Step 1 ─────────────────────────────────────────
-        const firstName  = document.querySelector('input[name="first_name"]')?.value   || '';
-        const middleName = document.querySelector('input[name="middle_name"]')?.value  || '';
-        const lastName   = document.querySelector('input[name="last_name"]')?.value    || '';
-        const suffix     = document.querySelector('input[name="suffix"]')?.value       || '';
-        const empId      = document.querySelector('input[name="employee_id"]')?.value  || '';
+        const firstName  = document.querySelector('input[name="first_name"]')?.value  || '';
+        const middleName = document.querySelector('input[name="middle_name"]')?.value || '';
+        const lastName   = document.querySelector('input[name="last_name"]')?.value   || '';
+        const suffix     = document.querySelector('input[name="suffix"]')?.value      || '';
+        const empId      = document.querySelector('input[name="employee_id"]')?.value || '';
         const rankSel    = document.querySelector('select[name="rank"]');
         const rank       = rankSel?.options[rankSel.selectedIndex]?.value || '';
-        const campusSel  = document.querySelector('select[name="campus_id"]');
-        const campus     = campusSel?.options[campusSel.selectedIndex]?.text || '';
-        const statusSel  = document.querySelector('select[name="faculty_status"]');
-        const status     = statusSel?.options[statusSel.selectedIndex]?.text || '';
-        const emailEl    = document.querySelector('#step1 input[type="email"]');
-        const email      = emailEl?.value || '';
+        const campSel    = document.querySelector('select[name="campus_id"]');
+        const campus     = campSel?.options[campSel.selectedIndex]?.text || '';
+        const statSel    = document.querySelector('select[name="faculty_status"]');
+        const status     = statSel?.options[statSel.selectedIndex]?.text || '';
+        const email      = document.querySelector('#step1 input[type="email"]')?.value || '';
+        const fullName   = [firstName, middleName, lastName, suffix].filter(Boolean).join(' ');
+        document.getElementById('rv_personal').innerHTML = rvSection('Personal & Account', 1,
+            field('Full Name',fullName)+field('Email',email)+field('Employee ID',empId)+field('Campus',campus)+field('Rank',rank)+field('Status',status));
 
-        const fullName = [firstName, middleName, lastName, suffix].filter(Boolean).join(' ');
-
-        let p1 = field('Full Name', fullName) + field('Email', email) +
-                 field('Employee ID', empId) + field('Campus', campus) +
-                 field('Faculty Rank', rank) + field('Status', status);
-        document.getElementById('rv_personal').innerHTML = section('Personal & Account', 1, p1);
-
-        // ── Step 2 ─────────────────────────────────────────
-        const levels  = [...document.querySelectorAll('input[name="edu_level[]"]')].map(e => e.value);
-        const degrees = [...document.querySelectorAll('input[name="edu_degree[]"]')].map(e => e.value);
-        const schools = [...document.querySelectorAll('input[name="edu_school[]"]')].map(e => e.value);
-        const years   = [...document.querySelectorAll('input[name="edu_year[]"]')].map(e => e.value);
-        const labels  = {Bachelor:'Undergrad', Master:'Masters', Doctorate:'Doctorate', PostDoctorate:'Post-doctorate'};
+        const levels  = [...document.querySelectorAll('input[name="edu_level[]"]')].map(e=>e.value);
+        const degrees = [...document.querySelectorAll('input[name="edu_degree[]"]')].map(e=>e.value);
+        const schools = [...document.querySelectorAll('input[name="edu_school[]"]')].map(e=>e.value);
+        const years   = [...document.querySelectorAll('input[name="edu_year[]"]')].map(e=>e.value);
+        const labels  = {Bachelor:'Undergrad',Master:'Masters',Doctorate:'Doctorate',PostDoctorate:'Post-doctorate'};
         const cycleEl = document.querySelector('select[name="applied_first_cycle"]');
         const cycle   = cycleEl?.options[cycleEl.selectedIndex]?.text || '';
-
         let p2 = '';
-        levels.forEach((lv, i) => {
-            const lbl = labels[lv] || lv;
-            const deg = degrees[i] || '—'; const sch = schools[i] || '—'; const yr = years[i] || '—';
-            p2 += `<div style="width:100%;display:flex;flex-wrap:wrap;gap:0.5rem 1.25rem;padding-bottom:0.6rem;border-bottom:1px solid #f8fafc;margin-bottom:0.25rem;">
-                <div style="width:100%;font-size:0.68rem;font-weight:700;color:#1a3a6b;">${esc(lbl)}</div>
-                ${field('Degree', deg)}${field('School / SUC', sch)}${field('Year', yr)}
+        levels.forEach((lv,i) => {
+            p2 += `<div style="width:100%;display:flex;flex-wrap:wrap;gap:0.4rem 1rem;padding-bottom:0.4rem;border-bottom:1px solid #f3f4f6;margin-bottom:0.3rem;">
+                <div style="width:100%;font-size:0.65rem;font-weight:700;color:#374151;">${esc(labels[lv]||lv)}</div>
+                ${field('Degree',degrees[i])}${field('School',schools[i])}${field('Year',years[i])}
             </div>`;
         });
-        p2 += field('Applied 1st Cycle', cycle);
-        document.getElementById('rv_education').innerHTML = section('Education', 2, p2);
+        p2 += field('Applied 1st Cycle',cycle);
+        document.getElementById('rv_education').innerHTML = rvSection('Education', 2, p2);
 
-        // ── Step 3 ─────────────────────────────────────────
-        const cv = n => document.querySelector(`input[name="${n}"]`)?.value || '';
-        let p3  = `<div style="width:100%;font-size:0.68rem;font-weight:700;color:#1a3a6b;margin-bottom:0.25rem;">Current</div>`;
-        p3 += field('Rank', cv('current_rank')) + field('Mode', cv('current_mode')) +
-              field('Date', cv('current_date')) + field('SUC', cv('current_suc')) +
-              field('Campus', cv('current_campus')) + field('Address', cv('current_address'));
-        p3 += `<div style="width:100%;border-top:1px solid #f1f5f9;margin:0.4rem 0;"></div>
-               <div style="width:100%;font-size:0.68rem;font-weight:700;color:#1a3a6b;margin-bottom:0.25rem;">Previous</div>`;
+        const cv = n => document.querySelector(`[name="${n}"]`)?.value || '';
         const prevDateNA = document.querySelector('input[name="previous_date_na"]')?.checked;
-        p3 += field('Rank', cv('previous_rank')) + field('Mode', cv('previous_mode')) +
-              field('Date', prevDateNA ? 'N/A' : cv('previous_date')) +
-              field('Sector', cv('previous_sector')) + field('SUC', cv('previous_suc')) +
-              field('Campus', cv('previous_campus')) + field('Address', cv('previous_address'));
-        document.getElementById('rv_employment').innerHTML = section('Employment', 3, p3);
+        let p3 = `<div style="width:100%;font-size:0.65rem;font-weight:700;color:#374151;margin-bottom:0.2rem;">Current</div>`;
+        p3 += field('Rank',cv('current_rank'))+field('Mode',cv('current_mode'))+field('Date',cv('current_date'))+field('SUC',cv('current_suc'))+field('Campus',cv('current_campus'))+field('Address',cv('current_address'));
+        p3 += `<div style="width:100%;height:1px;background:#f3f4f6;margin:0.3rem 0;"></div>
+               <div style="width:100%;font-size:0.65rem;font-weight:700;color:#374151;margin-bottom:0.2rem;">Previous</div>`;
+        p3 += field('Rank',cv('previous_rank'))+field('Mode',cv('previous_mode'))+field('Date',prevDateNA?'N/A':cv('previous_date'))+field('Sector',cv('previous_sector'))+field('SUC',cv('previous_suc'))+field('Campus',cv('previous_campus'))+field('Address',cv('previous_address'));
+        document.getElementById('rv_employment').innerHTML = rvSection('Employment', 3, p3);
     }
 
     function renderStep() {
         for (let i = 1; i <= TOTAL; i++) {
-            const el = document.getElementById('step' + i);
+            const el     = document.getElementById('step'+i);
             if (el) el.style.display = i === current ? 'block' : 'none';
-
-            const circle  = document.getElementById('stepCircle' + i);
-            const label   = document.getElementById('stepLabel' + i);
-            const line    = document.getElementById('stepLine' + i);
+            const circle = document.getElementById('stepCircle'+i);
+            const label  = document.getElementById('stepLabel'+i);
             if (!circle) continue;
-
             if (i < current) {
-                circle.style.background  = '#1a3a6b';
-                circle.style.color       = '#fff';
-                circle.style.borderColor = '#1a3a6b';
-                circle.innerHTML = '<i class="bi bi-check-lg" style="font-size:0.75rem;"></i>';
-                label.style.color = '#1a3a6b';
-                if (line) line.style.background = '#1a3a6b';
+                circle.style.cssText = 'width:28px;height:28px;border-radius:50%;border:2px solid #1a3a6b;display:flex;align-items:center;justify-content:center;font-size:0.75rem;font-weight:700;flex-shrink:0;color:#1a3a6b;background:#fff;';
+                circle.innerHTML = '<i class="bi bi-check2" style="font-size:0.72rem;"></i>';
+                label.style.color = '#1a3a6b'; label.style.fontWeight = '600';
             } else if (i === current) {
-                circle.style.background  = '#1e4d8c';
-                circle.style.color       = '#fff';
-                circle.style.borderColor = '#1e4d8c';
+                circle.style.cssText = 'width:28px;height:28px;border-radius:50%;border:2px solid #1a3a6b;display:flex;align-items:center;justify-content:center;font-size:0.75rem;font-weight:700;flex-shrink:0;color:#fff;background:#1a3a6b;';
                 circle.innerHTML = String(i);
-                label.style.color      = '#1a3a6b';
-                label.style.fontWeight = '700';
-                if (line) line.style.background = '#e2e8f0';
+                label.style.color = '#1a3a6b'; label.style.fontWeight = '700';
             } else {
-                circle.style.background  = '#f1f5f9';
-                circle.style.color       = '#94a3b8';
-                circle.style.borderColor = '#e2e8f0';
+                circle.style.cssText = 'width:28px;height:28px;border-radius:50%;border:2px solid #d1d5db;display:flex;align-items:center;justify-content:center;font-size:0.75rem;font-weight:700;flex-shrink:0;color:#9ca3af;background:#fff;';
                 circle.innerHTML = String(i);
-                label.style.color      = '#94a3b8';
-                label.style.fontWeight = '600';
-                if (line) line.style.background = '#e2e8f0';
+                label.style.color = '#9ca3af'; label.style.fontWeight = '600';
             }
+        }
+        // Update track line: fill left portion in navy up to current step
+        const track = document.getElementById('stepTrack');
+        if (track) {
+            const pct = Math.round(((current - 1) / (TOTAL - 1)) * 100);
+            track.style.background = 'linear-gradient(to right, #1a3a6b ' + pct + '%, #e5e7eb ' + pct + '%)';
         }
         window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
     window.goStep = goStep;
     renderStep();
+
+    // ── Persist current step across refreshes ────────────────────────────
+    const STEP_KEY = 'pe_step_<?= (int)$uid ?>';
+
+    const _origGoStep = goStep;
+    window.goStep = function(n) {
+        _origGoStep(n);
+        try { localStorage.setItem(STEP_KEY, current); } catch(e) {}
+    };
+
+    // ── Autosave to localStorage ──────────────────────────────────────────
+    const SAVE_KEY = 'pe_draft_<?= (int)$uid ?>';
+
+    const FIELDS = [
+        'first_name','middle_name','last_name','suffix',
+        'employee_id','campus_id','rank','faculty_status',
+        'current_rank','current_mode','current_date','current_suc','current_campus','current_address',
+        'previous_rank','previous_mode','previous_date','previous_sector','previous_suc','previous_campus','previous_address',
+        'applied_first_cycle'
+    ];
+    const EDU_FIELDS = ['edu_degree[]','edu_school[]','edu_year[]'];
+    const CHECKBOXES = ['no_middle_name','previous_date_na'];
+
+    function saveDraft() {
+        var data = {};
+        FIELDS.forEach(function(n) {
+            var el = document.querySelector('[name="' + n + '"]');
+            if (el) data[n] = el.value;
+        });
+        EDU_FIELDS.forEach(function(n) {
+            data[n] = [...document.querySelectorAll('[name="' + n + '"]')].map(function(e){ return e.value; });
+        });
+        CHECKBOXES.forEach(function(n) {
+            var el = document.querySelector('[name="' + n + '"]');
+            if (el) data[n] = el.checked;
+        });
+        try { localStorage.setItem(SAVE_KEY, JSON.stringify(data)); } catch(e) {}
+    }
+
+    function loadDraft() {
+        var raw;
+        try { raw = localStorage.getItem(SAVE_KEY); } catch(e) { return; }
+        if (!raw) return;
+        var data;
+        try { data = JSON.parse(raw); } catch(e) { return; }
+
+        FIELDS.forEach(function(n) {
+            if (data[n] === undefined) return;
+            var el = document.querySelector('[name="' + n + '"]');
+            if (el) el.value = data[n];
+        });
+        EDU_FIELDS.forEach(function(n) {
+            if (!Array.isArray(data[n])) return;
+            var els = [...document.querySelectorAll('[name="' + n + '"]')];
+            els.forEach(function(el, i) { if (data[n][i] !== undefined) el.value = data[n][i]; });
+        });
+        CHECKBOXES.forEach(function(n) {
+            if (data[n] === undefined) return;
+            var el = document.querySelector('[name="' + n + '"]');
+            if (el) {
+                el.checked = data[n];
+                el.dispatchEvent(new Event('change'));
+            }
+        });
+
+        // Sync suffix select to match restored text value
+        var suffixInp = document.getElementById('suffixInput');
+        var suffixSel = document.getElementById('suffixSelect');
+        if (suffixInp && suffixSel && data['suffix']) {
+            var found = false;
+            for (var i = 0; i < suffixSel.options.length; i++) {
+                if (suffixSel.options[i].value === data['suffix']) {
+                    suffixSel.selectedIndex = i; found = true; break;
+                }
+            }
+            if (!found) {
+                suffixSel.value = 'Other';
+                suffixInp.value = data['suffix'];
+                suffixInp.style.display = '';
+            }
+        }
+    }
+
+    // Clear draft and step on successful submit
+    document.getElementById('profileWizard').addEventListener('submit', function(e) {
+        // Block submit if privacy checkbox is still disabled (not yet read)
+        var chk = document.getElementById('privacyAckCheck');
+        if (chk && chk.disabled) {
+            e.preventDefault();
+            // Open the privacy modal
+            openPrivacyClause();
+            // Show nudge toast
+            showPrivacyNudge();
+            return false;
+        }
+        if (chk && !chk.checked) {
+            e.preventDefault();
+            showPrivacyNudge();
+            chk.focus();
+            return false;
+        }
+        try { localStorage.removeItem(SAVE_KEY); localStorage.removeItem(STEP_KEY); } catch(e) {}
+    });
+
+    // Attach save listeners
+    document.getElementById('profileWizard').addEventListener('input', saveDraft);
+    document.getElementById('profileWizard').addEventListener('change', saveDraft);
+
+    // Restore step and field values on load
+    setTimeout(function() {
+        loadDraft();
+        // Always sync employment display fields after draft is restored
+        syncStep1ToEmployment();
+        try {
+            var savedStep = parseInt(localStorage.getItem(STEP_KEY), 10);
+            if (savedStep >= 2 && savedStep <= 4) {
+                current = savedStep;
+                if (current === 4) buildReview();
+                renderStep();
+            }
+        } catch(e) {}
+    }, 0);
 })();
+
+function handleSuffixChange(sel) {
+    var inp = document.getElementById('suffixInput');
+    if (sel.value === 'Other') {
+        inp.style.display = '';
+        inp.value = '';
+        inp.focus();
+        inp.addEventListener('input', function() {
+            if (typeof saveDraft === 'function') saveDraft();
+        });
+    } else {
+        inp.style.display = 'none';
+        inp.value = sel.value;
+        if (typeof saveDraft === 'function') saveDraft();
+    }
+}
+
+
+
 </script>
 
 <style>
 .wizard-step { transition: none; }
 @media (max-width: 768px) {
     #stepIndicator { gap: 0; }
-    #stepIndicator [id^="stepLine"] { max-width: 30px !important; }
+    #stepIndicator [id^="stepLabel"] { font-size: 0.55rem !important; }
 }
 </style>
+
+<script>
+function openPrivacyClause() {
+    document.getElementById('privacyModal').style.display = 'flex';
+}
+function closePrivacyModal() {
+    document.getElementById('privacyModal').style.display = 'none';
+}
+function acceptPrivacyClause() {
+    closePrivacyModal();
+    var lbl  = document.getElementById('privacyAckLabel');
+    var chk  = document.getElementById('privacyAckCheck');
+    var hint = document.getElementById('privacyUnlockHint');
+    var trap = document.getElementById('privacyClickTrap');
+    var link = document.getElementById('privacyClauseLink');
+    if (lbl)  { lbl.style.opacity='1'; lbl.style.pointerEvents=''; lbl.style.cursor='pointer'; lbl.title=''; }
+    if (chk)  { chk.disabled = false; chk.style.pointerEvents = ''; }
+    if (hint) { hint.style.display = 'none'; }
+    if (link) { link.style.color='#16a34a'; }
+}
+function showPrivacyNudge() {
+    var nudge = document.getElementById('privacyNudge');
+    if (!nudge) return;
+    nudge.style.opacity = '1';
+    nudge.style.transform = 'translateY(0)';
+    clearTimeout(window._nudgeTimer);
+    window._nudgeTimer = setTimeout(function() {
+        nudge.style.opacity = '0';
+        nudge.style.transform = 'translateY(6px)';
+    }, 3000);
+}
+</script>
+
+<!-- ── Privacy Clause Modal ───────────────────────────────── -->
+<div id="privacyModal"
+     style="display:none;position:fixed;inset:0;z-index:99999;background:rgba(15,23,42,0.55);
+            align-items:center;justify-content:center;padding:1rem;"
+     onclick="if(event.target===this)return false;">
+    <div style="background:#fff;width:100%;max-width:560px;border:1px solid #e5e7eb;overflow:hidden;max-height:88vh;display:flex;flex-direction:column;">
+
+        <div style="background:#1a3a6b;padding:0.75rem 1rem;display:flex;align-items:center;justify-content:space-between;gap:0.6rem;flex-shrink:0;">
+            <div style="display:flex;align-items:center;gap:0.6rem;">
+                <i class="bi bi-shield-lock-fill" style="color:rgba(255,255,255,0.75);font-size:0.9rem;"></i>
+                <div>
+                    <div style="font-size:0.85rem;font-weight:700;color:#fff;">Data Privacy Statement</div>
+                    <div style="font-size:0.62rem;color:rgba(255,255,255,0.5);margin-top:1px;">Republic Act No. 10173 &mdash; Data Privacy Act of 2012</div>
+                </div>
+            </div>
+            <button onclick="closePrivacyModal()"
+                    style="background:none;border:none;color:rgba(255,255,255,0.6);font-size:1.1rem;cursor:pointer;line-height:1;padding:0;flex-shrink:0;"
+                    onmouseover="this.style.color='#fff'" onmouseout="this.style.color='rgba(255,255,255,0.6)'">
+                <i class="bi bi-x-lg"></i>
+            </button>
+        </div>
+
+        <div style="overflow-y:auto;padding:1rem 1.1rem;font-size:0.8rem;color:#374151;line-height:1.7;flex:1;">
+
+            <p style="margin:0 0 0.75rem;">
+                <strong>Carlos Hilado Memorial State University (CHMSU)</strong>, as the Personal Information Controller,
+                collects and processes your personal data in accordance with <strong>Republic Act No. 10173</strong>,
+                otherwise known as the <em>Data Privacy Act of 2012</em>, and its Implementing Rules and Regulations.
+            </p>
+
+            <div style="border:1px solid #e5e7eb;overflow:hidden;margin-bottom:0.75rem;">
+                <div style="background:#f9fafb;border-bottom:1px solid #e5e7eb;padding:0.35rem 0.75rem;">
+                    <span style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#374151;">Purpose of Collection</span>
+                </div>
+                <div style="padding:0.6rem 0.75rem;">
+                    The information you provide is collected <strong>solely</strong> for the following purposes:
+                    <div style="display:flex;align-items:flex-start;gap:0.5rem;padding:0.3rem 0;">
+                        <i class="bi bi-dot" style="color:#1a3a6b;font-size:1rem;flex-shrink:0;margin-top:-1px;"></i>
+                        <span>Processing your faculty reclassification application under CHED and CSC guidelines.</span>
+                    </div>
+                    <div style="display:flex;align-items:flex-start;gap:0.5rem;padding:0.3rem 0;border-top:1px solid #f3f4f6;">
+                        <i class="bi bi-dot" style="color:#1a3a6b;font-size:1rem;flex-shrink:0;margin-top:-1px;"></i>
+                        <span>Maintaining an accurate record of faculty credentials and employment history.</span>
+                    </div>
+                    <div style="display:flex;align-items:flex-start;gap:0.5rem;padding:0.3rem 0;border-top:1px solid #f3f4f6;">
+                        <i class="bi bi-dot" style="color:#1a3a6b;font-size:1rem;flex-shrink:0;margin-top:-1px;"></i>
+                        <span>Sending system notifications related to reclassification cycles, application status, and criteria updates.</span>
+                    </div>
+                    <div style="display:flex;align-items:flex-start;gap:0.5rem;padding:0.3rem 0;border-top:1px solid #f3f4f6;">
+                        <i class="bi bi-dot" style="color:#1a3a6b;font-size:1rem;flex-shrink:0;margin-top:-1px;"></i>
+                        <span>Generating official reports and documents required by the institution and oversight bodies.</span>
+                    </div>
+                </div>
+            </div>
+
+            <div style="border:1px solid #e5e7eb;overflow:hidden;margin-bottom:0.75rem;">
+                <div style="background:#f9fafb;border-bottom:1px solid #e5e7eb;padding:0.35rem 0.75rem;">
+                    <span style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#374151;">Your Rights as a Data Subject</span>
+                </div>
+                <div style="padding:0.6rem 0.75rem;">
+                    <div style="display:flex;align-items:flex-start;gap:0.5rem;padding:0.3rem 0;font-size:0.78rem;">
+                        <i class="bi bi-dot" style="color:#1a3a6b;font-size:1rem;flex-shrink:0;margin-top:-1px;"></i>
+                        <span><strong>Right to be informed</strong> &mdash; You have the right to know how your data is collected and used.</span>
+                    </div>
+                    <div style="display:flex;align-items:flex-start;gap:0.5rem;padding:0.3rem 0;border-top:1px solid #f3f4f6;font-size:0.78rem;">
+                        <i class="bi bi-dot" style="color:#1a3a6b;font-size:1rem;flex-shrink:0;margin-top:-1px;"></i>
+                        <span><strong>Right to access</strong> &mdash; You may request a copy of the personal data we hold about you.</span>
+                    </div>
+                    <div style="display:flex;align-items:flex-start;gap:0.5rem;padding:0.3rem 0;border-top:1px solid #f3f4f6;font-size:0.78rem;">
+                        <i class="bi bi-dot" style="color:#1a3a6b;font-size:1rem;flex-shrink:0;margin-top:-1px;"></i>
+                        <span><strong>Right to rectification</strong> &mdash; You may request corrections to inaccurate or incomplete data.</span>
+                    </div>
+                    <div style="display:flex;align-items:flex-start;gap:0.5rem;padding:0.3rem 0;border-top:1px solid #f3f4f6;font-size:0.78rem;">
+                        <i class="bi bi-dot" style="color:#1a3a6b;font-size:1rem;flex-shrink:0;margin-top:-1px;"></i>
+                        <span><strong>Right to erasure</strong> &mdash; You may request deletion subject to legal and institutional retention policies.</span>
+                    </div>
+                    <div style="display:flex;align-items:flex-start;gap:0.5rem;padding:0.3rem 0;border-top:1px solid #f3f4f6;font-size:0.78rem;">
+                        <i class="bi bi-dot" style="color:#1a3a6b;font-size:1rem;flex-shrink:0;margin-top:-1px;"></i>
+                        <span><strong>Right to data portability</strong> &mdash; You may request your data in a structured, commonly used format.</span>
+                    </div>
+                </div>
+            </div>
+
+            <div style="border:1px solid #e5e7eb;overflow:hidden;margin-bottom:0.75rem;">
+                <div style="background:#f9fafb;border-bottom:1px solid #e5e7eb;padding:0.35rem 0.75rem;">
+                    <span style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#374151;">Data Security &amp; Retention</span>
+                </div>
+                <div style="padding:0.6rem 0.75rem;">
+                    Your data is stored in a secured database accessible only to authorized personnel. It will be retained for the duration required by institutional and government regulations and disposed of in accordance with CHMSU's data retention policy.
+                </div>
+            </div>
+
+            <p style="margin:0;font-size:0.75rem;color:#6b7280;">
+                For concerns regarding your personal data, contact the CHMSU Data Privacy Officer through the Office of the University Registrar.
+            </p>
+        </div>
+
+        <div style="padding:0.65rem 1rem;border-top:1px solid #e5e7eb;background:#f9fafb;
+                    display:flex;align-items:center;justify-content:space-between;flex-shrink:0;">
+            <span style="font-size:0.68rem;color:#9ca3af;">Read the full statement before accepting.</span>
+            <button onclick="acceptPrivacyClause()"
+                    style="padding:0.42rem 1.2rem;background:#1a3a6b;color:#fff;border:none;
+                           font-size:0.8rem;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:5px;"
+                    onmouseover="this.style.background='#152d54'" onmouseout="this.style.background='#1a3a6b'">
+                <i class="bi bi-check2" style="font-size:0.75rem;"></i> I Have Read &amp; Understood This
+            </button>
+        </div>
+    </div>
+</div>

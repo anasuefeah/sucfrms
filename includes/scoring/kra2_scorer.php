@@ -13,6 +13,8 @@
 
 namespace Scoring;
 
+require_once __DIR__ . '/../criteria_hierarchy.php';
+
 class KRA2Scorer
 {
     const CAP = 100;
@@ -90,6 +92,7 @@ class KRA2Scorer
 
     public static function score(array $submissions): array
     {
+        $additionalGroups = [];
         $crit_a_raw = 0.0;
         $crit_b_raw = 0.0;
         $crit_c_raw = 0.0;
@@ -110,6 +113,7 @@ class KRA2Scorer
             if ($label === 'CUSTOM') {
                 $letter = strtoupper($parts[1] ?? '');
                 $pts = max(0.0, (float)($parts[4] ?? 0));
+                if (!in_array($letter, ['A', 'B', 'C'], true) && \collectAdditionalParentScore($additionalGroups, $parts, $pts)) continue;
                 if ($letter === 'B') $crit_b_raw += $pts;
                 elseif ($letter === 'C') $crit_c_raw += $pts;
                 else $crit_a_raw += $pts;
@@ -196,10 +200,12 @@ class KRA2Scorer
         }
 
         // Sum THEN cap (not individually)
-        $sum_before_cap = $crit_a_raw + $crit_b_raw + $crit_c_raw;
+        $additionalParents = \additionalParentTotals($additionalGroups);
+        $sum_before_cap = $crit_a_raw + $crit_b_raw + $crit_c_raw + array_sum($additionalParents);
         $subtotal       = min(self::CAP, $sum_before_cap);
 
         return [
+            'parent_scores' => ['A'=>$crit_a_raw, 'B'=>$crit_b_raw, 'C'=>$crit_c_raw] + $additionalParents,
             'criterion_a_raw'       => round($crit_a_raw, 2),
             'criterion_b_raw'       => round($crit_b_raw, 2),
             'criterion_c_raw'       => round($crit_c_raw, 2),
@@ -411,6 +417,7 @@ class KRA2Scorer
             foreach ($stmt->fetchAll(\PDO::FETCH_ASSOC) as $row) {
                 $key = self::normaliseCriterionLabel((string)$row['criterion_label']);
                 $score = self::criteriaScopeScore($row);
+                if ($score <= 0) continue;
                 if ($key !== '' && (!isset($best[$key]) || $score > $best[$key])) {
                     self::$criteria_label_points[$key] = (float)$row['max_points'];
                     $best[$key] = $score;
@@ -438,6 +445,7 @@ class KRA2Scorer
             if (self::$criteria_position_rank !== null && $row_position === self::$criteria_position_rank) return 3;
             if ($row_position === null || $row_position === '') return 2;
         }
+        if (self::$criteria_cycle_id !== null) return 0;
         if ($row_cycle === null || $row_cycle === 0) return 1;
         return 0;
     }

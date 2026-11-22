@@ -1,11 +1,16 @@
-﻿<?php
+<?php
 $uid   = $_SESSION['user_id'];
 $cycle = getActiveCycle($pdo);
+
+// ── First-login welcome modal ──────────────────────────────
+$show_welcome = !empty($_SESSION['show_welcome']);
+if ($show_welcome) unset($_SESSION['show_welcome']);
+$welcome_first = htmlspecialchars($_SESSION['first_name'] ?? 'Faculty', ENT_QUOTES);
 
 if (!$cycle) {
     $last_cycle = $pdo->query("SELECT * FROM cycles ORDER BY created_at DESC LIMIT 1")->fetch();
     echo '
-    <div class="neon-card text-center py-5">
+    <div class="neon-card rounded-0 shadow-none text-center py-5">
         <i class="bi bi-calendar-x" style="font-size:2.5rem;color:#cbd5e1;display:block;margin-bottom:0.75rem;"></i>
         <h5 class="fw-bold mb-2" style="color:#1a3a6b;">No Active Reclassification Cycle</h5>
         <p class="text-muted mb-1">There is currently no open cycle. Your account is ready.</p>
@@ -52,49 +57,13 @@ $weighted     = $score_result['weighted_score'];
 $inc          = $score_result['sub_rank_increment'];
 $meets_min    = $weighted >= 41;
 
-// -- Colleagues from same campus -------------------------------
-$my_campus_id = null;
+// -- Faculty campus --------------------------------------------
 $my_campus_name = '';
 $campus_row = $pdo->prepare("SELECT u.campus_id, c.campus_name FROM users u LEFT JOIN campuses c ON u.campus_id = c.campus_id WHERE u.user_id = ?");
 $campus_row->execute([$uid]);
 $campus_row = $campus_row->fetch();
 if ($campus_row) {
-    $my_campus_id   = $campus_row['campus_id'];
     $my_campus_name = $campus_row['campus_name'] ?? '';
-}
-
-$colleagues = [];
-if ($my_campus_id) {
-    $col_stmt = $pdo->prepare("
-        SELECT u.user_id, u.full_name, u.first_name, u.middle_name, u.last_name, u.`rank`,
-               a.status AS app_status,
-               a.updated_at
-        FROM users u
-        LEFT JOIN applications a
-            ON a.user_id = u.user_id AND a.cycle_id = ?
-        WHERE u.campus_id = ?
-          AND u.status    = 'active'
-          AND u.role      = 'faculty'
-          AND u.user_id  != ?
-        ORDER BY u.full_name ASC
-        LIMIT 20
-    ");
-    $col_stmt->execute([$cycle['cycle_id'], $my_campus_id, $uid]);
-    $colleagues = $col_stmt->fetchAll();
-}
-
-// Status label + color for colleague display (no scores shown)
-function colleagueStatusLabel(string $s): array {
-    return match($s) {
-        'draft'          => ['Draft',          '#94a3b8'],
-        'submitted'      => ['Submitted',       '#1e4d8c'],
-        'under_review'   => ['Under Evaluation','#1a3a6b'],
-        'needs_revision' => ['Needs Revision',  '#475569'],
-        'approved'       => ['Evaluation Complete', '#1e4d8c'],
-        'rejected'       => ['Returned for Revision', '#64748b'],
-        'admin_rejected' => ['Evaluation Complete', '#64748b'],
-        default          => ['No Application',  '#cbd5e1'],
-    };
 }
 
 // -- Deadline info ---------------------------------------------
@@ -128,10 +97,10 @@ $can_edit   = !in_array($app['status'], ['approved','admin_rejected']);
 
 // -- KRA display config ----------------------------------------
 $kra_info = [
-    'Instruction'              => ['icon'=>'bi-book',        'color'=>'#1e4d8c','max'=>100, 'short'=>'KRA I',  'tab'=>'instruction'],
-    'Research'                 => ['icon'=>'bi-journal-text','color'=>'#1a3a6b','max'=>100, 'short'=>'KRA II', 'tab'=>'research'],
-    'Extension'                => ['icon'=>'bi-people',      'color'=>'#1a5276','max'=>100, 'short'=>'KRA III','tab'=>'extension'],
-    'Professional Development' => ['icon'=>'bi-award',       'color'=>'#1e4d8c','max'=>100, 'short'=>'KRA IV', 'tab'=>'profdev'],
+    'Instruction'              => ['icon'=>'bi-book',        'color'=>'#1e4d8c','max' => kraMaximumPoints()['Instruction'], 'short'=>'KRA I',  'tab'=>'instruction'],
+    'Research'                 => ['icon'=>'bi-journal-text','color'=>'#1a3a6b','max' => kraMaximumPoints()['Research'], 'short'=>'KRA II', 'tab'=>'research'],
+    'Extension'                => ['icon'=>'bi-people',      'color'=>'#1a5276','max' => kraMaximumPoints()['Extension'], 'short'=>'KRA III','tab'=>'extension'],
+    'Professional Development' => ['icon'=>'bi-award',       'color'=>'#1e4d8c','max' => kraMaximumPoints()['Professional Development'], 'short'=>'KRA IV', 'tab'=>'profdev'],
 ];
 
 // -- POST handlers (unchanged logic) --------------------------
@@ -146,9 +115,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             flashMessage('danger', $submission_not_open ? 'The faculty submission period is not open yet.' : 'The cycle is no longer open for submissions.');
             echo "<script>window.location.href='index.php?page=dashboard';</script>"; exit;
         }
-        try { recalcApplicationScore($pdo, $app_id); } catch (\Exception $e) {}
-        $new_status = !empty($app['checker_id']) ? 'under_review' : 'submitted';
-        $pdo->prepare("UPDATE applications SET status=?, submitted_at=NOW() WHERE application_id=?")->execute([$new_status, $app_id]);
+        try {
+            $new_status = submitApplicationForReview($pdo, $app);
+        } catch (Throwable $error) {
+            error_log('SUCFRMS application submission: ' . $error->getMessage());
+            flashMessage('danger', 'The application could not be submitted. Refresh the page and try again.');
+            echo "<script>window.location.href='index.php?page=dashboard';</script>"; exit;
+        }
         logAudit($pdo, $uid, 'Application Submitted', "Application #{$app_id} submitted for {$cycle['cycle_name']}.");
         // Notify all active Subcommittee reviewers of new submission
         $campus_checkers = $pdo->query("SELECT user_id FROM users WHERE role = 'evaluator' AND status='active'")->fetchAll(PDO::FETCH_COLUMN);
@@ -161,11 +134,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         echo "<script>window.location.href='index.php?page=dashboard';</script>"; exit;
     }
     if ($action === 'resubmit_revision' && $app['status'] === 'needs_revision') {
-        try { recalcApplicationScore($pdo, $app_id); } catch (\Exception $e) {}
         try {
             KraRevisionWorkflow::resubmit($pdo, (int)$app_id);
+            recalcApplicationScore($pdo, (int)$app_id);
         } catch (RuntimeException $e) {
-            flashMessage('danger', $e->getMessage());
+            flashMessage('danger', htmlspecialchars($e->getMessage(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'));
             echo "<script>window.location.href='index.php?page=my_application';</script>"; exit;
         }
         logAudit($pdo, $uid, 'Revision Resubmitted', "Faculty resubmitted revised entries for Application #{$app_id}");
@@ -181,9 +154,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <?php
 $steps = [
     ['label'=>'Profile Complete',    'sublabel'=>'Name, rank, campus set',                                      'icon'=>'bi-person-check',    'done'=>!empty($_SESSION['full_name']) && !empty($faculty_rank)],
-    ['label'=>'KRA Entries Added',   'sublabel'=>($total > 0 ? number_format($total,1).' pts total' : 'No entries yet'), 'icon'=>'bi-list-check', 'done'=>$total > 0, 'link'=>'?page=apply'],
-    ['label'=>'Submitted',           'sublabel'=>'Not yet submitted',                                           'icon'=>'bi-send',            'done'=>in_array($app['status'],['submitted','under_review','talisay_review','approved','reclassified','admin_rejected'])],
-    ['label'=>'Under Evaluation',    'sublabel'=>'Evaluator review',                                            'icon'=>'bi-search',          'done'=>in_array($app['status'],['talisay_review','approved','reclassified'])],
+    ['label'=>'KRA Entries Added',   'sublabel'=>$score_result['claim_count'] . ' entries', 'icon'=>'bi-list-check', 'done'=>$score_result['claim_count'] > 0, 'link'=>'?page=apply'],
+    ['label'=>'Submitted',           'sublabel'=>'Not yet submitted',                                           'icon'=>'bi-send',            'done'=>in_array($app['status'],['submitted','under_review','approved','reclassified','admin_rejected'])],
+    ['label'=>'Under Evaluation',    'sublabel'=>'Evaluator review',                                            'icon'=>'bi-search',          'done'=>in_array($app['status'],['approved','reclassified'])],
     ['label'=>'Evaluation Complete', 'sublabel'=>'For committee review',                                        'icon'=>'bi-clipboard-check', 'done'=>in_array($app['status'],['approved','reclassified'])],
 ];
 $current_step = 0;
@@ -199,9 +172,9 @@ foreach ($steps as $i => $s) { if ($s['done']) $current_step = $i + 1; }
         $init_h = strtoupper(substr($_SESSION['first_name'] ?? '',0,1).substr($_SESSION['last_name'] ?? '',0,1)) ?: 'U';
         ?>
         <?php if ($pic): ?>
-        <img src="<?= sanitize($pic) ?>" style="width:44px;height:44px;border-radius:50%;object-fit:cover;border:1px solid #e2e8f0;flex-shrink:0;" alt="">
+        <img class="account-avatar" src="<?= sanitize($pic) ?>" style="width:44px;height:44px;border-radius:50%;object-fit:cover;border:1px solid #e2e8f0;flex-shrink:0;" alt="">
         <?php else: ?>
-        <div style="width:44px;height:44px;border-radius:50%;background:#1a3a6b;display:flex;align-items:center;justify-content:center;font-size:0.9rem;font-weight:700;color:#fff;flex-shrink:0;"><?= $init_h ?></div>
+        <div class="account-avatar" style="width:44px;height:44px;border-radius:50%;background:#1a3a6b;display:flex;align-items:center;justify-content:center;font-size:0.9rem;font-weight:700;color:#fff;flex-shrink:0;"><?= $init_h ?></div>
         <?php endif; ?>
         <div>
             <div style="font-weight:700;color:#1e293b;font-size:0.9rem;line-height:1.2;"><?= sanitize($_SESSION['full_name'] ?? '') ?></div>
@@ -239,7 +212,7 @@ foreach ($steps as $i => $s) { if ($s['done']) $current_step = $i + 1; }
             <?php if ($i < count($steps)-1): ?>
             <div style="position:absolute;top:13px;left:calc(50% + 13px);right:calc(-50% + 13px);height:1px;background:<?= $done?'#1a3a6b':'#e2e8f0' ?>;z-index:0;"></div>
             <?php endif; ?>
-            <div style="width:26px;height:26px;border-radius:50%;margin:0 auto 5px;
+            <div class="application-progress-icon" style="width:26px;height:26px;margin:0 auto 5px;
                         display:flex;align-items:center;justify-content:center;position:relative;z-index:1;
                         background:<?= $done?'#1a3a6b':($current?'#f0f4fb':'#f8fafc') ?>;
                         border:1.5px solid <?= $done?'#1a3a6b':($current?'#1a3a6b':'#e2e8f0') ?>;">
@@ -338,7 +311,7 @@ foreach ($steps as $i => $s) { if ($s['done']) $current_step = $i + 1; }
             </tbody>
             <tfoot>
                 <tr style="border-top:2px solid #e2e8f0;background:#f8fafc;">
-                    <td colspan="4" style="padding:0.6rem 0.75rem;font-weight:700;color:#1e293b;">Final Weighted Score</td>
+                    <td colspan="4" style="padding:0.6rem 0.75rem;font-weight:700;color:#1e293b;">Weighted Score</td>
                     <td style="padding:0.6rem 0.75rem;text-align:center;font-weight:800;font-size:1rem;color:#1a3a6b;"><?= number_format($weighted,2) ?></td>
                 </tr>
             </tfoot>
@@ -359,4 +332,63 @@ document.addEventListener('DOMContentLoaded', function () {
 });
 </script>
 
-<?php
+<?php if ($show_welcome): ?>
+<!-- ── First-Login Welcome Modal ─────────────────────────── -->
+<div id="welcomeModal"
+     style="display:flex;position:fixed;inset:0;z-index:99999;background:rgba(15,23,42,0.6);
+            align-items:center;justify-content:center;padding:1rem;">
+    <div style="background:#fff;width:100%;max-width:480px;border:1px solid #e5e7eb;overflow:hidden;
+                animation:welcomeFadeIn 0.3s ease;">
+
+        <!-- Header -->
+        <div style="background:#1a3a6b;padding:1.5rem 1.5rem 1.25rem;text-align:center;">
+            <div style="width:56px;height:56px;border-radius:50%;background:rgba(255,255,255,0.12);
+                        border:2px solid rgba(255,255,255,0.25);display:flex;align-items:center;
+                        justify-content:center;margin:0 auto 0.75rem;">
+                <i class="bi bi-person-check-fill" style="color:#fff;font-size:1.4rem;"></i>
+            </div>
+            <div style="font-size:1.1rem;font-weight:700;color:#fff;line-height:1.3;">
+                Welcome, <?= $welcome_first ?>!
+            </div>
+            <div style="font-size:0.75rem;color:rgba(255,255,255,0.6);margin-top:0.3rem;">
+                SUC Faculty Reclassification Management System
+            </div>
+        </div>
+
+        <!-- Body -->
+        <div style="padding:1.25rem 1.5rem;">
+            <p style="font-size:0.85rem;color:#374151;line-height:1.6;margin:0 0 1rem;">
+                Your profile has been set up successfully. Your account is now fully active.
+            </p>
+
+            <div style="display:flex;flex-direction:column;gap:0.5rem;margin-bottom:1.25rem;">
+                <?php foreach ([
+                    ['bi-clipboard-check','Submit your reclassification application when a cycle is open.'],
+                    ['bi-file-earmark-arrow-up','Upload evidence for each Key Result Area (KRA).'],
+                    ['bi-bar-chart-line','Track your scores and application status in real time.'],
+                ] as [$icon, $text]): ?>
+                <div style="display:flex;align-items:flex-start;gap:0.65rem;padding:0.5rem 0.65rem;
+                            border:1px solid #f3f4f6;background:#f9fafb;font-size:0.78rem;color:#374151;line-height:1.4;">
+                    <i class="bi <?= $icon ?>" style="color:#1a3a6b;font-size:0.85rem;flex-shrink:0;margin-top:1px;"></i>
+                    <?= $text ?>
+                </div>
+                <?php endforeach; ?>
+            </div>
+
+            <button onclick="document.getElementById('welcomeModal').style.display='none'"
+                    style="width:100%;padding:0.6rem;background:#1a3a6b;color:#fff;border:none;
+                           font-size:0.85rem;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;"
+                    onmouseover="this.style.background='#152d54'" onmouseout="this.style.background='#1a3a6b'">
+                <i class="bi bi-arrow-right-circle" style="font-size:0.85rem;"></i>
+                Proceed to Dashboard
+            </button>
+        </div>
+    </div>
+</div>
+<style>
+@keyframes welcomeFadeIn {
+    from { opacity:0; transform:translateY(16px); }
+    to   { opacity:1; transform:translateY(0); }
+}
+</style>
+<?php endif; ?>

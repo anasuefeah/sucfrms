@@ -16,6 +16,8 @@
 
 namespace Scoring;
 
+require_once __DIR__ . '/../criteria_hierarchy.php';
+
 class KRA4Scorer
 {
     const CAP   = 100;
@@ -63,6 +65,10 @@ class KRA4Scorer
 
     public static function score(array $submissions): array
     {
+        $additionalGroups = [];
+        $limits = \configuredParentLimits(self::$pdo_ref, self::$criteria_cycle_id, self::$criteria_position_rank, 'Professional Development');
+        $orgCap = $limits['A'] ?? self::CAP_A;
+        $developmentCap = $limits['B'] ?? self::CAP_B;
         $crit_a         = 0.0;
         $crit_b_edu     = 0.0;
         $crit_b_train   = 0.0;
@@ -92,6 +98,7 @@ class KRA4Scorer
             if ($critType === 'CUSTOM') {
                 $letter = strtoupper($parts[1] ?? '');
                 $pts = max(0.0, (float)($parts[4] ?? 0));
+                if (!in_array($letter, ['A', 'B', 'C', 'D'], true) && \collectAdditionalParentScore($additionalGroups, $parts, $pts)) continue;
                 if ($letter === 'A') $crit_a += $pts;
                 elseif ($letter === 'B') $crit_b_edu += $pts;
                 elseif ($letter === 'C') $crit_c += $pts;
@@ -104,7 +111,7 @@ class KRA4Scorer
                 case 'A-org':
                     // 5 pts per year of current active membership
                     $years = self::professionalOrgYears($parts[2] ?? 1);
-                    $pts   = min(self::CAP_A, self::configuredMax('kra4_a_org_membership', 5.0) * $years);
+                    $pts   = min($orgCap, self::configuredMax('kra4_a_org_membership', 5.0) * $years);
                     if (empty($s['evidence_names'])) {
                         $pending[] = "KRA IV Crit A: '{$desc}'  -  missing membership certificate/ID and engagement certification from org head.";
                     }
@@ -287,10 +294,10 @@ class KRA4Scorer
         }
 
         // Apply sub-caps
-        $crit_a = min(self::CAP_A, $crit_a);
-        $crit_b = min(self::CAP_B, $crit_b_edu + $crit_b_train + $crit_b_paper);
-        $crit_c = min(self::CAP_C, $crit_c);
-        $crit_d = min(self::CAP_D, $crit_d);
+        $crit_a = min($orgCap, $crit_a);
+        $crit_b = min($developmentCap, $crit_b_edu + $crit_b_train + $crit_b_paper);
+        $crit_c = min($limits['C'] ?? self::CAP_C, $crit_c);
+        $crit_d = min($limits['D'] ?? self::CAP_D, $crit_d);
 
         // -- Doctorate auto sub-rank points -----------------------------------
         // The orchestrator always calls KRA4Scorer::setDoctoratePointsOverride()
@@ -301,16 +308,18 @@ class KRA4Scorer
 
             if ((float)$doctorate_pts > 0) {
                 $crit_b_edu += $doctorate_pts;
-                $crit_b      = min(self::CAP_B, $crit_b_edu + $crit_b_train + $crit_b_paper);
+                $crit_b      = min($developmentCap, $crit_b_edu + $crit_b_train + $crit_b_paper);
             }
         }
 
-        $sum_before_bonus = $crit_a + $crit_b + $crit_c;
+        $additionalParents = \additionalParentTotals($additionalGroups);
+        $sum_before_bonus = $crit_a + $crit_b + $crit_c + array_sum($additionalParents);
         $capped_base      = min(self::CAP, $sum_before_bonus);
         $sum_with_bonus   = $capped_base + $crit_d;
         $subtotal         = min(self::CAP, $sum_with_bonus);
 
         return [
+            'parent_scores' => ['A'=>$crit_a, 'B'=>$crit_b, 'C'=>$crit_c, 'D'=>$crit_d] + $additionalParents,
             'criterion_a'           => round($crit_a, 2),
             'criterion_b'           => round($crit_b, 2),
             'criterion_b_edu'       => round($crit_b_edu, 2),
@@ -346,7 +355,8 @@ class KRA4Scorer
         switch ($critType) {
             case 'A-org':
                 $years = self::professionalOrgYears($parts[2] ?? 1);
-                return min(self::CAP_A, self::configuredMax('kra4_a_org_membership', 5.0) * $years);
+                $limits = \configuredParentLimits(self::$pdo_ref, self::$criteria_cycle_id, self::$criteria_position_rank, 'Professional Development');
+                return min($limits['A'] ?? self::CAP_A, self::configuredMax('kra4_a_org_membership', 5.0) * $years);
             case 'B-degree':
                 // Store the entry's earned points. Auto sub-rank exclusions are
                 // applied separately by score() when the application is totaled.
@@ -430,6 +440,7 @@ class KRA4Scorer
             $best_val   = null;
             foreach ($stmt->fetchAll(\PDO::FETCH_ASSOC) as $row) {
                 $score = self::criteriaScopeScore($row);
+                if ($score <= 0) continue;
                 if ($score > $best_score) {
                     $best_score = $score;
                     $best_val   = $row['max_points'];
@@ -457,6 +468,7 @@ class KRA4Scorer
                 $best_score = -1;
                 foreach ($stmt->fetchAll(\PDO::FETCH_ASSOC) as $row) {
                     $score = self::criteriaScopeScore($row);
+                if ($score <= 0) continue;
                     if ($score > $best_score) {
                         $best_score = $score;
                         $value = (float)$row['max_points'];
@@ -478,6 +490,7 @@ class KRA4Scorer
             if (self::$criteria_position_rank !== null && $row_position === self::$criteria_position_rank) return 3;
             if ($row_position === null || $row_position === '') return 2;
         }
+        if (self::$criteria_cycle_id !== null) return 0;
         if ($row_cycle === null || $row_cycle === 0) return 1;
         return 0;
     }

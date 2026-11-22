@@ -6,7 +6,7 @@ try {
         FROM notifications n
         LEFT JOIN kra_submissions ks ON ks.submission_id = n.submission_id
         WHERE n.user_id = ? AND n.is_read = 0
-          AND n.type IN ('score_adjusted','needs_revision','under_review','approved','rejected','talisay_review','appeal_message','appeal_resolved')
+          AND n.type IN ('criteria_updated','score_adjusted','needs_revision','under_review','approved','rejected','appeal_message','appeal_resolved')
         ORDER BY n.created_at DESC
         LIMIT 3
     ");
@@ -16,7 +16,7 @@ try {
     $fac_total_stmt = $pdo->prepare("
         SELECT COUNT(*) FROM notifications
         WHERE user_id = ? AND is_read = 0
-          AND type IN ('score_adjusted','needs_revision','under_review','approved','rejected','talisay_review','appeal_message','appeal_resolved')
+          AND type IN ('criteria_updated','score_adjusted','needs_revision','under_review','approved','rejected','appeal_message','appeal_resolved')
     ");
     $fac_total_stmt->execute([$uid]);
     $fac_total_unread = (int)$fac_total_stmt->fetchColumn();
@@ -27,10 +27,10 @@ try {
 
 if (!empty($fac_unread_notifs)):
     $notif_styles = [
+        'criteria_updated' => ['icon'=>'bi-sliders2', 'label'=>'Criteria Updated', 'accent'=>'#1a3a6b'],
         'score_adjusted' => ['icon'=>'bi-pencil',                    'label'=>'Score Updated',         'accent'=>'#475569'],
         'needs_revision' => ['icon'=>'bi-exclamation-triangle-fill', 'label'=>'Revision Needed',       'accent'=>'#c2410c'],
         'under_review'   => ['icon'=>'bi-hourglass-split',           'label'=>'Under Review',          'accent'=>'#1a3a6b'],
-        'talisay_review' => ['icon'=>'bi-building-up',               'label'=>'ITC Review',            'accent'=>'#1a3a6b'],
         'approved'       => ['icon'=>'bi-clipboard-check',           'label'=>'Evaluation Complete',   'accent'=>'#16a34a'],
         'rejected'       => ['icon'=>'bi-arrow-counterclockwise',    'label'=>'Returned for Revision', 'accent'=>'#475569'],
         'appeal_message' => ['icon'=>'bi-chat-dots',                 'label'=>'Appeal Reply',          'accent'=>'#1a3a6b'],
@@ -71,6 +71,7 @@ if (!empty($fac_unread_notifs)):
     <?php foreach ($fac_unread_notifs as $i => $fn):
         $st = $notif_styles[$fn['type']] ?? ['icon'=>'bi-bell','label'=>'Update','accent'=>'#64748b'];
         $fn_link = match($fn['type']) {
+            'criteria_updated' => 'pages/self_assessment.php',
             'score_adjusted'  => 'index.php?page=my_application#score-comparison',
             'needs_revision'  => !empty($fn['submission_id'])
                 ? 'index.php?page=apply&tab=' . kraCategoryToTabSlug($fn['kra_category']) . '&edit_sid=' . (int)$fn['submission_id']

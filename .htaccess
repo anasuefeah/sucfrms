@@ -7,6 +7,20 @@ Options -Indexes
 
 DirectoryIndex index.php
 
+# Keep legacy Self-Assessment URLs, including AJAX requests and PDF links, working.
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteRule ^pages/pre_evaluation\.php$ pages/self_assessment.php [END]
+    RewriteRule ^pages/pre_eval_(ajax|pdf|iss_pdf)\.php$ pages/self_assessment_$1.php [END]
+</IfModule>
+
+# Keep this XAMPP app's sessions separate from the shared PHP temp directory.
+<IfModule php_module>
+    php_value session.save_path "C:/xampp/htdocs/SUCFRMS/storage/sessions"
+    php_value session.name SUCFRMSSESSID
+    php_flag session.use_strict_mode On
+</IfModule>
+
 # Block direct browsing of sensitive files even if Indexes is re-enabled elsewhere.
 <IfModule mod_authz_core.c>
     <FilesMatch "\.(sql|log|md)$">

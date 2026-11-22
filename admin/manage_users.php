@@ -35,7 +35,8 @@ function adminSendTempPasswordEmail(string $to, string $name, string $pass, stri
         $role_desc  = $role === 'evaluator'
             ? 'As an Evaluator, you will be responsible for reviewing and verifying faculty reclassification applications assigned to you.'
             : 'As a Faculty member, you can submit your reclassification application, track your scores through the Self-Assessment tool, and manage your evidence files.';
-        $login_url  = 'https://sucfrms.chmsu.edu.ph/pages/login.php'; // update to actual URL
+        $login_url = 'https://chmsusucfrms.kesug.com/pages/login.php';
+        $circular = 'DBM-CHED Joint Circular No. 01, s. 2026';
 
         $mail->Body = '
 <!DOCTYPE html>
@@ -76,7 +77,7 @@ function adminSendTempPasswordEmail(string $to, string $name, string $pass, stri
         <td style="padding:24px 32px 0;">
           <div style="background:#f8fafc;border-left:3px solid #1a3a6b;padding:14px 16px;">
             <p style="margin:0 0 6px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#94a3b8;">About the System</p>
-            <p style="margin:0;font-size:13px;color:#334155;line-height:1.65;">SUCFRMS is the official digital platform of <strong>Carlos Hilado Memorial State University</strong> for managing faculty reclassification applications. It enables faculty to submit KRA evidence, tracks evaluation progress, and automates the scoring and rank projection process in compliance with <strong>DBM-CHED JC No. 3, s. 2022</strong>.</p>
+            <p style="margin:0;font-size:13px;color:#334155;line-height:1.65;">SUCFRMS is the official digital platform of <strong>Carlos Hilado Memorial State University</strong> for managing faculty reclassification applications. Faculty can submit KRA evidence and track evaluation progress. The system uses <strong>' . $circular . '</strong> for scoring and rank projection.</p>
           </div>
         </td>
       </tr>
@@ -154,7 +155,7 @@ function adminSendTempPasswordEmail(string $to, string $name, string $pass, stri
 
         $mail->AltBody = "Welcome to SUCFRMS, {$name}!\n\n"
             . "Your account has been successfully created.\n\n"
-            . "SUCFRMS (SUC Faculty Reclassification Management System) is the official platform of Carlos Hilado Memorial State University for managing faculty reclassification applications.\n\n"
+            . "SUCFRMS (SUC Faculty Reclassification Management System) is the official platform of Carlos Hilado Memorial State University for managing faculty reclassification applications. The system uses {$circular} for scoring and rank projection.\n\n"
             . "--- YOUR LOGIN CREDENTIALS ---\n"
             . "Email:              {$to}\n"
             . "Temporary Password: {$pass}\n\n"

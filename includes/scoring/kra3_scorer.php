@@ -17,6 +17,8 @@
 
 namespace Scoring;
 
+require_once __DIR__ . '/../criteria_hierarchy.php';
+
 require_once __DIR__ . '/entry_metadata.php';
 
 class KRA3Scorer
@@ -48,6 +50,7 @@ class KRA3Scorer
 
     public static function score(array $submissions): array
     {
+        $additionalGroups = [];
         $crit_a   = 0.0;
         $crit_b   = 0.0;
         $crit_c   = 0.0;
@@ -87,6 +90,7 @@ class KRA3Scorer
             if ($subtype === 'custom') {
                 $letter = strtoupper($parts[1] ?? '');
                 $pts = max(0.0, (float)($parts[4] ?? 0));
+                if (!in_array($letter, ['A', 'B', 'C', 'D'], true) && \collectAdditionalParentScore($additionalGroups, $parts, $pts)) continue;
                 if ($letter === 'A') $crit_a += $pts;
                 elseif ($letter === 'B') $crit_b += $pts;
                 elseif ($letter === 'C') $crit_c += $pts;
@@ -152,20 +156,23 @@ class KRA3Scorer
         }
 
         // Apply sub-caps
-        $crit_a = min(self::CAP_A, $crit_a);
-        $crit_b = min(self::CAP_B, $crit_b);
-        $crit_c = min(self::CAP_C, $crit_c);
-        $crit_d = min(self::CAP_D, $crit_d);
+        $limits = \configuredParentLimits(self::$pdo_ref, self::$criteria_cycle_id, self::$criteria_position_rank, 'Extension');
+        $crit_a = min($limits['A'] ?? self::CAP_A, $crit_a);
+        $crit_b = min($limits['B'] ?? self::CAP_B, $crit_b);
+        $crit_c = min($limits['C'] ?? self::CAP_C, $crit_c);
+        $crit_d = min($limits['D'] ?? self::CAP_D, $crit_d);
 
         // ISR sub-cap within Crit B (nested cap of 30)
         // Already tracked in scoreCritB; the overall Crit B cap handles it.
 
-        $sum_before_bonus = $crit_a + $crit_b + $crit_c;
+        $additionalParents = \additionalParentTotals($additionalGroups);
+        $sum_before_bonus = $crit_a + $crit_b + $crit_c + array_sum($additionalParents);
         $capped_base      = min(self::CAP, $sum_before_bonus);
         $sum_with_bonus   = $capped_base + $crit_d;
         $subtotal         = min(self::CAP, $sum_with_bonus);
 
         return [
+            'parent_scores' => ['A'=>$crit_a, 'B'=>$crit_b, 'C'=>$crit_c, 'D'=>$crit_d] + $additionalParents,
             'criterion_a'           => round($crit_a, 2),
             'criterion_b'           => round($crit_b, 2),
             'criterion_c'           => round($crit_c, 2),
@@ -399,6 +406,7 @@ class KRA3Scorer
                 $best_score = -1;
                 foreach ($stmt->fetchAll(\PDO::FETCH_ASSOC) as $row) {
                     $score = self::criteriaScopeScore($row);
+                if ($score <= 0) continue;
                     if ($score > $best_score) {
                         $best_score = $score;
                         $value = (float)$row['max_points'];
@@ -420,6 +428,7 @@ class KRA3Scorer
             if (self::$criteria_position_rank !== null && $row_position === self::$criteria_position_rank) return 3;
             if ($row_position === null || $row_position === '') return 2;
         }
+        if (self::$criteria_cycle_id !== null) return 0;
         if ($row_cycle === null || $row_cycle === 0) return 1;
         return 0;
     }

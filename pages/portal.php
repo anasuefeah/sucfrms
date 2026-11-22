@@ -17,6 +17,24 @@ unset($_SESSION['force_pw_change']);
 
 $uid = $_SESSION['user_id'];
 
+// First-login welcome modal
+$_portal_show_welcome = !empty($_SESSION['show_welcome']);
+if ($_portal_show_welcome) unset($_SESSION['show_welcome']);
+$_portal_welcome_first = htmlspecialchars($_SESSION['first_name'] ?? 'Faculty', ENT_QUOTES);
+
+// Application history for the standalone module
+$_hist_stmt = $pdo->prepare("
+    SELECT a.application_id, a.status, a.weighted_score, a.potential_rank,
+           a.sub_rank_increment, a.submitted_at, a.reviewed_at,
+           c.cycle_name, c.start_date, c.end_date, c.status AS cycle_status
+    FROM applications a
+    LEFT JOIN cycles c ON c.cycle_id = a.cycle_id
+    WHERE a.user_id = ?
+    ORDER BY a.created_at DESC
+");
+$_hist_stmt->execute([$uid]);
+$_portal_history = $_hist_stmt->fetchAll();
+
 $fac = $pdo->prepare("
     SELECT u.first_name, u.last_name, u.full_name, u.middle_name, u.email,
            u.employee_id, u.`rank`, u.profile_pic, u.created_at, c.campus_name
@@ -182,7 +200,6 @@ function pStatus(string $s): array {
     return match($s) {
         'submitted'      => ['Submitted',            '#1e4d8c','#eff6ff','#bfdbfe'],
         'under_review'   => ['Under Review',          '#1a3a6b','#f0f4fb','#bfdbfe'],
-        'talisay_review' => ['ITC Review',            '#1a3a6b','#f0f4fb','#bfdbfe'],
         'needs_revision' => ['Needs Revision',        '#92400e','#fffbeb','#fde68a'],
         'approved'       => ['Evaluation Complete',   '#166534','#f0fdf4','#bbf7d0'],
         'reclassified'   => ['Evaluation Complete',   '#166534','#f0fdf4','#bbf7d0'],
@@ -209,6 +226,7 @@ $pct = $ri !== false ? round(($ri / (count($all_ranks) - 1)) * 100) : 0;
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <link rel="stylesheet" href="../assets/css/square-corners.css?v=<?= filemtime(__DIR__ . '/../assets/css/square-corners.css') ?>">
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>SUCFRMS — Faculty Portal</title>
@@ -225,7 +243,7 @@ body::before,body::after{display:none!important;content:none!important;}
 .topbar-user{display:flex;align-items:center;gap:8px;cursor:pointer;position:relative;}
 .topbar-name{color:rgba(255,255,255,.85);font-size:.78rem;font-weight:500;}
 .topbar-av{width:30px;height:30px;border-radius:50%;background:rgba(255,255,255,.15);border:2px solid rgba(255,255,255,.3);display:flex;align-items:center;justify-content:center;color:#fff;font-size:.62rem;font-weight:700;}
-.dd{display:none;position:absolute;top:calc(100%+8px);right:0;background:#fff;border:1px solid #e2e8f0;min-width:220px;box-shadow:0 12px 32px rgba(0,0,0,.15);z-index:500;}
+.dd{display:none;position:absolute;top:calc(100% + 8px);right:0;background:#fff;border:1px solid #e2e8f0;min-width:220px;box-shadow:0 12px 32px rgba(0,0,0,.15);z-index:500;}
 .dd.open{display:block;}
 .dd-hd{background:#0f2952;padding:12px 14px;display:flex;align-items:center;gap:10px;}
 .dd-av{width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,.2);border:2px solid rgba(255,255,255,.3);display:flex;align-items:center;justify-content:center;color:#fff;font-size:.7rem;font-weight:700;}
@@ -236,6 +254,12 @@ body::before,body::after{display:none!important;content:none!important;}
 .dd a:hover{background:#f8fafc;}
 .dd a i{color:#1a3a6b;font-size:.82rem;width:16px;text-align:center;}
 .dd a.out{color:#dc2626;}.dd a.out i{color:#dc2626;}
+.portal-password-field{position:relative;}
+.portal-password-field input{padding-right:2.75rem!important;}
+.portal-password-field input::-ms-reveal{display:none;}
+.portal-password-toggle{position:absolute;top:0;right:0;bottom:0;width:2.5rem;display:flex;align-items:center;justify-content:center;background:transparent;border:none;color:#64748b;font-size:1rem;cursor:pointer;touch-action:manipulation;}
+.portal-password-toggle:hover{color:#1a3a6b;}
+.portal-password-toggle:focus-visible{outline:2px solid #1a3a6b;outline-offset:-2px;}
 
 /* ── Hero ── */
 .hero{background:linear-gradient(rgba(255,255,255,0.18),rgba(255,255,255,0.18)),url('../assets/images/portal_hero.jpg') center center/cover no-repeat;padding:2.5rem 2rem 0;position:relative;overflow:hidden;}
@@ -322,10 +346,18 @@ body::before,body::after{display:none!important;content:none!important;}
 <nav class="topbar">
     <img src="../assets/images/logo.jpg" class="topbar-logo" alt="">
     <span class="topbar-title">SUC Faculty Reclassification Management System (SUCFRMS)</span>
+    <button onclick="document.getElementById('historyModal').style.display='flex'"
+            style="display:inline-flex;align-items:center;gap:5px;padding:0.28rem 0.75rem;
+                   background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.25);
+                   color:#fff;font-size:0.72rem;font-weight:600;cursor:pointer;white-space:nowrap;margin-right:0.5rem;flex-shrink:0;"
+            onmouseover="this.style.background='rgba(255,255,255,0.22)'"
+            onmouseout="this.style.background='rgba(255,255,255,0.12)'">
+        <i class="bi bi-clock-history" style="font-size:0.68rem;"></i>
+        Application History
+    </button>
     <div class="topbar-user" id="nu" onclick="toggleDD()">
-        <span class="topbar-name"><?= sanitize($full_name) ?></span>
         <?php if ($profile_pic): ?>
-        <img src="../<?= sanitize($profile_pic) ?>" style="width:30px;height:30px;border-radius:50%;object-fit:cover;border:2px solid rgba(255,255,255,.3);" alt="">
+        <img class="account-avatar" src="../<?= sanitize($profile_pic) ?>" style="width:30px;height:30px;border-radius:50%;object-fit:cover;border:2px solid rgba(255,255,255,.3);" alt="">
         <?php else: ?>
         <div class="topbar-av"><?= $init ?></div>
         <?php endif; ?>
@@ -361,7 +393,8 @@ body::before,body::after{display:none!important;content:none!important;}
                 <div class="hero-school">Carlos Hilado Memorial State University</div>
             </div>
         </div>
-        <div class="hero-right" style="display:none;"></div>
+        <div class="hero-right"></div>
+    </div>
     </div>
     <div class="rank-bar-wrap"><div class="rank-bar-fill" style="width:<?= $pct ?>%;"></div></div>
 </div>
@@ -508,7 +541,7 @@ body::before,body::after{display:none!important;content:none!important;}
                 </div>
 
                 <div class="act-row" style="margin-top:auto;">
-                    <a href="../pages/pre_evaluation.php" class="btn-outline"><i class="bi bi-calculator"></i> Self-Assessment</a>
+                    <a href="../pages/self_assessment.php" class="btn-outline"><i class="bi bi-calculator"></i> Self-Assessment</a>
                     <?php if ($cycle): ?>
                     <a href="<?= $step_link ?>" class="btn-fill"><i class="bi bi-file-earmark-text"></i> Reclassification</a>
                     <?php else: ?>
@@ -600,11 +633,183 @@ body::before,body::after{display:none!important;content:none!important;}
     </div>
 </div>
 
+<!-- ── Application History Module ─────────────────────── -->
+<style>
+#historyModal table td,
+#historyModal table th { color: inherit; }
+#historyModal a { color: inherit; text-decoration: none; }
+#historyModal .modal-body * { box-sizing: border-box; }
+</style>
+<div id="historyModal"
+     style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(15,23,42,0.55);
+            align-items:center;justify-content:center;padding:1rem;"
+     onclick="if(event.target===this)this.style.display='none'">
+    <div style="background:#fff;width:100%;max-width:800px;max-height:88vh;display:flex;flex-direction:column;border:1px solid #e5e7eb;overflow:hidden;color:#374151;font-family:'Segoe UI',Arial,sans-serif;">
+
+        <!-- Header -->
+        <div style="background:#1a3a6b;padding:0.65rem 1rem;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;">
+            <div style="display:flex;align-items:center;gap:0.6rem;">
+                <i class="bi bi-clock-history" style="color:rgba(255,255,255,0.75);font-size:0.88rem;"></i>
+                <div>
+                    <div style="font-size:0.85rem;font-weight:700;color:#fff;">Application History</div>
+                    <div style="font-size:0.62rem;color:rgba(255,255,255,0.5);margin-top:1px;">Your reclassification record across all cycles</div>
+                </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:0.75rem;">
+                <span style="font-size:0.65rem;font-weight:700;color:rgba(255,255,255,0.5);border:1px solid rgba(255,255,255,0.2);padding:1px 8px;">
+                    <?= count($_portal_history) ?> RECORD<?= count($_portal_history) !== 1 ? 'S' : '' ?>
+                </span>
+                <button onclick="document.getElementById('historyModal').style.display='none'"
+                        style="background:none;border:none;color:rgba(255,255,255,0.65);font-size:1rem;cursor:pointer;line-height:1;padding:0;"
+                        onmouseover="this.style.color='#fff'" onmouseout="this.style.color='rgba(255,255,255,0.65)'">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- Body -->
+        <div style="overflow-y:auto;flex:1;">
+            <?php if (empty($_portal_history)): ?>
+            <div style="padding:3rem;text-align:center;">
+                <i class="bi bi-folder2-open" style="font-size:2rem;color:#e5e7eb;display:block;margin-bottom:0.75rem;"></i>
+                <div style="font-weight:600;color:#374151;margin-bottom:0.3rem;">No application history</div>
+                <div style="font-size:0.8rem;color:#9ca3af;">Your reclassification applications will appear here once you participate in a cycle.</div>
+            </div>
+            <?php else: ?>
+            <?php
+            $_hist_status_cfg = [
+                'approved'      => ['#f0fdf4','#15803d','#bbf7d0','Approved'],
+                'reclassified'  => ['#f0fdf4','#15803d','#bbf7d0','Approved'],
+                'submitted'     => ['#eff6ff','#1e4d8c','#bfdbfe','Submitted'],
+                'under_review'  => ['#eff6ff','#1e4d8c','#bfdbfe','Under Evaluation'],
+                'needs_revision'=> ['#fff7ed','#c2410c','#fed7aa','Needs Revision'],
+                'rejected'      => ['#fef2f2','#dc2626','#fecaca','Returned'],
+                'admin_rejected'=> ['#fef2f2','#dc2626','#fecaca','Returned'],
+                'expired'       => ['#f9fafb','#9ca3af','#e5e7eb','Expired'],
+                'draft'         => ['#f9fafb','#6b7280','#e5e7eb','Draft'],
+            ];
+            ?>
+            <table style="width:100%;border-collapse:collapse;font-size:0.78rem;color:#374151;">
+                <thead>
+                    <tr style="background:#f9fafb;border-bottom:2px solid #e5e7eb;position:sticky;top:0;">
+                        <th style="padding:0.5rem 0.9rem;text-align:left;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#6b7280;">Cycle</th>
+                        <th style="padding:0.5rem 0.9rem;text-align:left;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#6b7280;">Period</th>
+                        <th style="padding:0.5rem 0.9rem;text-align:center;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#6b7280;">Status</th>
+                        <th style="padding:0.5rem 0.9rem;text-align:center;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#6b7280;">Score</th>
+                        <th style="padding:0.5rem 0.9rem;text-align:left;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#6b7280;">Projected Rank</th>
+                        <th style="padding:0.5rem 0.9rem;text-align:center;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#6b7280;">Sub-Rank</th>
+                        <th style="padding:0.5rem 0.9rem;text-align:left;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#6b7280;">Submitted</th>
+                    </tr>
+                </thead>
+                <tbody>
+                <?php foreach ($_portal_history as $_hr):
+                    [$_hbg,$_hcol,$_hbd,$_hlbl] = $_hist_status_cfg[$_hr['status']] ?? ['#f9fafb','#6b7280','#e5e7eb',ucfirst(str_replace('_',' ',$_hr['status']))];
+                    $_submitted = !in_array($_hr['status'], ['draft','expired']);
+                    $_meets = (float)$_hr['weighted_score'] >= 41;
+                ?>
+                <tr style="border-bottom:1px solid #f3f4f6;color:#374151;" onmouseover="this.style.background='#f9fafb'" onmouseout="this.style.background=''">
+                    <td style="padding:0.55rem 0.9rem;font-weight:600;color:#111827;">
+                        <?= htmlspecialchars($_hr['cycle_name'] ?? '—') ?>
+                        <?php if (($_hr['cycle_status'] ?? '') === 'open'): ?>
+                        <span style="font-size:0.58rem;font-weight:700;padding:0 5px;background:#1a3a6b;color:#fff;margin-left:4px;vertical-align:middle;">ACTIVE</span>
+                        <?php endif; ?>
+                    </td>
+                    <td style="padding:0.55rem 0.9rem;color:#6b7280;white-space:nowrap;font-size:0.75rem;">
+                        <?= $_hr['start_date'] ? date('M Y', strtotime($_hr['start_date'])) . ' – ' . date('M Y', strtotime($_hr['end_date'])) : '—' ?>
+                    </td>
+                    <td style="padding:0.55rem 0.9rem;text-align:center;">
+                        <span style="font-size:0.65rem;font-weight:700;padding:2px 9px;background:<?= $_hbg ?>;color:<?= $_hcol ?>;border:1px solid <?= $_hbd ?>;">
+                            <?= $_hlbl ?>
+                        </span>
+                    </td>
+                    <td style="padding:0.55rem 0.9rem;text-align:center;font-weight:700;font-size:0.85rem;color:<?= $_submitted ? ($_meets ? '#15803d' : '#dc2626') : '#9ca3af' ?>;">
+                        <?= $_submitted ? number_format((float)$_hr['weighted_score'], 2) : '—' ?>
+                    </td>
+                    <td style="padding:0.55rem 0.9rem;color:#374151;font-weight:600;font-size:0.75rem;">
+                        <?= htmlspecialchars($_hr['potential_rank'] ?: '—') ?>
+                    </td>
+                    <td style="padding:0.55rem 0.9rem;text-align:center;font-weight:700;color:<?= (int)$_hr['sub_rank_increment'] > 0 ? '#15803d' : '#9ca3af' ?>;">
+                        <?= $_submitted ? (((int)$_hr['sub_rank_increment'] > 0 ? '+' : '') . (int)$_hr['sub_rank_increment']) : '—' ?>
+                    </td>
+                    <td style="padding:0.55rem 0.9rem;color:#6b7280;white-space:nowrap;font-size:0.75rem;">
+                        <?= $_hr['submitted_at'] ? date('M d, Y', strtotime($_hr['submitted_at'])) : '—' ?>
+                    </td>
+                </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+            <?php endif; ?>
+        </div>
+
+        <!-- Footer -->
+        <div style="padding:0.6rem 1rem;border-top:1px solid #e5e7eb;background:#f9fafb;display:flex;justify-content:flex-end;flex-shrink:0;">
+            <button onclick="document.getElementById('historyModal').style.display='none'"
+                    style="padding:0.4rem 1.1rem;border:1px solid #e5e7eb;background:#fff;font-size:0.8rem;font-weight:600;color:#374151;cursor:pointer;"
+                    onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#fff'">Close</button>
+        </div>
+    </div>
+</div>
+
 <!-- No cycle modal -->
+
+<?php if ($_portal_show_welcome): ?>
+<!-- ── First-Login Welcome Modal ─────────────────────── -->
+<div id="welcomeModal"
+     style="display:flex;position:fixed;inset:0;z-index:99999;background:rgba(15,23,42,0.6);
+            align-items:center;justify-content:center;padding:1rem;">
+    <div style="background:#fff;width:100%;max-width:480px;border:1px solid #e5e7eb;overflow:hidden;
+                animation:welcomeFadeIn 0.3s ease;">
+        <div style="background:#1a3a6b;padding:1.5rem 1.5rem 1.25rem;text-align:center;">
+            <div style="width:56px;height:56px;border-radius:50%;background:rgba(255,255,255,0.12);
+                        border:2px solid rgba(255,255,255,0.25);display:flex;align-items:center;
+                        justify-content:center;margin:0 auto 0.75rem;">
+                <i class="bi bi-person-check-fill" style="color:#fff;font-size:1.4rem;"></i>
+            </div>
+            <div style="font-size:1.1rem;font-weight:700;color:#fff;line-height:1.3;">
+                Welcome, <?= $_portal_welcome_first ?>!
+            </div>
+            <div style="font-size:0.75rem;color:rgba(255,255,255,0.6);margin-top:0.3rem;">
+                SUC Faculty Reclassification Management System
+            </div>
+        </div>
+        <div style="padding:1.25rem 1.5rem;">
+            <p style="font-size:0.85rem;color:#374151;line-height:1.6;margin:0 0 1rem;">
+                Your profile has been set up successfully. Your account is now fully active.
+            </p>
+            <div style="display:flex;flex-direction:column;gap:0.5rem;margin-bottom:1.25rem;">
+                <?php foreach ([
+                    ['bi-clipboard-check', 'Submit your reclassification application when a cycle is open.'],
+                    ['bi-file-earmark-arrow-up', 'Upload evidence for each Key Result Area (KRA).'],
+                    ['bi-bar-chart-line', 'Track your scores and application status in real time.'],
+                ] as [$icon, $text]): ?>
+                <div style="display:flex;align-items:flex-start;gap:0.65rem;padding:0.5rem 0.65rem;
+                            border:1px solid #f3f4f6;background:#f9fafb;font-size:0.78rem;color:#374151;line-height:1.4;">
+                    <i class="bi <?= $icon ?>" style="color:#1a3a6b;font-size:0.85rem;flex-shrink:0;margin-top:1px;"></i>
+                    <?= $text ?>
+                </div>
+                <?php endforeach; ?>
+            </div>
+            <button onclick="document.getElementById('welcomeModal').style.display='none'"
+                    style="width:100%;padding:0.6rem;background:#1a3a6b;color:#fff;border:none;
+                           font-size:0.85rem;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;"
+                    onmouseover="this.style.background='#152d54'" onmouseout="this.style.background='#1a3a6b'">
+                <i class="bi bi-arrow-right-circle" style="font-size:0.85rem;"></i>
+                Proceed to Portal
+            </button>
+        </div>
+    </div>
+</div>
+<style>
+@keyframes welcomeFadeIn {
+    from { opacity:0; transform:translateY(16px); }
+    to   { opacity:1; transform:translateY(0); }
+}
+</style>
+<?php endif; ?>
 <div id="noCycleModal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:9999;align-items:center;justify-content:center;">
     <div style="background:#fff;max-width:340px;width:90%;border:1px solid #e2e8f0;box-shadow:0 12px 40px rgba(0,0,0,.2);overflow:hidden;">
         <div style="background:#0f2952;padding:.85rem 1.1rem;display:flex;align-items:center;gap:.6rem;">
-            <img src="../assets/images/logo.jpg" style="width:26px;height:26px;border-radius:50%;object-fit:cover;border:1.5px solid rgba(255,255,255,.25);" alt="">
+            <img src="../assets/images/logo.jpg" class="topbar-logo" style="width:26px;height:26px;border-color:rgba(255,255,255,.25);" alt="">
             <span style="color:#fff;font-weight:700;font-size:.78rem;">SUCFRMS</span>
         </div>
         <div style="padding:1.25rem 1.1rem;">
@@ -871,16 +1076,26 @@ body::before,body::after{display:none!important;content:none!important;}
             <form method="POST" action="" onsubmit="return emPwValidate(this)">
                 <input type="hidden" name="portal_edit_action" value="change_password">
                 <div style="margin-bottom:.6rem;">
-                    <label style="font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#94a3b8;display:block;margin-bottom:3px;">New Password</label>
+                    <label for="em-np" style="font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#94a3b8;display:block;margin-bottom:3px;">New Password</label>
+                    <div class="portal-password-field">
                     <input type="password" name="new_password" required id="em-np"
                            style="width:100%;border:1px solid #e2e8f0;padding:.4rem .6rem;font-size:.8rem;box-sizing:border-box;font-family:inherit;"
                            onfocus="this.style.borderColor='#1a3a6b'" onblur="this.style.borderColor='#e2e8f0'">
+                        <button type="button" class="portal-password-toggle" aria-controls="em-np" aria-label="Show new password" title="Show new password" aria-pressed="false" onclick="togglePortalPassword(this)">
+                            <i class="bi bi-eye" aria-hidden="true"></i>
+                        </button>
+                    </div>
                 </div>
                 <div style="margin-bottom:.85rem;">
-                    <label style="font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#94a3b8;display:block;margin-bottom:3px;">Confirm Password</label>
+                    <label for="em-cp" style="font-size:.6rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#94a3b8;display:block;margin-bottom:3px;">Confirm Password</label>
+                    <div class="portal-password-field">
                     <input type="password" name="confirm_password" required id="em-cp"
                            style="width:100%;border:1px solid #e2e8f0;padding:.4rem .6rem;font-size:.8rem;box-sizing:border-box;font-family:inherit;"
                            onfocus="this.style.borderColor='#1a3a6b'" onblur="this.style.borderColor='#e2e8f0'">
+                        <button type="button" class="portal-password-toggle" aria-controls="em-cp" aria-label="Show confirm password" title="Show confirm password" aria-pressed="false" onclick="togglePortalPassword(this)">
+                            <i class="bi bi-eye" aria-hidden="true"></i>
+                        </button>
+                    </div>
                 </div>
                 <div id="em-pw-err" style="display:none;font-size:.73rem;color:#dc2626;margin-bottom:.6rem;padding:.35rem .6rem;background:#fef2f2;border-left:3px solid #dc2626;"></div>
                 <div style="display:flex;justify-content:flex-end;gap:.5rem;">
@@ -925,6 +1140,17 @@ function editModalTab(id) {
         btn.style.borderBottomColor = active ? '#1a3a6b' : 'transparent';
         btn.style.color = active ? '#1a3a6b' : '#94a3b8';
     });
+}
+
+function togglePortalPassword(button) {
+    var input = document.getElementById(button.getAttribute('aria-controls'));
+    var show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    button.setAttribute('aria-pressed', String(show));
+    var label = (show ? 'Hide ' : 'Show ') + (input.id === 'em-np' ? 'new password' : 'confirm password');
+    button.setAttribute('aria-label', label);
+    button.title = label;
+    button.querySelector('i').className = show ? 'bi bi-eye-slash' : 'bi bi-eye';
 }
 
 // Password validation

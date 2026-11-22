@@ -13,12 +13,23 @@ $kra_descriptions = [
 ];
 
 $cycles = $pdo->query("SELECT cycle_id, cycle_name, status FROM cycles ORDER BY created_at DESC")->fetchAll();
+$cycles_by_id = array_column($cycles, null, 'cycle_id');
 
 $cycle_id = (int)($_GET['cycle_id'] ?? 0);
 if (!$cycle_id && $cycles) {
     foreach ($cycles as $cy) { if ($cy['status'] === 'open') { $cycle_id = (int)$cy['cycle_id']; break; } }
     if (!$cycle_id) $cycle_id = (int)$cycles[0]['cycle_id'];
 }
+
+$current_cycle = $cycles_by_id[$cycle_id] ?? null;
+if (!$current_cycle): ?>
+<div class="alert alert-danger kra-cycle-alert" role="alert">
+    <i class="bi bi-exclamation-circle-fill" aria-hidden="true"></i>
+    <div>A reclassification cycle is required before assigning KRAs to evaluators.
+        <a href="index.php?page=cycles">Go to Cycles</a>.
+    </div>
+</div>
+<?php return; endif;
 
 $eval_id = (int)($_GET['eval_id'] ?? 0);
 if (!$eval_id) {
@@ -34,9 +45,6 @@ if (!$evaluator) {
     echo "<script>window.location.href='index.php?page=kra_assignments&cycle_id={$cycle_id}';</script>"; exit;
 }
 
-$current_cycle = null;
-foreach ($cycles as $cy) { if ((int)$cy['cycle_id'] === $cycle_id) { $current_cycle = $cy; break; } }
-
 // Current assignments
 $am_stmt = $pdo->prepare("SELECT kra_category FROM checker_kra_assignments WHERE cycle_id=? AND checker_id=?");
 $am_stmt->execute([$cycle_id, $eval_id]);
@@ -50,6 +58,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action   = $_POST['action'] ?? '';
     $post_cid = (int)($_POST['cycle_id'] ?? 0);
     $post_eid = (int)($_POST['eval_id']  ?? 0);
+
+    if (in_array($action, ['proceed_review', 'confirm_save'], true) && $post_cid !== $cycle_id) {
+        flashMessage('danger', 'Select a valid cycle before assigning KRAs to evaluators.');
+        echo "<script>window.location.href='index.php?page=kra_assignments&cycle_id={$cycle_id}';</script>"; exit;
+    }
 
     if ($action === 'confirm_save' && $post_cid && $post_eid) {
         $new_kras = array_values(array_intersect(array_keys($kra_categories), $_POST['kra_assignments'] ?? []));
@@ -70,7 +83,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $open = $pdo->prepare("SELECT COUNT(*) FROM kra_submissions ks
                     JOIN applications a ON a.application_id=ks.application_id
                     WHERE a.cycle_id=? AND ks.kra_category=?
-                      AND a.status IN ('submitted','under_review','needs_revision','talisay_review')
+                      AND a.status IN ('submitted','under_review','needs_revision')
                       AND (ks.verified_by=? OR ks.revision_by=?)");
                 $open->execute([$post_cid, $k, $post_eid, $post_eid]);
                 if ((int)$open->fetchColumn() > 0)

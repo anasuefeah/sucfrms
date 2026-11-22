@@ -69,6 +69,7 @@ $cat_cfg = [
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <link rel="stylesheet" href="../assets/css/square-corners.css">
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>SUCFRMS — Evidence Repository</title>
@@ -86,7 +87,7 @@ body::before,body::after{display:none!important;content:none!important;}
 .pnav-name{color:rgba(255,255,255,.85);font-size:.78rem;}
 .pnav-avatar{width:28px;height:28px;border-radius:50%;object-fit:cover;border:2px solid rgba(255,255,255,.3);}
 .pnav-avatar-ph{width:28px;height:28px;border-radius:50%;background:rgba(255,255,255,.15);border:2px solid rgba(255,255,255,.3);display:flex;align-items:center;justify-content:center;color:#fff;font-size:.62rem;font-weight:700;}
-.pnav-dd{display:none;position:absolute;top:calc(100%+8px);right:0;background:#fff;border:1px solid #e2e8f0;min-width:200px;box-shadow:0 8px 24px rgba(0,0,0,.12);z-index:500;}
+.pnav-dd{display:none;position:absolute;top:calc(100% + 8px);right:0;background:#fff;border:1px solid #e2e8f0;min-width:200px;box-shadow:0 8px 24px rgba(0,0,0,.12);z-index:500;}
 .pnav-dd.open{display:block;}
 .pnav-dd-header{background:#0f2952;padding:12px 14px;display:flex;align-items:center;gap:10px;}
 .pnav-dd-avatar-ph{width:34px;height:34px;border-radius:50%;background:rgba(255,255,255,.2);border:2px solid rgba(255,255,255,.3);display:flex;align-items:center;justify-content:center;color:#fff;font-size:.68rem;font-weight:700;}
@@ -246,7 +247,7 @@ body::before,body::after{display:none!important;content:none!important;}
             </div>
             <div class="pnav-dd-body">
                 <a href="../index.php?page=profile"><i class="bi bi-person-circle"></i>My Profile</a>
-                <a href="pre_evaluation.php"><i class="bi bi-clipboard2-check"></i>Self-Assessment</a>
+                <a href="self_assessment.php"><i class="bi bi-clipboard2-check"></i>Self-Assessment</a>
                 <a href="portal.php"><i class="bi bi-grid-1x2"></i>Portal</a>
                 <a href="logout.php" class="out"><i class="bi bi-box-arrow-right"></i>Sign Out</a>
             </div>
@@ -255,7 +256,7 @@ body::before,body::after{display:none!important;content:none!important;}
 </nav>
 
 <div class="pg">
-    <a href="pre_evaluation.php" class="back-link"><i class="bi bi-arrow-left"></i> Back to Self-Assessment</a>
+    <a href="self_assessment.php" class="back-link"><i class="bi bi-arrow-left"></i> Back to Self-Assessment</a>
 
     <!-- Header -->
     <div class="repo-header">
@@ -304,10 +305,10 @@ body::before,body::after{display:none!important;content:none!important;}
                  ondrop="handleDrop(event)">
                 <i class="bi bi-cloud-arrow-up"></i>
                 <p>Click or drag &amp; drop files here</p>
-                <small>PDF, JPG, PNG, DOC, DOCX — max 50MB each</small>
+                <small>PDF only — max 50MB each</small>
             </div>
         </div>
-        <input type="file" id="fileInput" style="display:none" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx" multiple onchange="uploadFiles(this.files)">
+        <input type="file" id="fileInput" style="display:none" accept=".pdf,application/pdf" multiple onchange="uploadFiles(this.files)">
         <div class="upload-anim" id="uploadAnim">
             <i class="bi bi-cloud-arrow-up upload-anim-icon"></i>
             <div class="upload-anim-label" id="uploadAnimLabel">Preparing…</div>
@@ -381,7 +382,7 @@ body::before,body::after{display:none!important;content:none!important;}
 </div>
 
 <script>
-const AJAX = 'pre_eval_ajax.php';
+const AJAX = 'self_assessment_ajax.php';
 let allFiles  = [];
 let filterCat = '';
 let searchQ   = '';
@@ -434,6 +435,11 @@ function handleDrop(e){
     if(e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files);
 }
 async function uploadFiles(files){
+    if (Array.from(files).some(file => !/\.pdf$/i.test(file.name))) {
+        showToast('Only PDF documents are accepted.', 'error');
+        document.getElementById('fileInput').value = '';
+        return;
+    }
     const cat=document.getElementById('upCat').value;
     const desc=document.getElementById('upDesc').value.trim();
     const anim=document.getElementById('uploadAnim');
@@ -642,7 +648,7 @@ loadFiles();
             <div style="text-align:center;padding:2rem;color:#94a3b8;font-size:.82rem;">
                 <i class="bi bi-inbox" style="font-size:1.5rem;display:block;margin-bottom:.4rem;color:#e2e8f0;"></i>
                 No self-assessment entries found.<br>
-                <a href="pre_evaluation.php" style="color:#1a3a6b;font-weight:600;">Add entries in Self-Assessment →</a>
+                <a href="self_assessment.php" style="color:#1a3a6b;font-weight:600;">Add entries in Self-Assessment →</a>
             </div>
             <?php else:
                 // Group by KRA category
@@ -678,7 +684,7 @@ loadFiles();
                     $ctype = $parts[0] ?? '';
                     // Determine what evidence to prepare based on criterion type
                     $what = match(true) {
-                        str_starts_with($ctype,'A-set') || str_starts_with($ctype,'A-sef') => 'Student/Supervisor Evaluation Form (SET/SEF)',
+                        str_starts_with($ctype,'A-set') || str_starts_with($ctype,'A-sef') => 'Student Evaluation of Teaching / Supervisor Evaluation Form',
                         $ctype === 'A-thesis'   => 'Approved thesis / dissertation document',
                         $ctype === 'A-advisory' => 'Certificate of completion / title page',
                         $ctype === 'A-module'   => 'Approved instructional material with ISBN/accreditation',

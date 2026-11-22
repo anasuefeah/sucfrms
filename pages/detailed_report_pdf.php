@@ -10,6 +10,7 @@ requireLogin();
 if (!isAdmin() && !isEvaluator()) { http_response_code(403); die('Access denied.'); }
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../fpdf/fpdf.php';
+require_once __DIR__ . '/../includes/criteria_pdf_rows.php';
 
 $cycle_id  = intval($_GET['cycle_id']  ?? 0);
 $campus_id = intval($_GET['campus_id'] ?? 0);
@@ -70,10 +71,10 @@ $subs_by_app = [];
 foreach ($all_subs as $s) $subs_by_app[$s['application_id']][$s['kra_category']][] = $s;
 
 $kra_info = [
-    'Instruction'              => ['num'=>'I',   'max'=>100, 'label'=>'Teaching Effectiveness'],
-    'Research'                 => ['num'=>'II',  'max'=>100, 'label'=>'Research, Innovation & Creative Work'],
-    'Extension'                => ['num'=>'III', 'max'=>100, 'label'=>'Extension Services'],
-    'Professional Development' => ['num'=>'IV',  'max'=>100, 'label'=>'Professional Development'],
+    'Instruction'              => ['num'=>'I',   'max' => kraMaximumPoints()['Instruction'], 'label'=>'Teaching Effectiveness'],
+    'Research'                 => ['num'=>'II',  'max' => kraMaximumPoints()['Research'], 'label'=>'Research, Innovation & Creative Work'],
+    'Extension'                => ['num'=>'III', 'max' => kraMaximumPoints()['Extension'], 'label'=>'Extension Services'],
+    'Professional Development' => ['num'=>'IV',  'max' => kraMaximumPoints()['Professional Development'], 'label'=>'Professional Development'],
 ];
 
 $printed_at = date('M d, Y h:i A');
@@ -190,6 +191,10 @@ foreach ($applications as $idx => $a) {
 
     $subs_by_cat = $subs_by_app[$a['application_id']] ?? [];
     $rank        = $a['rank'] ?? '';
+    $criteriaByCategory = [];
+    foreach (CriteriaSnapshots::rows($pdo, (int)$a['cycle_id'], ($a['position_title'] ?? '') ?: ($rank ?: null)) as $criterion) {
+        $criteriaByCategory[$criterion['kra_category']][] = $criterion;
+    }
 
     $result      = getApplicationScoreSummary($pdo, (int)$a['application_id']);
     $kra_totals  = [
@@ -217,7 +222,11 @@ foreach ($applications as $idx => $a) {
 
     // -- KRA sections -------------------------------------------
     foreach ($kra_info as $cat => $info) {
-        $entries   = $subs_by_cat[$cat] ?? [];
+        $criteria  = $criteriaByCategory[$cat] ?? [];
+        $entries = $subs_by_cat[$cat] ?? [];
+        if (!in_array($a['status'], ['approved','reclassified','admin_rejected'], true)) {
+            $entries = kraCurrentCriterionEntries($entries, $criteria);
+        }
         $cat_total = $kra_totals[$cat];
         $cap_label = 'Max ' . $info['max'] . ' pts';
 
@@ -238,10 +247,10 @@ foreach ($applications as $idx => $a) {
                 // Measure height needed for MultiCell
                 $pdf->SetFont('Times','',7.5);
                 $line_h  = 4.5;
-                $str_w   = $pdf->GetStringWidth($desc);
-                $lines   = max(1, ceil($str_w / 115));
+                $lines   = criteriaPdfLineCount($pdf, 117, $desc);
                 $cell_h  = max(5.5, $lines * $line_h);
 
+                if ($pdf->GetY() + $cell_h > $pdf->GetPageHeight() - 14) $pdf->AddPage();
                 $x = $pdf->GetX();
                 $y = $pdf->GetY();
 
@@ -257,10 +266,16 @@ foreach ($applications as $idx => $a) {
                 // Points
                 $pdf->SetXY($x + 124, $y);
                 $pdf->SetFont('Times','B',8.5);
-                $pdf->Cell(22, $cell_h, number_format((float)$s['computed_points'], 2), 1, 0, 'C');
+                $claimScores = isset($result['scoring_claims'][$s['submission_id']]);
+                $pdf->Cell(22, $cell_h, $claimScores ? number_format((float)$s['computed_points'], 2) : '-', 1, 0, 'C');
 
                 // Acceptable
-                $verified_label = $s['verified'] ? 'Acceptable' : 'Pending Review';
+                $verified_label = match (true) {
+                    isset($result['excluded_claims'][$s['submission_id']]) => 'Excluded',
+                    !$claimScores => 'Claim Review Pending',
+                    !empty($s['verified']) => 'Acceptable',
+                    default => 'Pending Review',
+                };
                 $pdf->SetFont('Times','', 7.5);
                 $pdf->SetTextColor(0,0,0);
                 $pdf->Cell(40, $cell_h, $verified_label, 1, 1, 'C');
@@ -277,6 +292,25 @@ foreach ($applications as $idx => $a) {
             $pdf->SetTextColor(80,80,80);
             $pdf->Cell(0, 6, 'No submission for this KRA.', 1, 1, 'C');
             $pdf->SetTextColor(0,0,0);
+        }
+        $scoringEntries = array_filter($entries, static fn(array $entry): bool => isset($result['scoring_claims'][$entry['submission_id']]));
+        $buckets = criteriaEntryBuckets($cat, $criteria, $scoringEntries);
+        foreach (criteriaGroups($criteria) as $code => $parent) {
+            $pdf->SetFont('Times', 'B', 8.5);
+            $title = $code === '' ? $parent['name'] : 'Criterion ' . $code . ' - ' . $parent['name'];
+            criteriaPdfRow($pdf, $title, 5.5, 14, 1);
+            $pdf->SetFont('Times', '', 8.5);
+            $raw = 0.0;
+            foreach ($parent['children'] as $child) {
+                $assessed = $buckets[$child['criterion_key']] ?? [];
+                $points = array_sum(array_column($assessed, 'computed_points'));
+                $raw += $points;
+                $value = $assessed ? number_format($points, 2) : 'Not assessed';
+                criteriaPdfRow($pdf, $child['criterion_label'] . ' - ' . $value . ' / ' . number_format((float)$child['max_points'], 2) . ' pts', 5.5, 14, 1);
+            }
+            $score = $result['parent_scores'][$cat][$code] ?? min($parent['max'] ?? $info['max'], $raw);
+            $pdf->SetFont('Times', 'B', 8.5);
+            criteriaPdfRow($pdf, 'Subtotal - ' . number_format($score, 2) . ' / ' . ($parent['max'] ?? $info['max']) . ' pts', 5.5, 14, 1);
         }
         $pdf->Ln(2);
     }

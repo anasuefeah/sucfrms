@@ -63,13 +63,17 @@ $subs_by_cat = [];
 foreach ($all_subs as $s) $subs_by_cat[$s['kra_category']][] = $s;
 
 $kra_info = [
-    'Instruction'              => ['num'=>'I',   'max'=>100, 'label'=>'Teaching Effectiveness'],
-    'Research'                 => ['num'=>'II',  'max'=>100, 'label'=>'Research, Innovation & Creative Work'],
-    'Extension'                => ['num'=>'III', 'max'=>100, 'label'=>'Extension Services'],
-    'Professional Development' => ['num'=>'IV',  'max'=>100, 'label'=>'Professional Development'],
+    'Instruction'              => ['num'=>'I',   'max' => kraMaximumPoints()['Instruction'], 'label'=>'Teaching Effectiveness'],
+    'Research'                 => ['num'=>'II',  'max' => kraMaximumPoints()['Research'], 'label'=>'Research, Innovation & Creative Work'],
+    'Extension'                => ['num'=>'III', 'max' => kraMaximumPoints()['Extension'], 'label'=>'Extension Services'],
+    'Professional Development' => ['num'=>'IV',  'max' => kraMaximumPoints()['Professional Development'], 'label'=>'Professional Development'],
 ];
 
 $rank   = $faculty['rank'] ?? '';
+$criteriaByCategory = [];
+foreach (CriteriaSnapshots::rows($pdo, (int)$cycle['cycle_id'], ($app['position_title'] ?? '') ?: ($rank ?: null)) as $criterion) {
+    $criteriaByCategory[$criterion['kra_category']][] = $criterion;
+}
 $result = getApplicationScoreSummary($pdo, (int)$app_id);
 $kra_totals = [
     'Instruction'              => $result['kra1'],
@@ -85,6 +89,7 @@ $printed_at = date('F d, Y h:i A');
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <link rel="stylesheet" href="../assets/css/square-corners.css" media="screen">
 <meta charset="UTF-8">
 <title>ISS - <?= htmlspecialchars(formatDisplayName($faculty)) ?></title>
 <style>
@@ -209,7 +214,14 @@ body { font-family:'Times New Roman', Times, serif; font-size:11pt; color:#000; 
 
     <!-- KRA Sections -->
     <?php foreach ($kra_info as $cat => $info):
-        $entries   = $subs_by_cat[$cat] ?? [];
+        $criteria  = $criteriaByCategory[$cat] ?? [];
+        $entries = $subs_by_cat[$cat] ?? [];
+        if (!in_array($app['status'], ['approved','reclassified','admin_rejected'], true)) {
+            $entries = kraCurrentCriterionEntries($entries, $criteria);
+        }
+        $additional = kraAdditionalCriteria($criteria);
+        $scoringEntries = array_filter($entries, static fn(array $entry): bool => isset($result['scoring_claims'][$entry['submission_id']]));
+        $additionalScores = kraAdditionalCriterionScores($scoringEntries);
         $cat_total = $kra_totals[$cat];
         $cap_label = ($cat === 'Extension') ? 'max 100 + 20 bonus' : 'max ' . $info['max'] . ' pts';
     ?>
@@ -218,7 +230,7 @@ body { font-family:'Times New Roman', Times, serif; font-size:11pt; color:#000; 
             <span>KRA <?= $info['num'] ?> - <?= htmlspecialchars($info['label']) ?></span>
             <span class="kra-max"><?= $cap_label ?></span>
         </div>
-        <?php if ($entries): ?>
+        <?php if ($entries || $additional): ?>
         <table class="kra-table">
             <thead>
                 <tr>
@@ -230,14 +242,34 @@ body { font-family:'Times New Roman', Times, serif; font-size:11pt; color:#000; 
             </thead>
             <tbody>
             <?php foreach ($entries as $i => $s): ?>
+            <?php $claimScores = isset($result['scoring_claims'][$s['submission_id']]); ?>
             <tr>
                 <td class="center" style="color:#94a3b8;"><?= $i + 1 ?></td>
                 <td><?= formatKraRemarks($cat, $s['remarks'] ?? '') ?></td>
-                <td class="score"><?= number_format((float)$s['computed_points'], 2) ?></td>
-                <td class="center <?= $s['verified'] ? 'verified-yes' : 'verified-no' ?>">
-                    <?= $s['verified'] ? '&#10004; Acceptable' : '' ?>
+                <td class="score"><?= $claimScores ? number_format((float)$s['computed_points'], 2) : '—' ?></td>
+                <td class="center <?= $claimScores && $s['verified'] ? 'verified-yes' : 'verified-no' ?>">
+                    <?= match (true) {
+                        isset($result['excluded_claims'][$s['submission_id']]) => 'Excluded',
+                        !$claimScores => 'Claim review pending',
+                        !empty($s['verified']) => '&#10004; Acceptable',
+                        default => '',
+                    } ?>
                 </td>
             </tr>
+            <?php endforeach; ?>
+            <?php foreach (criteriaGroups($additional) as $code => $parent): ?>
+            <tr class="subtotal-row">
+                <td colspan="4"><?= htmlspecialchars($code === '' ? $parent['name'] : 'Criterion ' . $code . ' - ' . $parent['name'], ENT_QUOTES) ?></td>
+            </tr>
+            <?php foreach ($parent['children'] as $criterion): ?>
+            <?php $points = $additionalScores[$criterion['criterion_key']] ?? null; ?>
+            <tr>
+                <td></td>
+                <td><?= htmlspecialchars($criterion['criterion_label'], ENT_QUOTES) ?> (max <?= number_format((float)$criterion['max_points'], 2) ?> pts)</td>
+                <td class="score"><?= $points === null ? 'Not assessed' : number_format($points, 2) ?></td>
+                <td></td>
+            </tr>
+            <?php endforeach; ?>
             <?php endforeach; ?>
             <tr class="subtotal-row">
                 <td colspan="2" style="text-align:right;">Sub-total (<?= $cap_label ?>)</td>

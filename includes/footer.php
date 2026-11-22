@@ -44,8 +44,7 @@
 
         </div>
     </div>
-    <script src="assets/js/app.js"></script>
-    <script src="assets/vendor/chartjs/chart.umd.min.js"></script>
+    <script src="assets/js/app.js?v=<?= filemtime(__DIR__ . '/../assets/js/app.js') ?>"></script>
     <?php renderConfirmModal(); ?>
 
     <!-- -- Help FAB (floating bottom-right) -- -->
@@ -107,7 +106,7 @@
             <div style="height:1px;background:#f3f4f6;margin:0.25rem 0;"></div>
             <?php if ($is_faculty): ?>
             <?php echo $sectionLabel('Faculty'); ?>
-            <?php echo $item('pages/pre_evaluation.php', 'bi-calculator', 'Self-Assessment'); ?>
+            <?php echo $item('pages/self_assessment.php', 'bi-calculator', 'Self-Assessment'); ?>
             <?php echo $item('index.php?page=apply', 'bi-pencil-square', 'My KRA Entries'); ?>
             <?php endif; ?>
             <?php if ($is_checker): ?>

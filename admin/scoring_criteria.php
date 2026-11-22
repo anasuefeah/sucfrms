@@ -17,158 +17,101 @@ catch (\Exception $e) {
 }
 
 $kra_list        = ['Instruction','Research','Extension','Professional Development'];
-$active_cycle_id = (int)($_GET['cycle_id'] ?? 0);
+$open_cycle = getActiveCycle($pdo);
+$active_cycle_id = array_key_exists('cycle_id', $_GET) ? (int)$_GET['cycle_id'] : (int)($open_cycle['cycle_id'] ?? 0);
 $active_position = trim($_GET['position'] ?? '');
-
-// -- Load cycles for cycle selector ------------------------------------
-$cycles = $pdo->query("SELECT cycle_id, cycle_name, status FROM cycles ORDER BY created_at DESC")->fetchAll();
-
-if (!$active_cycle_id && $cycles) {
-    foreach ($cycles as $cy) {
-        if ($cy['status'] === 'open') { $active_cycle_id = (int)$cy['cycle_id']; break; }
-    }
-    if (!$active_cycle_id) $active_cycle_id = (int)$cycles[0]['cycle_id'];
-}
-
+$cycles = $pdo->query('SELECT cycle_id,cycle_name,status FROM cycles ORDER BY created_at DESC')->fetchAll();
 $current_cycle = null;
-foreach ($cycles as $cy) {
-    if ((int)$cy['cycle_id'] === $active_cycle_id) { $current_cycle = $cy; break; }
-}
+foreach ($cycles as $cy) if ((int)$cy['cycle_id'] === $active_cycle_id) $current_cycle = $cy;
+$templates_mode = $active_cycle_id === 0;
+if ($templates_mode) $active_position = '';
+$closed_scope = !$templates_mode && (!$current_cycle || $current_cycle['status'] !== 'open');
+$editing_enabled = $templates_mode && !$open_cycle;
+$show_inactive = ($_GET['show_inactive'] ?? '') === '1';
+if (empty($_SESSION['criteria_csrf'])) $_SESSION['criteria_csrf'] = bin2hex(random_bytes(32));
 
-// -- POST handlers -------------------------------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $action = $_POST['action'] ?? '';
-
-    if ($action === 'seed_all_positions') {
-        $cid = (int)$_POST['target_cycle_id'];
-        if ($cid) {
-            $globals = $pdo->query("SELECT * FROM scoring_criteria WHERE cycle_id IS NULL AND position_rank IS NULL ORDER BY criteria_id")->fetchAll();
-            $all_ranks = facultyRanks();
-            $ins = $pdo->prepare("INSERT IGNORE INTO scoring_criteria (cycle_id, position_rank, kra_category, criterion_key, criterion_label, max_points, weight_pct, description, is_active, updated_by) VALUES (?,?,?,?,?,?,?,?,?,?)");
-            $seeded = 0;
-            foreach ($all_ranks as $rank) {
-                $cnt = $pdo->prepare("SELECT COUNT(*) FROM scoring_criteria WHERE cycle_id=? AND position_rank=?");
-                $cnt->execute([$cid, $rank]);
-                if ((int)$cnt->fetchColumn() === 0) {
-                    foreach ($globals as $g) {
-                        $ins->execute([$cid, $rank, $g['kra_category'], $g['criterion_key'], $g['criterion_label'], $g['max_points'], $g['weight_pct'], $g['description'], $g['is_active'], $_SESSION['user_id']]);
-                    }
-                    $seeded++;
-                }
-            }
-            logAudit($pdo, $_SESSION['user_id'], 'Criteria Seeded', "Seeded criteria for {$seeded} positions in cycle #{$cid}");
-            flashMessage('success', "Criteria seeded for <strong>{$seeded}</strong> position(s).");
-            // Recalc all existing applications in this cycle now that criteria exist
-            if ($seeded > 0) {
-                $recalc = recalcApplicationsAfterCriteriaChange($pdo, $cid, null);
-                if ($recalc > 0) {
-                    flashMessage('success', "Criteria seeded for <strong>{$seeded}</strong> position(s). Recalculated <strong>{$recalc}</strong> existing application(s).");
-                }
-            }
+    try {
+        if (!hash_equals($_SESSION['criteria_csrf'], (string)($_POST['csrf_token'] ?? ''))) throw new RuntimeException('This form has expired. Refresh the page and try again.');
+        $action = (string)($_POST['action'] ?? '');
+        $result = CriteriaSnapshots::save($pdo,(int)$_SESSION['user_id'],$action,$_POST);
+        $message = $result['changed'] ? 'Criteria saved as a new version. All faculty members have been notified.' : 'No criteria changes were detected.';
+        if ($action === 'delete_criterion') {
+            $message = $result['changed'] ? 'Criterion deactivated. It is now hidden from active lists.' : 'This criterion is already inactive.';
         }
-        echo "<script>window.location.href='index.php?page=scoring_criteria&cycle_id={$cid}';</script>"; exit;
-
-    } elseif ($action === 'add_criterion') {
-        $cid      = (int)$_POST['cycle_id'] ?: null;
-        $pos_rank = trim($_POST['position_rank'] ?? '') ?: null;
-        $kra      = $_POST['kra_category'] ?? '';
-        $key      = trim($_POST['criterion_key'] ?? '');
-        $label    = trim($_POST['criterion_label'] ?? '');
-        $max      = (float)$_POST['max_points'];
-        $weight   = (float)($_POST['weight_pct'] ?? 100);
-        $desc     = trim($_POST['description'] ?? '');
-        if (in_array($kra, $kra_list) && $key && $label && $max > 0) {
-            $pdo->prepare("INSERT INTO scoring_criteria (cycle_id, position_rank, kra_category, criterion_key, criterion_label, max_points, weight_pct, description, updated_by) VALUES (?,?,?,?,?,?,?,?,?)")
-                ->execute([$cid, $pos_rank, $kra, $key, $label, $max, $weight, $desc, $_SESSION['user_id']]);
-            $recalc = recalcApplicationsAfterCriteriaChange($pdo, $cid, $pos_rank);
-            logAudit($pdo, $_SESSION['user_id'], 'Criterion Added', "{$label} ({$kra}) = {$max} pts [cycle #{$cid}][{$pos_rank}]");
-            flashMessage('success', "Criterion <strong>{$label}</strong> added." . ($recalc ? " Recalculated {$recalc} application(s)." : ''));
-        } else {
-            flashMessage('danger', 'Please fill in all required fields (KRA, Key, Label, Max Points > 0).');
-        }
-        $redir = "index.php?page=scoring_criteria&cycle_id={$cid}" . ($pos_rank ? '&position='.urlencode($pos_rank) : '');
-        echo "<script>window.location.href='{$redir}';</script>"; exit;
-
-    } elseif ($action === 'update_criterion') {
-        $crit_id  = (int)$_POST['criteria_id'];
-        $label    = trim($_POST['criterion_label'] ?? '');
-        $max_pts  = (float)$_POST['max_points'];
-        $weight   = (float)($_POST['weight_pct'] ?? 100);
-        $desc     = trim($_POST['description'] ?? '');
-        $is_active = isset($_POST['is_active']) ? 1 : 0;
-        $back_cid = (int)$_POST['back_cycle_id'];
-        $back_pos = trim($_POST['back_position'] ?? '');
-        if ($label && $max_pts > 0) {
-            $pdo->prepare("UPDATE scoring_criteria SET criterion_label=?, max_points=?, weight_pct=?, description=?, is_active=?, updated_by=? WHERE criteria_id=?")
-                ->execute([$label, $max_pts, $weight, $desc, $is_active, $_SESSION['user_id'], $crit_id]);
-            $recalc = recalcApplicationsAfterCriteriaChange($pdo, $back_cid ?: null, $back_pos ?: null);
-            logAudit($pdo, $_SESSION['user_id'], 'Criterion Updated', "ID {$crit_id}: {$label}");
-            flashMessage('success', "Criterion <strong>{$label}</strong> updated." . ($recalc ? " Recalculated {$recalc} application(s)." : ''));
-        } else {
-            flashMessage('danger', 'Label and Max Points (> 0) are required.');
-        }
-        $redir = "index.php?page=scoring_criteria&cycle_id={$back_cid}" . ($back_pos ? '&position='.urlencode($back_pos) : '');
-        echo "<script>window.location.href='{$redir}';</script>"; exit;
-
-    } elseif ($action === 'delete_criterion') {
-        $crit_id  = (int)$_POST['criteria_id'];
-        $back_cid = (int)$_POST['back_cycle_id'];
-        $back_pos = trim($_POST['back_position'] ?? '');
-        $row = $pdo->prepare("SELECT criterion_label FROM scoring_criteria WHERE criteria_id=?");
-        $row->execute([$crit_id]);
-        $existing = $row->fetch();
-        if ($existing) {
-            $pdo->prepare("DELETE FROM scoring_criteria WHERE criteria_id=?")->execute([$crit_id]);
-            $recalc = recalcApplicationsAfterCriteriaChange($pdo, $back_cid ?: null, $back_pos ?: null);
-            logAudit($pdo, $_SESSION['user_id'], 'Criterion Deleted', "ID {$crit_id}: {$existing['criterion_label']}");
-            flashMessage('success', 'Criterion deleted.' . ($recalc ? " Recalculated {$recalc} application(s)." : ''));
-        }
-        $redir = "index.php?page=scoring_criteria&cycle_id={$back_cid}" . ($back_pos ? '&position='.urlencode($back_pos) : '');
-        echo "<script>window.location.href='{$redir}';</script>"; exit;
+        flashMessage('success', $message);
+        $redir = 'index.php?page=scoring_criteria&cycle_id=0';
+    } catch (Throwable $e) {
+        flashMessage('danger',$e instanceof PDOException ? 'Criteria could not be saved. Check for duplicate keys or labels and try again.' : htmlspecialchars($e->getMessage()));
+        $redir = 'index.php?page=scoring_criteria&cycle_id=' . $active_cycle_id . ($active_position ? '&position=' . rawurlencode($active_position) : '');
     }
-
-    echo "<script>window.location.href='index.php?page=scoring_criteria&cycle_id={$active_cycle_id}';</script>"; exit;
+    echo '<script>window.location.href=' . json_encode($redir) . ';</script>'; exit;
 }
 
-// -- Load criteria data -------------------------------------------------
-$cycle_criteria  = [];
-$criteria_source = 'none';
-if ($active_cycle_id) {
-    if ($active_position) {
-        $stmt = $pdo->prepare("SELECT * FROM scoring_criteria WHERE cycle_id=? AND position_rank=? ORDER BY kra_category, criteria_id");
-        $stmt->execute([$active_cycle_id, $active_position]);
-        $cycle_criteria  = $stmt->fetchAll();
-        $criteria_source = count($cycle_criteria) > 0 ? 'cycle_position' : 'empty_position';
-    } else {
-        $criteria_source = 'overview';
+$cycle_criteria = [];
+$criteria_source = $templates_mode ? 'templates' : 'overview';
+if ($templates_mode) {
+    $cycle_criteria = $pdo->query('SELECT * FROM scoring_criteria WHERE cycle_id IS NULL AND position_rank IS NULL ORDER BY kra_category,criteria_id')->fetchAll();
+} elseif ($active_position) {
+    $q = $pdo->prepare('SELECT * FROM scoring_criteria WHERE cycle_id=? AND position_rank=? ORDER BY kra_category,criteria_id');
+    $q->execute([$active_cycle_id,$active_position]);
+    $cycle_criteria = $q->fetchAll();
+    $criteria_source = 'cycle_position';
+}
+$parentOptions = [];
+$referenceCounts = $editing_enabled ? CriteriaSnapshots::defaultReferenceCounts($pdo) : [];
+$activeParents = CriteriaSnapshots::parents($pdo, $active_cycle_id, $active_position ?: null);
+foreach ($activeParents as $parent) {
+    $parentOptions[$parent['kra_category']][] = [
+        'id' => (int)$parent['criteria_id'],
+        'label' => criteriaParentCode($parent) . ' - ' . $parent['criterion_label'],
+    ];
+}
+$activeIds = array_fill_keys(array_column($activeParents, 'criteria_id'), true);
+if ($cycle_criteria) {
+    foreach (CriteriaSnapshots::rows($pdo, $active_cycle_id, $active_position ?: null) as $criterion) {
+        $activeIds[$criterion['criteria_id']] = true;
     }
 }
 $grouped = [];
-foreach ($cycle_criteria as $c) $grouped[$c['kra_category']][] = $c;
-
-// Position counts + auto-seed missing positions
+$inactiveCount = 0;
+foreach ($cycle_criteria as $c) {
+    if (!isset($activeIds[$c['criteria_id']])) {
+        $inactiveCount++;
+        if (!$show_inactive) continue;
+    }
+    $grouped[$c['kra_category']][] = $c;
+}
 $position_counts = [];
 if ($active_cycle_id) {
-    foreach (facultyRanks() as $rank) {
-        $cnt = $pdo->prepare("SELECT COUNT(*) FROM scoring_criteria WHERE cycle_id=? AND position_rank=?");
-        $cnt->execute([$active_cycle_id, $rank]);
-        $position_counts[$rank] = (int)$cnt->fetchColumn();
-    }
-    $missing = array_keys(array_filter($position_counts, fn($c) => $c === 0));
-    if ($missing) {
-        $globals = $pdo->query("SELECT * FROM scoring_criteria WHERE cycle_id IS NULL AND position_rank IS NULL ORDER BY criteria_id")->fetchAll();
-        if ($globals) {
-            $ins = $pdo->prepare("INSERT IGNORE INTO scoring_criteria (cycle_id, position_rank, kra_category, criterion_key, criterion_label, max_points, weight_pct, description, is_active, updated_by) VALUES (?,?,?,?,?,?,?,?,?,?)");
-            foreach ($missing as $rank) {
-                foreach ($globals as $g) {
-                    $ins->execute([$active_cycle_id, $rank, $g['kra_category'], $g['criterion_key'], $g['criterion_label'], $g['max_points'], $g['weight_pct'], $g['description'], $g['is_active'], $_SESSION['user_id']]);
-                }
-                $position_counts[$rank] = count($globals);
-            }
-        }
+    $q = $pdo->prepare('SELECT criterion.position_rank, COUNT(*) AS cnt
+        FROM scoring_criteria criterion
+        LEFT JOIN scoring_criteria parent ON parent.criteria_id=criterion.parent_id
+        WHERE criterion.cycle_id=? AND criterion.is_active=1
+          AND (criterion.parent_id IS NULL OR parent.is_active=1)
+        GROUP BY criterion.position_rank');
+    $q->execute([$active_cycle_id]);
+    $position_counts = $q->fetchAll(PDO::FETCH_KEY_PAIR);
+}
+$q = $pdo->prepare('SELECT revision,change_summary,created_at FROM criteria_snapshots WHERE scope_id=? ORDER BY revision DESC LIMIT 5');
+$q->execute([$active_cycle_id]);
+$criteria_history = $q->fetchAll();
+$historyQuery = ['page' => 'scoring_criteria', 'cycle_id' => $active_cycle_id];
+if ($active_position !== '') $historyQuery['position'] = $active_position;
+if ($show_inactive) $historyQuery['show_inactive'] = 1;
+$versionUrl = static fn(int $revision): string => 'index.php?' . http_build_query($historyQuery + ['revision' => $revision]) . '#criteria-version-details';
+$requestedRevision = filter_var($_GET['revision'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+$version = null;
+$versionError = '';
+if ($requestedRevision) {
+    try {
+        $version = CriteriaSnapshots::versionDetails($pdo, $active_cycle_id, $requestedRevision);
+        if (!$version) $versionError = 'This version is unavailable for the selected criteria.';
+    } catch (Throwable $error) {
+        error_log('SUCFRMS criteria version details: ' . $error->getMessage());
+        $versionError = 'The saved criteria could not be read.';
     }
 }
-
 $rank_groups = [
     'Instructor'   => ['Instructor I','Instructor II','Instructor III'],
     'Asst. Prof.'  => ['Assistant Professor I','Assistant Professor II','Assistant Professor III','Assistant Professor IV'],
@@ -179,6 +122,79 @@ $rank_groups = [
 ?>
 
 <?php showFlash(); ?>
+
+<?php
+// Banner config
+if ($open_cycle) {
+    $banner_icon    = 'bi-lock';
+    $banner_color   = '#92400e';
+    $banner_bg      = '#fffbeb';
+    $banner_border  = '#fde68a';
+    $banner_accent  = '#d97706';
+    $banner_title   = 'Criteria are read-only';
+    $banner_body    = 'Criteria cannot be edited while a cycle is open. Once it closes, you can edit the defaults for future cycles.';
+} elseif ($closed_scope) {
+    $banner_icon    = 'bi-lock';
+    $banner_color   = '#475569';
+    $banner_bg      = '#f8fafc';
+    $banner_border  = '#cbd5e1';
+    $banner_accent  = '#64748b';
+    $banner_title   = 'Read-only — historical cycle';
+    $banner_body    = 'This cycle keeps its own saved criteria version and cannot be modified. Switch to <strong>Default criteria</strong> to configure future cycles.';
+} else {
+    $banner_icon    = 'bi-pencil-square';
+    $banner_color   = '#1e4d8c';
+    $banner_bg      = '#f0f4fb';
+    $banner_border  = '#dbeafe';
+    $banner_accent  = '#1a3a6b';
+    $banner_title   = 'Default criteria — no active cycle';
+    $banner_body    = 'These defaults can be edited freely. Existing and closed cycles retain their own versions. All faculty members are notified when changes are saved.';
+}
+?>
+<div style="background:<?= $banner_bg ?>;border:1px solid <?= $banner_border ?>;border-left:3px solid <?= $banner_accent ?>;
+            padding:0.65rem 1rem;margin-bottom:1rem;display:flex;align-items:center;gap:0.75rem;flex-wrap:wrap;">
+    <div style="width:30px;height:30px;background:<?= $banner_accent ?>;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+        <i class="<?= $banner_icon ?>" style="color:#fff;font-size:0.82rem;"></i>
+    </div>
+    <div style="flex:1;min-width:0;">
+        <div style="font-size:0.75rem;font-weight:700;color:<?= $banner_color ?>;line-height:1.3;"><?= $banner_title ?></div>
+        <div style="font-size:0.72rem;color:<?= $banner_color ?>;opacity:0.85;margin-top:1px;line-height:1.4;"><?= $banner_body ?></div>
+    </div>
+</div>
+<?php if ($criteria_history): ?>
+<details class="criteria-history" id="criteria-history"<?= $requestedRevision ? ' open' : '' ?>>
+    <summary>
+        <span class="criteria-history-icon" aria-hidden="true"><i class="bi bi-clock-history"></i></span>
+        <span class="criteria-history-title">Saved criteria versions</span>
+        <span class="criteria-history-current">Current version <?= (int)$criteria_history[0]['revision'] ?></span>
+        <i class="bi bi-chevron-down criteria-history-chevron" aria-hidden="true"></i>
+    </summary>
+    <ul class="criteria-history-list">
+        <?php foreach ($criteria_history as $revision): $revisionNumber = (int)$revision['revision']; ?>
+        <li>
+            <strong>Version <?= $revisionNumber ?></strong>
+            <span><?= htmlspecialchars($revision['change_summary']) ?></span>
+            <time datetime="<?= htmlspecialchars(str_replace(' ', 'T', $revision['created_at'])) ?>"><?= htmlspecialchars($revision['created_at']) ?></time>
+            <a class="criteria-history-view" href="<?= htmlspecialchars($versionUrl($revisionNumber)) ?>"
+               data-version-revision="<?= $revisionNumber ?>" aria-haspopup="dialog"
+               title="View version <?= $revisionNumber ?> details" aria-label="View version <?= $revisionNumber ?> details"<?= $revisionNumber === $requestedRevision ? ' aria-current="true"' : '' ?>>
+                <i class="bi bi-eye" aria-hidden="true"></i>
+            </a>
+        </li>
+        <?php endforeach; ?>
+    </ul>
+</details>
+<dialog class="criteria-version-popup" id="criteria-version-popup" aria-label="Saved criteria version details" data-cycle-id="<?= $active_cycle_id ?>">
+    <button type="button" class="criteria-history-view criteria-version-popup-close" aria-label="Close version details" title="Close version details" autofocus><i class="bi bi-x-lg" aria-hidden="true"></i></button>
+    <div class="criteria-version-popup-content"></div>
+</dialog>
+<?php endif; ?>
+
+<?php if ($version || $versionError): ?>
+<section class="criteria-version" id="criteria-version-details" aria-labelledby="criteria-version-title">
+    <?php $versionCloseUrl = 'index.php?' . http_build_query($historyQuery) . '#criteria-history'; include __DIR__ . '/../includes/criteria_version_details.php'; unset($versionCloseUrl); ?>
+</section>
+<?php endif; ?>
 
 <!-- Page header -->
 <div style="background:#fff;border:1px solid #e2e8f0;padding:0 1.25rem;margin-bottom:1rem;
@@ -205,21 +221,21 @@ $rank_groups = [
                     <?= ucfirst($current_cycle['status']) ?>
                 </span>
                 <?php if ($active_position): ?>
-                &nbsp;—&nbsp;<strong style="color:#1a3a6b;"><?= htmlspecialchars($active_position) ?></strong>
+                &nbsp;—&nbsp;<strong style="color:#1a3a6b;"><?= htmlspecialchars($active_position ?: 'Default criteria') ?></strong>
                 <?php endif; ?>
                 <?php else: ?>
-                Select a cycle to manage criteria
+                Default criteria for future cycles
                 <?php endif; ?>
             </div>
         </div>
     </div>
-    <?php if ($cycles): ?>
     <form method="GET" action="index.php" style="display:flex;align-items:center;gap:0.4rem;">
         <input type="hidden" name="page" value="scoring_criteria">
         <span style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#94a3b8;">Cycle</span>
         <select name="cycle_id" onchange="this.form.submit()"
                 style="border:1px solid #e2e8f0;padding:0.32rem 0.65rem;font-size:0.78rem;color:#1e293b;background:#fff;outline:none;cursor:pointer;min-width:220px;"
                 onfocus="this.style.borderColor='#1a3a6b'" onblur="this.style.borderColor='#e2e8f0'">
+            <option value="0" <?= $templates_mode ? 'selected' : '' ?>>Default criteria (future cycles)</option>
             <?php foreach ($cycles as $cy): ?>
             <option value="<?= (int)$cy['cycle_id'] ?>" <?= $active_cycle_id===(int)$cy['cycle_id']?'selected':'' ?>>
                 <?= sanitize($cy['cycle_name']) ?> (<?= ucfirst($cy['status']) ?>)
@@ -227,10 +243,9 @@ $rank_groups = [
             <?php endforeach; ?>
         </select>
     </form>
-    <?php endif; ?>
 </div>
 
-<?php if (!$active_cycle_id || !$current_cycle): ?>
+<?php if (!$templates_mode && !$current_cycle): ?>
 <div style="background:#fff;border:1px solid #e2e8f0;padding:3rem;text-align:center;">
     <i class="bi bi-calendar-x" style="font-size:2rem;color:#e2e8f0;display:block;margin-bottom:0.75rem;"></i>
     <div style="font-weight:600;color:#475569;margin-bottom:0.3rem;">No cycle selected</div>
@@ -241,6 +256,7 @@ $rank_groups = [
 <!-- Tab bar + content wrapper -->
 <div style="background:#fff;border:1px solid #e2e8f0;overflow:hidden;">
 
+    <?php if (!$templates_mode): ?>
     <!-- Position selector tab strip -->
     <div style="border-bottom:1px solid #e2e8f0;padding:0 1rem;display:flex;flex-wrap:wrap;gap:2px;align-items:stretch;background:#f8fafc;">
         <!-- Overview tab -->
@@ -289,6 +305,7 @@ $rank_groups = [
         <?php endforeach; ?>
     </div>
 
+    <?php endif; ?>
     <!-- Content area -->
     <div style="padding:1.25rem;">
 
@@ -338,22 +355,44 @@ $rank_groups = [
     <?php elseif ($criteria_source === 'empty_position'): ?>
     <div style="background:#f0f4fb;border:1px solid #dbeafe;border-left:3px solid #1a3a6b;padding:0.75rem 1rem;font-size:0.8rem;color:#1e4d8c;">
         <i class="bi bi-info-circle" style="margin-right:5px;"></i>
-        Criteria for <strong><?= htmlspecialchars($active_position) ?></strong> are being set up. Please refresh the page.
+        Criteria for <strong><?= htmlspecialchars($active_position ?: 'Default criteria') ?></strong> are being set up. Please refresh the page.
     </div>
 
     <?php else: ?>
     <!-- ── Editable position criteria ────────────────────────────────── -->
-    <div style="background:#f0f4fb;border:1px solid #dbeafe;border-left:3px solid #1a3a6b;
-                padding:0.5rem 0.9rem;font-size:0.75rem;color:#1e4d8c;margin-bottom:1rem;
-                display:flex;align-items:center;gap:0.5rem;">
-        <i class="bi bi-pencil-square" style="flex-shrink:0;"></i>
-        Editing <strong><?= htmlspecialchars($active_position) ?></strong> — changes only affect this position in this cycle.
+    <?php
+    $ec_icon   = $editing_enabled ? 'bi-pencil-square' : 'bi-eye';
+    $ec_accent = $editing_enabled ? '#1a3a6b' : '#64748b';
+    $ec_bg     = $editing_enabled ? '#f0f4fb' : '#f8fafc';
+    $ec_border = $editing_enabled ? '#dbeafe' : '#e2e8f0';
+    $ec_note   = $templates_mode ? 'Changes apply to future cycles only.' : 'This cycle maintains its own criteria version.';
+    ?>
+    <div style="background:<?= $ec_bg ?>;border:1px solid <?= $ec_border ?>;border-left:3px solid <?= $ec_accent ?>;
+                padding:0.5rem 0.85rem;margin-bottom:1rem;display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap;">
+        <i class="<?= $ec_icon ?>" style="color:<?= $ec_accent ?>;font-size:0.8rem;flex-shrink:0;"></i>
+        <div style="display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap;font-size:0.75rem;">
+            <span style="font-weight:700;color:<?= $ec_accent ?>;"><?= $editing_enabled ? 'Editing' : 'Viewing' ?></span>
+            <span style="font-size:0.65rem;font-weight:700;padding:1px 7px;background:<?= $editing_enabled ? '#dbeafe' : '#e2e8f0' ?>;color:<?= $editing_enabled ? '#1e4d8c' : '#64748b' ?>;border:1px solid <?= $editing_enabled ? '#bfdbfe' : '#cbd5e1' ?>;">
+                <?= htmlspecialchars($active_position ?: 'Default criteria') ?>
+            </span>
+            <span style="color:#94a3b8;font-size:0.7rem;"><?= $ec_note ?></span>
+            <?php if ($inactiveCount || $show_inactive):
+                $visibilityQuery = ['page'=>'scoring_criteria', 'cycle_id'=>$active_cycle_id];
+                if ($active_position !== '') $visibilityQuery['position'] = $active_position;
+                if (!$show_inactive) $visibilityQuery['show_inactive'] = 1;
+            ?>
+            <a href="index.php?<?= htmlspecialchars(http_build_query($visibilityQuery), ENT_QUOTES) ?>">
+                <?= $show_inactive ? 'Hide inactive criteria' : 'Show inactive criteria (' . $inactiveCount . ')' ?>
+            </a>
+            <?php endif; ?>
+        </div>
     </div>
 
     <?php foreach ($kra_list as $kra):
         $items = $grouped[$kra] ?? [];
         $slug  = strtolower(str_replace([' ','/'],['-',''], $kra));
-        $is_editable = ($criteria_source === 'cycle_position');
+        $is_editable = $editing_enabled;
+        $criteriaColumns = 'minmax(0,1fr) 100px' . ($is_editable ? ' 50px 72px' : '');
     ?>
     <div style="border:1px solid #e2e8f0;margin-bottom:0.5rem;overflow:hidden;">
         <div style="background:#1a3a6b;padding:0.5rem 1rem;display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;"
@@ -376,45 +415,45 @@ $rank_groups = [
 
             <!-- Table header -->
             <?php if (!empty($items)): ?>
-            <div style="display:grid;grid-template-columns:1fr 85px 85px<?= $is_editable?' 50px 72px':'' ?>;gap:0;background:#f8fafc;border-bottom:2px solid #e2e8f0;">
-                <div style="padding:0.35rem 0.9rem;font-size:0.58rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#64748b;">Label</div>
-                <div style="padding:0.35rem 0.6rem;font-size:0.58rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#64748b;text-align:right;">Max Pts</div>
-                <div style="padding:0.35rem 0.6rem;font-size:0.58rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#64748b;text-align:right;">Wt %</div>
+            <div style="display:grid;grid-template-columns:<?= $criteriaColumns ?>;gap:0.4rem;padding:0.35rem 0.9rem;background:#f8fafc;border-bottom:2px solid #e2e8f0;font-size:0.58rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#64748b;">
+                <div>Label</div>
+                <div style="text-align:right;">Maximum Points</div>
                 <?php if ($is_editable): ?>
-                <div style="padding:0.35rem 0.4rem;font-size:0.58rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#64748b;text-align:center;">On</div>
+                <div style="text-align:center;">On</div>
                 <div></div>
                 <?php endif; ?>
             </div>
             <?php endif; ?>
 
             <?php foreach ($items as $c): ?>
-            <form method="POST" id="cForm_<?= $c['criteria_id'] ?>"
+            <?php $rowTag = $is_editable ? 'form' : 'div'; ?>
+            <<?= $rowTag ?><?= $is_editable ? ' method="POST"' : '' ?>
                   style="border-bottom:1px solid #f1f5f9;padding:0.55rem 0.9rem;"
                   onmouseover="this.style.background='#fafafa'" onmouseout="this.style.background=''">
+                <?php if ($is_editable): ?>
                 <input type="hidden" name="action"        value="update_criterion">
                 <input type="hidden" name="criteria_id"   value="<?= $c['criteria_id'] ?>">
-                <input type="hidden" name="back_cycle_id" value="<?= $active_cycle_id ?>">
-                <input type="hidden" name="back_position" value="<?= htmlspecialchars($active_position) ?>">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($_SESSION['criteria_csrf']) ?>">
+                <?php endif; ?>
 
                 <!-- Key pill + label row -->
                 <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:<?= $is_editable?'0.4rem':'0' ?>;">
                     <span style="font-size:0.6rem;color:#94a3b8;font-family:monospace;background:#f1f5f9;padding:1px 5px;white-space:nowrap;flex-shrink:0;"><?= sanitize($c['criterion_key']) ?></span>
+                    <?php if (!isset($activeIds[$c['criteria_id']])): ?>
+                    <span style="font-size:0.68rem;color:#64748b;"><?= $c['is_active'] ? 'Hidden from faculty' : 'Inactive' ?></span>
+                    <?php endif; ?>
                     <?php if (!$is_editable): ?>
                     <span style="font-size:0.8rem;font-weight:600;color:#1e293b;"><?= sanitize($c['criterion_label']) ?></span>
                     <span style="margin-left:auto;font-size:0.75rem;font-weight:700;color:#1a3a6b;white-space:nowrap;"><?= number_format((float)$c['max_points'],2) ?> pts</span>
-                    <span style="font-size:0.68rem;color:#94a3b8;white-space:nowrap;"><?= number_format((float)$c['weight_pct'],1) ?>%</span>
                     <?php endif; ?>
                 </div>
 
                 <?php if ($is_editable): ?>
-                <div style="display:grid;grid-template-columns:1fr 85px 85px 50px 72px;gap:0.4rem;align-items:center;">
+                <div style="display:grid;grid-template-columns:<?= $criteriaColumns ?>;gap:0.4rem;align-items:center;">
                     <input type="text" name="criterion_label" value="<?= sanitize($c['criterion_label']) ?>" required
                            style="border:1px solid #e2e8f0;padding:0.3rem 0.5rem;font-size:0.78rem;width:100%;box-sizing:border-box;outline:none;"
                            onfocus="this.style.borderColor='#1a3a6b'" onblur="this.style.borderColor='#e2e8f0'">
-                    <input type="number" name="max_points" value="<?= $c['max_points'] ?>" step="0.01" min="0" required
-                           style="border:1px solid #e2e8f0;padding:0.3rem 0.4rem;font-size:0.78rem;width:100%;box-sizing:border-box;outline:none;text-align:right;"
-                           onfocus="this.style.borderColor='#1a3a6b'" onblur="this.style.borderColor='#e2e8f0'">
-                    <input type="number" name="weight_pct" value="<?= $c['weight_pct'] ?>" step="0.01" min="0" max="100"
+                    <input type="number" name="max_points" aria-label="Maximum points" value="<?= $c['max_points'] ?>" step="0.01" min="0" required
                            style="border:1px solid #e2e8f0;padding:0.3rem 0.4rem;font-size:0.78rem;width:100%;box-sizing:border-box;outline:none;text-align:right;"
                            onfocus="this.style.borderColor='#1a3a6b'" onblur="this.style.borderColor='#e2e8f0'">
                     <div style="display:flex;align-items:center;justify-content:center;">
@@ -428,12 +467,14 @@ $rank_groups = [
                                 onmouseover="this.style.background='#152d54'" onmouseout="this.style.background='#1a3a6b'">
                             <i class="bi bi-save"></i>
                         </button>
+                        <?php if ($c['is_active']): ?>
                         <button type="button"
                                 style="flex:1;padding:0.3rem;background:#fff;color:#dc2626;border:1px solid #fecaca;font-size:0.7rem;cursor:pointer;display:flex;align-items:center;justify-content:center;"
-                                onclick="showDelCrit(<?= $c['criteria_id'] ?>,<?= $active_cycle_id ?>,'<?= addslashes(htmlspecialchars($c['criterion_label'])) ?>')"
+                                onclick="showDelCrit(<?= (int)$c['criteria_id'] ?>,<?= htmlspecialchars(json_encode($c['criterion_label'], JSON_HEX_TAG), ENT_QUOTES) ?>,<?= $referenceCounts[$c['criteria_id']] ?? 0 ?>)"
                                 onmouseover="this.style.background='#fef2f2'" onmouseout="this.style.background='#fff'">
                             <i class="bi bi-trash"></i>
                         </button>
+                        <?php endif; ?>
                     </div>
                 </div>
                 <!-- Evidence Requirements — bullet list -->
@@ -491,27 +532,28 @@ $rank_groups = [
                 </div>
                 <?php endif; ?>
                 <?php endif; ?>
-            </form>
+            </<?= $rowTag ?>>
+            <?php if ($is_editable): ?>
             <form method="POST" id="delCritForm_<?= $c['criteria_id'] ?>" style="display:none;">
                 <input type="hidden" name="action"        value="delete_criterion">
                 <input type="hidden" name="criteria_id"   value="<?= $c['criteria_id'] ?>">
-                <input type="hidden" name="back_cycle_id" value="<?= $active_cycle_id ?>">
-                <input type="hidden" name="back_position" value="<?= htmlspecialchars($active_position) ?>">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($_SESSION['criteria_csrf']) ?>">
             </form>
+            <?php endif; ?>
             <?php endforeach; ?>
         </div>
     </div>
     <?php endforeach; ?>
 
     <!-- Add criterion -->
-    <?php if ($is_editable ?? false): ?>
+    <?php if ($editing_enabled): ?>
     <div style="border:1px solid #e2e8f0;overflow:hidden;margin-top:0.75rem;">
         <div style="padding:0.5rem 1rem;border-bottom:1px solid #e2e8f0;background:#f8fafc;
                     display:flex;align-items:center;justify-content:space-between;">
             <div style="display:flex;align-items:center;gap:0.5rem;">
                 <span style="font-size:0.72rem;font-weight:700;color:#1a3a6b;">Add Criterion</span>
                 <span style="font-size:0.62rem;font-weight:700;padding:1px 6px;background:#f0f4fb;color:#1a3a6b;border:1px solid #dbeafe;">
-                    <?= htmlspecialchars($active_position) ?>
+                    <?= htmlspecialchars($active_position ?: 'Default criteria') ?>
                 </span>
             </div>
             <button type="button" onclick="toggleAddCrit()"
@@ -523,9 +565,8 @@ $rank_groups = [
         <div id="addCritPanel" style="display:none;padding:0.85rem 1rem;background:#f8fafc;border-top:1px solid #e2e8f0;">
         <form method="POST" id="addCritForm">
             <input type="hidden" name="action"        value="add_criterion">
-            <input type="hidden" name="cycle_id"      value="<?= $active_cycle_id ?>">
-            <input type="hidden" name="position_rank" value="<?= htmlspecialchars($active_position) ?>">
-            <div style="display:grid;grid-template-columns:120px 100px 1fr 90px 90px 36px;gap:0.5rem;align-items:end;margin-bottom:0.4rem;">
+            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($_SESSION['criteria_csrf']) ?>">
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:0.5rem;margin-bottom:0.5rem;">
                 <div>
                     <div style="font-size:0.58rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#64748b;margin-bottom:3px;">KRA <span style="color:#dc2626;">*</span></div>
                     <select name="kra_category" required
@@ -536,6 +577,15 @@ $rank_groups = [
                         <?php endforeach; ?>
                     </select>
                 </div>
+                <div>
+                    <label for="addCritParent" style="display:block;font-size:0.58rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#64748b;margin-bottom:3px;">Parent Criterion <span style="color:#dc2626;">*</span></label>
+                    <select id="addCritParent" name="parent_criterion" required
+                            style="width:100%;border:1px solid #e2e8f0;padding:0.32rem 0.4rem;font-size:0.78rem;background:#fff;">
+                        <option value="" disabled selected>Select a criterion</option>
+                    </select>
+                </div>
+            </div>
+            <div style="display:grid;grid-template-columns:100px minmax(0,1fr) 100px 36px;gap:0.5rem;align-items:end;margin-bottom:0.4rem;">
                 <div>
                     <div style="font-size:0.58rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#64748b;margin-bottom:3px;">Key <span style="color:#dc2626;">*</span></div>
                     <input type="text" name="criterion_key" placeholder="e.g. kra1_x" required
@@ -549,14 +599,8 @@ $rank_groups = [
                            onfocus="this.style.borderColor='#1a3a6b'" onblur="this.style.borderColor='#e2e8f0'">
                 </div>
                 <div>
-                    <div style="font-size:0.58rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#64748b;margin-bottom:3px;">Max Pts <span style="color:#dc2626;">*</span></div>
-                    <input type="number" name="max_points" step="0.01" min="0.01" placeholder="0.00" required
-                           style="width:100%;border:1px solid #e2e8f0;padding:0.32rem 0.4rem;font-size:0.78rem;box-sizing:border-box;"
-                           onfocus="this.style.borderColor='#1a3a6b'" onblur="this.style.borderColor='#e2e8f0'">
-                </div>
-                <div>
-                    <div style="font-size:0.58rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#64748b;margin-bottom:3px;">Weight %</div>
-                    <input type="number" name="weight_pct" step="0.01" min="0" max="100" value="100.00"
+                    <label for="addCritMax" style="display:block;font-size:0.58rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#64748b;margin-bottom:3px;">Maximum Points <span style="color:#dc2626;">*</span></label>
+                    <input type="number" name="max_points" id="addCritMax" step="0.01" min="0.01" placeholder="0.00" required
                            style="width:100%;border:1px solid #e2e8f0;padding:0.32rem 0.4rem;font-size:0.78rem;box-sizing:border-box;"
                            onfocus="this.style.borderColor='#1a3a6b'" onblur="this.style.borderColor='#e2e8f0'">
                 </div>
@@ -615,6 +659,7 @@ $rank_groups = [
 
 <?php endif; // active_cycle_id ?>
 
+<?php if ($editing_enabled): ?>
 <!-- Criterion Review / Confirm Modal -->
 <div id="critReviewModal" style="display:none;position:fixed;inset:0;z-index:99999;background:rgba(15,23,42,0.6);
      align-items:center;justify-content:center;padding:1rem;">
@@ -636,11 +681,10 @@ $rank_groups = [
             </button>
         </div>
 
-        <!-- Warning banner (shown when recalc will happen) -->
-        <div id="crmRecalcWarn" style="display:none;background:#fffbeb;border-bottom:1px solid #fde68a;padding:0.5rem 1rem;
+        <div style="background:#fffbeb;border-bottom:1px solid #fde68a;padding:0.5rem 1rem;
              display:flex;align-items:center;gap:0.5rem;font-size:0.75rem;color:#92400e;">
             <i class="bi bi-exclamation-triangle-fill" style="flex-shrink:0;"></i>
-            Saving will <strong>recalculate scores</strong> for all existing applications in this position and cycle.
+            Saving creates a new default criteria version and notifies faculty members.
         </div>
 
         <!-- Change summary table -->
@@ -686,9 +730,10 @@ $rank_groups = [
             </div>
             <span style="font-weight:700;color:#1a3a6b;font-size:0.88rem;">Delete Criterion</span>
         </div>
-        <p style="color:#475569;font-size:0.8rem;margin-bottom:0.5rem;">Permanently delete:</p>
+        <p style="color:#475569;font-size:0.8rem;margin-bottom:0.5rem;">Deactivate this criterion?</p>
         <p id="delCritName" style="color:#1e293b;font-weight:600;background:#f8fafc;border:1px solid #e2e8f0;padding:0.5rem 0.75rem;font-size:0.8rem;margin-bottom:0.75rem;"></p>
-        <p style="color:#94a3b8;font-size:0.72rem;margin-bottom:1rem;">This action cannot be undone.</p>
+        <p id="delCritReferences" style="color:#475569;font-size:0.8rem;margin-bottom:0.5rem;"></p>
+        <p style="color:#94a3b8;font-size:0.72rem;margin-bottom:1rem;">Existing submissions are retained. You can reactivate the criterion by editing it.</p>
         <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
             <button type="button" onclick="document.getElementById('delCritModal').style.display='none'"
                     style="padding:0.38rem 0.9rem;border:1px solid #e2e8f0;background:#fff;color:#475569;font-size:0.78rem;font-weight:600;cursor:pointer;"
@@ -701,8 +746,92 @@ $rank_groups = [
         </div>
     </div>
 </div>
+<?php endif; ?>
 
 <script>
+const criteriaVersionPopup = document.getElementById('criteria-version-popup');
+if (criteriaVersionPopup && typeof criteriaVersionPopup.showModal === 'function') {
+    const history = document.getElementById('criteria-history');
+    const content = criteriaVersionPopup.querySelector('.criteria-version-popup-content');
+    const close = criteriaVersionPopup.querySelector('.criteria-version-popup-close');
+    let currentRequest;
+    let opener;
+
+    const showVersion = async (event) => {
+        const link = event.target.closest('a[data-version-revision]');
+        if (!link || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+        event.preventDefault();
+        currentRequest?.abort();
+        const request = new AbortController();
+        currentRequest = request;
+
+        const status = document.createElement('p');
+        status.className = 'criteria-version-note criteria-version-popup-status';
+        status.setAttribute('role', 'status');
+        status.textContent = 'Loading version ' + link.dataset.versionRevision + '…';
+        content.replaceChildren(status);
+        content.scrollTop = 0;
+        if (!criteriaVersionPopup.open) {
+            opener = link;
+            criteriaVersionPopup.showModal();
+        }
+        close.focus();
+
+        try {
+            const query = new URLSearchParams({cycle_id: criteriaVersionPopup.dataset.cycleId, revision: link.dataset.versionRevision});
+            const response = await fetch('pages/criteria_version.php?' + query, {signal: request.signal});
+            if (!response.ok) {
+                status.textContent = response.status === 404 ? 'This version is unavailable for the selected criteria.' : 'The version details could not be loaded.';
+                return;
+            }
+            const fragment = document.createElement('template');
+            fragment.innerHTML = await response.text();
+            const details = fragment.content.querySelector('[data-criteria-version-content]');
+            if (!details) throw new Error('Missing version details');
+            if (!request.signal.aborted) content.replaceChildren(...details.childNodes);
+        } catch (error) {
+            if (!request.signal.aborted) status.textContent = 'The version details could not be loaded.';
+        }
+    };
+
+    history.addEventListener('click', showVersion);
+    content.addEventListener('click', showVersion);
+    const dismissVersion = () => {
+        currentRequest?.abort();
+        criteriaVersionPopup.close();
+        opener?.focus({preventScroll: true});
+    };
+    close.addEventListener('click', dismissVersion);
+    criteriaVersionPopup.addEventListener('cancel', (event) => {
+        event.preventDefault();
+        dismissVersion();
+    });
+}
+
+const addCriterionForm = document.getElementById('addCritForm');
+if (addCriterionForm) {
+    const groups = <?= json_encode($parentOptions, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+    const kraSelect = addCriterionForm.elements.namedItem('kra_category');
+    const parentSelect = addCriterionForm.elements.namedItem('parent_criterion');
+    const parentPlaceholder = parentSelect.options[0];
+    const keyInput = addCriterionForm.elements.namedItem('criterion_key');
+    const updateKeyInput = () => {
+        const newParent = parentSelect.value === 'new_parent';
+        keyInput.placeholder = newParent ? 'e.g. E' : 'e.g. kra1_x';
+        keyInput.maxLength = newParent ? 1 : 100;
+        if (newParent) keyInput.pattern = '[A-Za-z]';
+        else keyInput.removeAttribute('pattern');
+    };
+    const updateParentOptions = () => {
+        const options = (groups[kraSelect.value] || []).map(parent => new Option(parent.label, parent.id));
+        parentSelect.replaceChildren(parentPlaceholder, ...options, new Option('Add a new parent criterion', 'new_parent'));
+        parentSelect.selectedIndex = 0;
+        updateKeyInput();
+    };
+    kraSelect.addEventListener('change', updateParentOptions);
+    parentSelect.addEventListener('change', updateKeyInput);
+    updateParentOptions();
+}
 function toggleCriteria(bodyId) {
     var body    = document.getElementById(bodyId);
     var slug    = bodyId.replace('kra-body-', '');
@@ -733,8 +862,10 @@ document.addEventListener('click', function(e) {
     }
 });
 
-function showDelCrit(critId, cycleId, label) {
+function showDelCrit(critId, label, count) {
     document.getElementById('delCritName').textContent = label;
+    document.getElementById('delCritReferences').textContent =
+        `${count} ${count === 1 ? 'entry' : 'entries'} in non-final applications reference this criterion or its children by key.`;
     document.getElementById('delCritModal').style.display = 'flex';
     document.getElementById('delCritConfirmBtn').onclick = function() {
         document.getElementById('delCritModal').style.display = 'none';
@@ -803,22 +934,22 @@ document.addEventListener('submit', function(e) {
 var _crmForm = null;
 
 function openCritReviewModal(form, isNew) {
+    if (isNew && !form.reportValidity()) return;
     _crmForm = form;
     isNew = isNew || false;
 
     // Read values from form
     var label    = (form.querySelector('[name=criterion_label]') || {}).value || '';
     var maxPts   = (form.querySelector('[name=max_points]') || {}).value || '';
-    var weightPct= (form.querySelector('[name=weight_pct]') || {}).value || '';
     var isActive = form.querySelector('[name=is_active]') ? (form.querySelector('[name=is_active]').checked ? 'Yes' : 'No') : '—';
     var key      = (form.querySelector('[name=criteria_id]') ? (form.querySelector('.ev-hidden') ? '' : '') : '');
     // Get key from the displayed monospace span
     var keySpan  = form.querySelector('[style*="monospace"]');
-    var keyVal   = keySpan ? keySpan.textContent.trim() : '—';
+    var keyVal   = isNew ? form.elements.namedItem('criterion_key').value.trim() : (keySpan ? keySpan.textContent.trim() : '—');
     var evidenceRaw = (form.querySelector('.ev-hidden') || {}).value || '';
 
     if (!label || !maxPts) {
-        alert('Please fill in Label and Max Points before saving.');
+        alert('Please fill in Label and Maximum Points before saving.');
         return;
     }
 
@@ -826,19 +957,16 @@ function openCritReviewModal(form, isNew) {
     document.getElementById('crmTitle').textContent = isNew ? 'Add New Criterion' : 'Review Changes';
     document.getElementById('crmSubtitle').textContent = isNew
         ? 'Confirm the new criterion before adding it to the system'
-        : 'Review what will change before applying to all affected applications';
-
-    // Show recalc warning only for existing criteria updates
-    document.getElementById('crmRecalcWarn').style.display = isNew ? 'none' : 'flex';
+        : 'Review the criteria changes for future cycles';
 
     // Build the summary rows
     var rows = [
         ['Key',     keyVal],
         ['Label',   label],
-        ['Max Pts', parseFloat(maxPts).toFixed(2) + ' pts'],
-        ['Weight',  parseFloat(weightPct || 100).toFixed(1) + '%'],
+        ['Maximum Points', parseFloat(maxPts).toFixed(2) + ' pts'],
         ['Active',  isActive],
     ];
+    if (isNew) rows.splice(1, 0, ['Parent', form.elements.namedItem('parent_criterion').selectedOptions[0].text]);
     var rowsHtml = '';
     rows.forEach(function(r, i) {
         var bg = i % 2 === 0 ? '#fff' : '#f8fafc';
@@ -867,8 +995,9 @@ function openCritReviewModal(form, isNew) {
 
     // Wire confirm button
     document.getElementById('crmConfirmBtn').onclick = function() {
+        var form = _crmForm;
         closeCritReviewModal();
-        _crmForm.submit();
+        form.submit();
     };
 
     document.getElementById('critReviewModal').style.display = 'flex';
@@ -886,7 +1015,7 @@ function escHtml(str) {
 }
 
 // Close on backdrop click
-document.getElementById('critReviewModal').addEventListener('click', function(e) {
+document.getElementById('critReviewModal')?.addEventListener('click', function(e) {
     if (e.target === this) closeCritReviewModal();
 });
 </script>

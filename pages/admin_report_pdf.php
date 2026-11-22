@@ -51,12 +51,8 @@ $total_faculty = $pdo->query("SELECT COUNT(*) FROM users WHERE role = 'faculty' 
 $status_counts = [];
 foreach ($apps as $a) $status_counts[$a['status']] = ($status_counts[$a['status']] ?? 0) + 1;
 
-$kra_q = $cycle_id
-    ? $pdo->prepare("SELECT ks.kra_category, AVG(ks.computed_points) as avg_pts FROM kra_submissions ks JOIN applications a ON ks.application_id=a.application_id WHERE a.cycle_id=? GROUP BY ks.kra_category")
-    : $pdo->prepare("SELECT kra_category, AVG(computed_points) as avg_pts FROM kra_submissions GROUP BY kra_category");
-$cycle_id ? $kra_q->execute([$cycle_id]) : $kra_q->execute();
 $kra_avgs = ['Instruction'=>0,'Research'=>0,'Extension'=>0,'Professional Development'=>0];
-foreach ($kra_q->fetchAll() as $k) $kra_avgs[$k['kra_category']] = round($k['avg_pts'], 2);
+foreach (criteriaReportStats($pdo, (int)$cycle_id) as $k) $kra_avgs[$k['kra_category']] = (float)$k['avg_pts'];
 
 $generated_at = date('M d, Y h:i A');
 $admin_name   = $_SESSION['full_name'] ?? 'Administrator';
@@ -157,7 +153,7 @@ $pdf->SectionBar('AVERAGE KRA SCORES - ' . ($selected_cycle['cycle_name'] ?? 'Al
 $pdf->Ln(1);
 
 $kra_labels = ['Instruction'=>'KRA I - Instruction','Research'=>'KRA II - Research','Extension'=>'KRA III - Extension','Professional Development'=>'KRA IV - Prof. Dev.'];
-$kra_max    = ['Instruction'=>100,'Research'=>100,'Extension'=>100,'Professional Development'=>100];
+$kra_max    = kraMaximumPoints();
 $kw = 66; $kx = 10; $ky = $pdf->GetY();
 foreach ($kra_avgs as $cat => $avg) {
     $max = $kra_max[$cat];

@@ -183,6 +183,7 @@ if (!empty($_SESSION['reset_email'])) {
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <link rel="stylesheet" href="../assets/css/square-corners.css">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SUCFRMS | Forgot Password</title>

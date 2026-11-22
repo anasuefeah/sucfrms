@@ -41,6 +41,9 @@ if ($filter === 'pending_decision') {
           AND r.decision IN ('approved','rejected')
     )";
     $params = [$my_uid, $my_uid];
+} elseif ($filter === 'needs_revision') {
+    $base_where = "a.status IN ('needs_revision','rejected') AND a.user_id != ?";
+    $params = [$my_uid];
 } else {
     $base_where = "a.status = ? AND a.user_id != ?";
     $params     = [$filter, $my_uid];
@@ -48,12 +51,8 @@ if ($filter === 'pending_decision') {
 
 $base_where .= " AND EXISTS (
     SELECT 1
-    FROM kra_submissions ks_scope
-    JOIN checker_kra_assignments ka_scope
-      ON ka_scope.cycle_id = a.cycle_id
-     AND ka_scope.kra_category = ks_scope.kra_category
-     AND ka_scope.checker_id = ?
-    WHERE ks_scope.application_id = a.application_id
+    FROM checker_kra_assignments ka_scope
+    WHERE ka_scope.cycle_id = a.cycle_id AND ka_scope.checker_id = ?
 )";
 $params[] = $my_uid;
 
@@ -65,14 +64,6 @@ if ($search) {
 $apps = $pdo->prepare("
     SELECT a.*, u.full_name, u.first_name, u.middle_name, u.last_name, u.employee_id, u.`rank`,
         COALESCE(camp.campus_name, '-') as campus_name, c.cycle_name, c.evaluation_deadline,
-        (SELECT COUNT(*) FROM application_checker_reviews r
-         JOIN users uc ON r.checker_id = uc.user_id
-         WHERE r.application_id = a.application_id AND r.decision = 'approved'
-           AND uc.role IN ('evaluator')) AS approvals_count,
-        (SELECT COUNT(*) FROM application_checker_reviews r
-         JOIN users uc ON r.checker_id = uc.user_id
-         WHERE r.application_id = a.application_id
-           AND uc.role IN ('evaluator')) AS slots_taken,
         (SELECT r2.decision FROM application_checker_reviews r2
          WHERE r2.application_id = a.application_id AND r2.checker_id = ?) AS my_decision,
         (SELECT r2.decided_at FROM application_checker_reviews r2
@@ -91,10 +82,8 @@ $counts = [];
 $counts_stmt = $pdo->prepare("
     SELECT a.status, COUNT(DISTINCT a.application_id) AS cnt
     FROM applications a
-    JOIN kra_submissions ks_scope ON ks_scope.application_id = a.application_id
     JOIN checker_kra_assignments ka_scope
       ON ka_scope.cycle_id = a.cycle_id
-     AND ka_scope.kra_category = ks_scope.kra_category
      AND ka_scope.checker_id = ?
     GROUP BY a.status
 ");
@@ -108,12 +97,8 @@ $my_pending_stmt = $pdo->prepare("
     WHERE a.status IN ('submitted','under_review') AND a.user_id != ?
       AND EXISTS (
           SELECT 1
-          FROM kra_submissions ks_scope
-          JOIN checker_kra_assignments ka_scope
-            ON ka_scope.cycle_id = a.cycle_id
-           AND ka_scope.kra_category = ks_scope.kra_category
-           AND ka_scope.checker_id = ?
-          WHERE ks_scope.application_id = a.application_id
+          FROM checker_kra_assignments ka_scope
+          WHERE ka_scope.cycle_id = a.cycle_id AND ka_scope.checker_id = ?
       )
       AND NOT EXISTS (
           SELECT 1 FROM application_checker_reviews r
@@ -133,14 +118,18 @@ $my_reviewed_stmt = $pdo->prepare("
 $my_reviewed_stmt->execute([$my_uid]);
 $my_reviewed_count = (int)$my_reviewed_stmt->fetchColumn();
 
-$total_checkers_count = max(1, (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role='evaluator' AND status='active'")->fetchColumn());
-
-// Pre-load all slot decisions for displayed apps to avoid N+1
+// Include every assigned evaluator, including those who have not opened the application.
 $all_app_ids = array_column($apps, 'application_id');
 $slot_map = [];
 if ($all_app_ids) {
     $in = implode(',', array_map('intval', $all_app_ids));
-    $slot_rows = $pdo->query("SELECT application_id, decision FROM application_checker_reviews WHERE application_id IN ($in) ORDER BY created_at ASC")->fetchAll();
+    $slot_rows = $pdo->query("SELECT DISTINCT a.application_id, u.user_id, r.decision
+        FROM applications a
+        JOIN checker_kra_assignments ka ON ka.cycle_id = a.cycle_id
+        JOIN users u ON u.user_id = ka.checker_id
+        LEFT JOIN application_checker_reviews r ON r.application_id = a.application_id AND r.checker_id = u.user_id
+        WHERE a.application_id IN ($in) AND u.role = 'evaluator' AND u.status = 'active'
+        ORDER BY a.application_id, u.user_id")->fetchAll();
     foreach ($slot_rows as $sr) {
         $slot_map[$sr['application_id']][] = $sr['decision'];
     }
@@ -248,7 +237,6 @@ foreach ($tabs as $key => $t):
             </thead>
             <tbody>
             <?php foreach ($apps as $a):
-                $approvals = (int)$a['approvals_count'];
                 $my_dec    = $a['my_decision'] ?? null;
                 $score     = (float)$a['weighted_score'];
                 $wait      = (int)($a['days_waiting'] ?? 0);
@@ -266,7 +254,7 @@ foreach ($tabs as $key => $t):
                 <!-- Faculty -->
                 <td style="padding:0.85rem 1rem;vertical-align:middle;">
                     <div style="display:flex;align-items:center;gap:0.65rem;">
-                        <div style="width:36px;height:36px;border-radius:50%;background:<?= $av_bg ?>;display:flex;align-items:center;justify-content:center;font-size:0.78rem;font-weight:700;color:#fff;flex-shrink:0;">
+                        <div class="account-avatar" style="width:36px;height:36px;border-radius:50%;background:<?= $av_bg ?>;display:flex;align-items:center;justify-content:center;font-size:0.78rem;font-weight:700;color:#fff;flex-shrink:0;">
                             <?= $initials ?>
                         </div>
                         <div>
@@ -307,15 +295,17 @@ foreach ($tabs as $key => $t):
 
                 <!-- Progress -->
                 <td style="padding:0.85rem 0.75rem;text-align:center;vertical-align:middle;">
-                    <?php $slot_decisions = $slot_map[$a['application_id']] ?? []; ?>
+                    <?php
+                    $slot_decisions = $slot_map[$a['application_id']] ?? [];
+                    $approvals = count(array_keys($slot_decisions, 'approved', true));
+                    ?>
                     <div style="display:flex;gap:3px;justify-content:center;align-items:center;">
-                        <?php for ($i = 0; $i < $total_checkers_count; $i++):
-                            $d = $slot_decisions[$i] ?? null;
+                        <?php foreach ($slot_decisions as $i => $d):
                             $dot = $d === 'approved' ? '#1a3a6b' : ($d === 'rejected' ? '#475569' : '#e2e8f0');
                         ?>
                         <span style="width:9px;height:9px;border-radius:50%;display:inline-block;background:<?= $dot ?>;" title="Evaluator <?= $i+1 ?>: <?= $d ?? 'pending' ?>"></span>
-                        <?php endfor; ?>
-                        <span style="font-size:0.65rem;color:#94a3b8;margin-left:3px;"><?= $approvals ?>/<?= $total_checkers_count ?></span>
+                        <?php endforeach; ?>
+                        <span style="font-size:0.65rem;color:#94a3b8;margin-left:3px;"><?= $approvals ?>/<?= count($slot_decisions) ?></span>
                     </div>
                 </td>
 

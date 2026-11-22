@@ -68,6 +68,47 @@ class KraRevisionWorkflow
             ->execute([$applicationId, $submissionId]);
     }
 
+    private static function unsavedEntryLabel(array $entry): string
+    {
+        $parts = array_map('trim', explode('|||', $entry['remarks'] ?? ''));
+        $category = $entry['kra_category'];
+        $type = $parts[0] ?? '';
+        $description = $parts[1] ?? '';
+
+        if ($type === 'CUSTOM') {
+            $title = ($parts[3] ?? '') ?: 'Custom criterion';
+            $detail = $parts[5] ?? '';
+        } elseif ($category === 'Instruction' && in_array($type, ['A-set-sem', 'A-sef-sem', 'A-set-sef-sem', 'A-set-sef'], true)) {
+            $title = match ($type) {
+                'A-set-sem' => 'Student Evaluation of Teaching (SET)',
+                'A-sef-sem' => 'Supervisor Evaluation Form (SEF)',
+                default => 'Teaching Evaluation (SET and SEF)',
+            };
+            $semester = match ($parts[2] ?? '') {
+                '1' => '1st semester',
+                '2' => '2nd semester',
+                default => '',
+            };
+            $detail = $type === 'A-set-sef' ? '' : implode(', ', array_filter([$description, $semester]));
+        } else {
+            [$title, $detail] = match ($category) {
+                'Research' => [kraCleanEntryDisplayTitle($type), ($parts[4] ?? '') ?: $description],
+                'Extension' => [kraExtensionSubtypeDisplayTitle($type), $description],
+                'Professional Development' => [match ($type) {
+                    'D-prior-academic' => 'Academic Service',
+                    'D-prior-industry' => 'Industry Experience',
+                    default => kraProfessionalDevelopmentDisplayTitle($type, $parts[2] ?? ''),
+                }, $description],
+                default => [kraInstructionDisplayTitle($type, $description) ?: kraCleanEntryDisplayTitle($type), ''],
+            };
+        }
+
+        $name = implode(' — ', array_filter([$title, $detail !== $title ? $detail : '']));
+        $name = $name !== '' ? mb_strimwidth(preg_replace('/\s+/', ' ', $name), 0, 120, '…', 'UTF-8')
+            : 'entry #' . (int)$entry['submission_id'];
+        return $category . ' — ' . $name;
+    }
+
     public static function resubmit(PDO $pdo, int $applicationId): int
     {
         self::ensureSchema($pdo);
@@ -82,15 +123,11 @@ class KraRevisionWorkflow
                 WHERE application_id=? AND revision_status='needs_revision' FOR UPDATE");
             $query->execute([$applicationId]);
             $flagged = $query->fetchAll(PDO::FETCH_ASSOC);
+            if (!$flagged) throw new RuntimeException('There are no flagged entries to resubmit.');
             $unsaved = [];
             foreach ($flagged as $entry) {
                 if (empty($entry['revision_saved_at'])) {
-                    $label = $entry['kra_category'] . ' entry #' . (int)$entry['submission_id'];
-                    $parts = explode('|||', $entry['remarks'] ?? '');
-                    if (in_array($parts[0] ?? '', ['A-set-sem', 'A-sef-sem'], true)) {
-                        $label .= ' (' . ($parts[0] === 'A-set-sem' ? 'SET' : 'SEF') . ', semester ' . (int)($parts[2] ?? 0) . ')';
-                    }
-                    $unsaved[] = $label;
+                    $unsaved[] = self::unsavedEntryLabel($entry);
                 }
             }
             if ($unsaved) {

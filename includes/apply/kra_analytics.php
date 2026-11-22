@@ -1,9 +1,9 @@
 <?php
 $analytics_kras = [
-    'Instruction' => ['label' => 'KRA I', 'tab' => 'instruction', 'max' => 100.0],
-    'Research' => ['label' => 'KRA II', 'tab' => 'research', 'max' => 100.0],
-    'Extension' => ['label' => 'KRA III', 'tab' => 'extension', 'max' => 100.0],
-    'Professional Development' => ['label' => 'KRA IV', 'tab' => 'profdev', 'max' => 100.0],
+    'Instruction' => ['label' => 'KRA I', 'tab' => 'instruction', 'max' => kraMaximumPoints()['Instruction']],
+    'Research' => ['label' => 'KRA II', 'tab' => 'research', 'max' => kraMaximumPoints()['Research']],
+    'Extension' => ['label' => 'KRA III', 'tab' => 'extension', 'max' => kraMaximumPoints()['Extension']],
+    'Professional Development' => ['label' => 'KRA IV', 'tab' => 'profdev', 'max' => kraMaximumPoints()['Professional Development']],
 ];
 
 $analytics_score = getApplicationScoreSummary($pdo, (int)$app_id);
@@ -59,36 +59,7 @@ foreach ($analytics_entries as $entry) {
     }
 }
 
-$analytics_load_criteria = function (string $kra_name) use ($pdo, $cycle_id_for_criteria, $target_position): array {
-    $rows_by_key = [];
-    $order = [];
-    $merge = function (array $rows) use (&$rows_by_key, &$order): void {
-        foreach ($rows as $row) {
-            $key = trim((string)($row['criterion_key'] ?? ''));
-            if ($key === '') $key = 'label:' . trim((string)($row['criterion_label'] ?? ''));
-            if (!isset($rows_by_key[$key])) $order[] = $key;
-            $rows_by_key[$key] = $row;
-        }
-    };
-
-    $stmt = $pdo->prepare("SELECT * FROM scoring_criteria WHERE cycle_id IS NULL AND position_rank IS NULL AND kra_category=? AND is_active=1 ORDER BY criteria_id");
-    $stmt->execute([$kra_name]);
-    $merge($stmt->fetchAll(PDO::FETCH_ASSOC));
-
-    if ($cycle_id_for_criteria) {
-        $stmt = $pdo->prepare("SELECT * FROM scoring_criteria WHERE cycle_id=? AND position_rank IS NULL AND kra_category=? AND is_active=1 ORDER BY criteria_id");
-        $stmt->execute([$cycle_id_for_criteria, $kra_name]);
-        $merge($stmt->fetchAll(PDO::FETCH_ASSOC));
-    }
-
-    if ($cycle_id_for_criteria && $target_position) {
-        $stmt = $pdo->prepare("SELECT * FROM scoring_criteria WHERE cycle_id=? AND position_rank=? AND kra_category=? AND is_active=1 ORDER BY criteria_id");
-        $stmt->execute([$cycle_id_for_criteria, $target_position, $kra_name]);
-        $merge($stmt->fetchAll(PDO::FETCH_ASSOC));
-    }
-
-    return array_values(array_filter(array_map(fn($key) => $rows_by_key[$key] ?? null, $order)));
-};
+$analytics_load_criteria = fn(string $kra_name): array => CriteriaSnapshots::rows($pdo,(int)$cycle_id_for_criteria,$target_position,$kra_name);
 
 $analytics_criteria = [];
 $analytics_configured_count = 0;
@@ -244,9 +215,11 @@ $add_problem = static function (array &$rows, string $status, string $title, str
 if (isset($app['evaluation_period_ok']) && !(bool)$app['evaluation_period_ok']) {
     $add_problem($analytics_problem_rows, 'Blocking issue', 'Evaluation period issue found.', 'The application is linked to a cycle that is no longer valid for evaluation.', 'Ask the administrator to check the active cycle.');
 }
-$double_flags = json_decode($app['double_counting_flags'] ?? '[]', true) ?: [];
-foreach ($double_flags as $flag) {
-    $add_problem($analytics_problem_rows, 'Needs attention', 'Possible double counting: ' . ($flag['title'] ?? 'saved evidence'), 'The same work may have been listed in more than one place.', 'Open the linked entries and keep the work only where it belongs.');
+$evidence_flags = json_decode($app['double_counting_flags'] ?? '[]', true) ?: [];
+foreach ($evidence_flags as $flag) {
+    if (($flag['type'] ?? '') !== 'previous_unsuccessful_reuse') continue;
+    $add_problem($analytics_problem_rows, 'Needs attention', 'Evidence from a previous unsuccessful application',
+        $flag['message'] ?? ($flag['title'] ?? 'Saved evidence'), 'Review the evidence for this entry.');
 }
 foreach (($analytics_score['pending_documentation'] ?? []) as $item) {
     $add_problem($analytics_problem_rows, 'Needs attention', 'Pending documentation.', (string)$item, 'Upload the missing file or complete the entry details.');
@@ -291,12 +264,12 @@ $has_prior_cycles = count($analytics_cycles) > 1;
   <?php if (empty($analytics_entries)): ?>
     <div class="analytics-card" style="text-align:center;padding:2rem;">
       <i class="bi bi-clipboard-data" style="font-size:2rem;color:#94a3b8;display:block;margin-bottom:0.6rem;"></i>
-      <div style="font-weight:800;color:#1a3a6b;">Start filling in your Self Assessment and your dashboard will appear here.</div>
+      <div style="font-weight:800;color:#1a3a6b;">Start filling in your Self-Assessment and your dashboard will appear here.</div>
     </div>
   <?php else: ?>
     <div class="analytics-grid">
       <div class="analytics-card">
-        <div style="font-size:0.76rem;color:#64748b;font-weight:800;">Self assessment progress</div>
+        <div style="font-size:0.76rem;color:#64748b;font-weight:800;">Self-Assessment progress</div>
         <div style="font-size:1.65rem;font-weight:900;color:#1e4d8c;"><?= $analytics_progress_pct ?>%</div>
         <div style="font-size:0.78rem;color:#64748b;"><?= $completed_saved_entries ?> saved entr<?= $completed_saved_entries === 1 ? 'y' : 'ies' ?> out of <?= $analytics_progress_denom ?> configured item<?= $analytics_progress_denom === 1 ? '' : 's' ?>.</div>
       </div>

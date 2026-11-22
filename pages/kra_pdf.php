@@ -75,10 +75,9 @@ if ($kra_param === 'all' || !in_array($kra_param, $valid_kras)) {
     $kras_to_print = [$kra_param];
 }
 
-// Retrieve all KRA submissions
-$subs_raw = $pdo->prepare("SELECT * FROM kra_submissions WHERE application_id=? ORDER BY kra_category, submitted_at ASC");
-$subs_raw->execute([$app_id]);
-$all_subs = $subs_raw->fetchAll();
+// Include only claims that contribute to the scoring form.
+$all_subs = ClaimReview::loadEntries($pdo, (int)$app_id);
+$all_subs = ClaimReview::scoringEntries($app, $all_subs, ClaimReview::assess($app, $all_subs));
 
 // Group submissions by category
 $subs_by_cat = [];
@@ -107,7 +106,8 @@ try {
 }
 
 try {
-    $pdf = renderKraPdf($faculty, $subs_by_cat, $kras_to_print, 'Carlos Hilado Memorial State University', count($kras_to_print) > 1 ? $iss : null, $iss);
+    $criteria = CriteriaSnapshots::rows($pdo, (int)$cycle['cycle_id'], ($app['position_title'] ?? '') ?: ($faculty['rank'] ?? null));
+    $pdf = renderKraPdf($faculty, $subs_by_cat, $kras_to_print, 'Carlos Hilado Memorial State University', count($kras_to_print) > 1 ? $iss : null, $iss, $criteria);
 
     ob_end_clean();
 

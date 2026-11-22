@@ -18,6 +18,7 @@ require_once __DIR__ . '/kra3_scorer.php';
 require_once __DIR__ . '/kra4_scorer.php';
 require_once __DIR__ . '/autosubrank.php';
 require_once __DIR__ . '/entry_scores.php';
+require_once __DIR__ . '/../claim_review.php';
 
 class Orchestrator
 {
@@ -55,39 +56,22 @@ class Orchestrator
             return ['error' => 'Application not found', 'applicant_id' => $application_id];
         }
 
-        $rank           = $app['position_title'] ?? $app['current_rank'] ?? '';
+        $rank           = ($app['position_title'] ?? '') ?: ($app['current_rank'] ?? '');
         $current_rank   = $app['current_rank'] ?? '';
         $faculty_id     = (int)$app['faculty_user_id'];
 
         EntryScores::refreshDraft($pdo, $application_id);
 
-        // -- Load all KRA submissions ---------------------------------
-        $subs_stmt = $pdo->prepare("
-            SELECT s.*,
-                   GROUP_CONCAT(ef.original_filename ORDER BY ef.evidence_id SEPARATOR '|||') AS evidence_names,
-                   GROUP_CONCAT(ef.file_size_bytes ORDER BY ef.evidence_id SEPARATOR '|||') AS evidence_sizes
-            FROM kra_submissions s
-            LEFT JOIN kra_evidence_files ef ON ef.submission_id = s.submission_id
-            WHERE s.application_id = ?
-            GROUP BY s.submission_id
-            ORDER BY s.submitted_at ASC
-        ");
-        $subs_stmt->execute([$application_id]);
-        $all_subs = $subs_stmt->fetchAll(\PDO::FETCH_ASSOC);
-
-        $subs_by_cat = [];
-        foreach ($all_subs as $s) {
-            $subs_by_cat[$s['kra_category']][] = $s;
+        $all_subs = \ClaimReview::loadEntries($pdo, $application_id);
+        $claimReview = \ClaimReview::assess($app, $all_subs);
+        $eval_ok = !empty($app['cycle_id']) && !empty($app['cycle_status']);
+        $double_flags = self::checkPreviousUnsuccessfulReuse($pdo, $app);
+        foreach ($claimReview['unresolved'] as $pair) {
+            $double_flags[] = ['type' => 'possible_duplicate', 'message' => 'Possible duplicate claim: ' . $pair['match'] . '. Resolve it under Duplicate Claim Review.'];
         }
-
-    // -- STEP 1: Evaluation period check --------------------------
-    $eval_ok = self::checkEvaluationPeriod($app);
-
-        // -- STEP 2: Double-counting check ----------------------------
-        $double_flags = array_merge(
-            self::checkDoubleCounting($all_subs),
-            self::checkPreviousUnsuccessfulReuse($pdo, $app)
-        );
+        $scoring_subs = \ClaimReview::scoringEntries($app, $all_subs, $claimReview);
+        $subs_by_cat = [];
+        foreach ($scoring_subs as $entry) $subs_by_cat[$entry['kra_category']][] = $entry;
 
         // -- STEP 3: Admin duty exclusion -----------------------------
         $admin_flags = self::checkAdminDutyExclusion($subs_by_cat);
@@ -113,6 +97,12 @@ class Orchestrator
         KRA3Scorer::setCriteriaContext((int)($app['cycle_id'] ?? 0), $rank ?: null);
         KRA4Scorer::setPdo($pdo);
         KRA4Scorer::setCriteriaContext((int)($app['cycle_id'] ?? 0), $rank ?: null);
+        if (($app['cycle_status'] ?? '') === 'open' && !in_array($app['status'], ['approved','reclassified','admin_rejected'], true)) {
+            $criteria = \CriteriaSnapshots::rows($pdo, (int)$app['cycle_id'], $rank ?: null);
+            foreach ($subs_by_cat as $category => $entries) {
+                $subs_by_cat[$category] = kraCurrentCriterionEntries($entries, array_filter($criteria, static fn(array $row): bool => $row['kra_category'] === $category));
+            }
+        }
         $kra1 = KRA1Scorer::score($subs_by_cat['Instruction'] ?? []);
         $kra2 = KRA2Scorer::score($subs_by_cat['Research'] ?? []);
         $kra3 = KRA3Scorer::score($subs_by_cat['Extension'] ?? []);
@@ -120,7 +110,8 @@ class Orchestrator
         // Auto Sub Rank is applied to the base rank before point-based
         // reclassification. This preliminary run determines whether a doctorate
         // should be excluded from ordinary KRA IV points before KRA IV is scored.
-        $auto_subrank_pre = AutoSubrank::compute($pdo, $app, [], 0.0, 0);
+        $eligibleProfessionalDevelopment = $subs_by_cat['Professional Development'] ?? [];
+        $auto_subrank_pre = AutoSubrank::compute($pdo, $app, [], 0.0, 0, $eligibleProfessionalDevelopment);
         $auto_bump_pre    = (int)($auto_subrank_pre['bonus_increment'] ?? 0);
         $doctorate_points_for_kra4 = in_array(($auto_subrank_pre['doctorate_mode'] ?? ''), ['points_only', 'blocked_historical', 'not_eligible'], true)
             && (float)($auto_subrank_pre['doctorate_points'] ?? 0) > 0
@@ -169,7 +160,7 @@ class Orchestrator
         // -- STEP 6: Auto Sub Rank -------------------------------------
         // Re-run with the final score only to keep the explanatory text fresh.
         // Trigger decisions are not score-threshold based under JC01 s.2026.
-        $auto_subrank = AutoSubrank::compute($pdo, $app, $kra4, $weighted_score_pass2, $sub_rank_increment_pass2);
+        $auto_subrank = AutoSubrank::compute($pdo, $app, $kra4, $weighted_score_pass2, $sub_rank_increment_pass2, $eligibleProfessionalDevelopment);
         $auto_bump    = $auto_subrank['bonus_increment']; // +0, +1, or +2
         $final_rank   = $reclassified_rank;
 
@@ -233,7 +224,7 @@ class Orchestrator
 
         // -- Pre-evaluation summary ------------------------------------
         $pre_eval = [
-            'eligible'           => $eval_ok && !($prof_gate['applies'] && $prof_gate['disqualified']),
+            'eligible'           => $eval_ok && $claimReview['ready'] && !($prof_gate['applies'] && $prof_gate['disqualified']),
             'documents_present'  => $doc_check['all_present'],
             'entries_with_files' => $doc_check['entries_with_files'],
             'entries_missing_files' => $doc_check['entries_missing_files'],
@@ -312,57 +303,6 @@ class Orchestrator
                 'computed_rank'     => $target_rank,
             ],
         ];
-    }
-
-    // -- STEP 1: Evaluation period ------------------------------------
-    private static function checkEvaluationPeriod(array $app): bool
-    {
-        // Cycle timing is controlled entirely by the admin opening/closing the cycle.
-        // An application is in-period if its cycle exists and is not archived.
-        // 'open' and 'closed' are both valid (closed means submissions ended,
-        // not that the evaluation is void). Only 'archived' cycles are out-of-scope.
-        $cycle_status = $app['cycle_status'] ?? null;
-        if ($cycle_status === null) return true;        // no cycle attached  -  assume ok
-        return $cycle_status !== 'archived';
-    }
-
-    // -- STEP 2: Double-counting check -------------------------------
-    private static function checkDoubleCounting(array $all_subs): array
-    {
-        $flags = [];
-        // Build map of (criterion_key or title) -> [categories seen in]
-        $title_map = [];
-        foreach ($all_subs as $s) {
-            $parts = explode('|||', $s['remarks'] ?? '');
-            // title/description-like field varies by category:
-            // Research now stores developers|||affiliation|||area|||specific_contribution|||contrib,
-            // so the closest match for a paper's identity is Specific Contribution ($parts[4]).
-            // Instruction B/C and Professional Development still keep their descriptive text at $parts[1].
-            $title = trim(($s['kra_category'] === 'Research' ? ($parts[4] ?? '') : ($parts[1] ?? '')));
-            if ($title === '' || strlen($title) < 5) continue;
-            $cat = $s['kra_category'];
-            $title_map[$title][] = $cat;
-        }
-        foreach ($title_map as $title => $cats) {
-            $unique_cats = array_unique($cats);
-            if (count($unique_cats) < 2) continue;
-
-            // The ONE confirmed exception: paper both presented (KRA IV Crit B)
-            // AND later published in indexed journal (KRA II Crit A).
-            $has_kra2 = in_array('Research', $unique_cats);
-            $has_kra4 = in_array('Professional Development', $unique_cats);
-            if (count($unique_cats) === 2 && $has_kra2 && $has_kra4) {
-                // This is the allowed exception  -  do not flag, just note it
-                continue;
-            }
-
-            $flags[] = [
-                'title'      => $title,
-                'categories' => $unique_cats,
-                'message'    => "Document appears in multiple KRA categories  -  flag for manual review before scoring proceeds.",
-            ];
-        }
-        return $flags;
     }
 
     private static function checkPreviousUnsuccessfulReuse(\PDO $pdo, array $app): array
@@ -486,7 +426,6 @@ class Orchestrator
      * under_review          -> 'local_checker_review'
      * needs_revision        -> 'local_checker_review'
      * rejected (returned)   -> 'local_checker_review'  (awaiting resubmission)
-     * talisay_review        -> 'main_checker_review'
      * approved              -> 'completed'
      * reclassified          -> 'completed'
      * admin_rejected        -> 'completed'             (final decision)
@@ -501,7 +440,6 @@ class Orchestrator
             'needs_revision',
             'rejected',
             'edit_requested' => 'local_checker_review',
-            'talisay_review' => 'main_checker_review',
             'approved',
             'reclassified',
             'admin_rejected' => 'completed',
@@ -578,6 +516,12 @@ class Orchestrator
             'bumped_base_rank'   => $rank_calc['auto_bumped_base_rank'] ?? $rank_calc['reclassified_rank'], // back-compat alias
             'cycle_id'           => $app['cycle_id'] ?? null,
             'application_status' => $app['status'] ?? '',
+            'parent_scores' => [
+                'Instruction' => $kra1['parent_scores'],
+                'Research' => $kra2['parent_scores'],
+                'Extension' => $kra3['parent_scores'],
+                'Professional Development' => $kra4['parent_scores'],
+            ],
             'kra_scores' => [
                 'kra1' => ['subtotal' => $kra1['subtotal'], 'cap' => $kra1['cap'],
                            'crit_a' => $kra1['criterion_a'], 'crit_b' => $kra1['criterion_b'], 'crit_c' => $kra1['criterion_c']],
@@ -652,10 +596,13 @@ class Orchestrator
             'config_incomplete'     => "TEXT DEFAULT NULL",
             'orchestrator_flags'    => "TEXT DEFAULT NULL",
         ];
-        foreach ($cols as $col => $def) {
-            try {
-                $pdo->exec("ALTER TABLE applications ADD COLUMN {$col} {$def}");
-            } catch (\Exception $e) { /* already exists */ }
+        // MySQL schema changes can commit an open score or criteria transaction.
+        if (!$pdo->inTransaction()) {
+            foreach ($cols as $col => $def) {
+                try {
+                    $pdo->exec("ALTER TABLE applications ADD COLUMN {$col} {$def}");
+                } catch (\Exception $e) { /* already exists */ }
+            }
         }
 
         try {
@@ -672,7 +619,8 @@ class Orchestrator
                 orchestrator_flags    = :orchestrator_flags
             WHERE application_id = :application_id")
             ->execute(array_merge($data, ['application_id' => $app_id]));
-        } catch (\Exception $e) {
+        } catch (\PDOException $e) {
+            if ($e->getCode() !== '42S22') throw $e;
             // Fallback to minimal update if new columns not yet available
             $pdo->prepare("UPDATE applications SET
                 total_score=:grand_total, weighted_score=:weighted_score,

@@ -70,6 +70,7 @@ function kraEntryMatchesCriterion(string $category, array $parts, array $criteri
     }
     if ($category === 'Professional Development' && isset($pdMap[$key])) {
         return $type === $pdMap[$key]['type']
+            && (!isset($pdMap[$key]['role']) || strcasecmp(trim($parts[1] ?? ''), $pdMap[$key]['role']) === 0)
             && ($pdMap[$key]['sub'] === '' || (string)($parts[2] ?? '') === $pdMap[$key]['sub']);
     }
     return false;

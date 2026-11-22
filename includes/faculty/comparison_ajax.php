@@ -149,9 +149,8 @@ try {
 }
 
 $stage1_reviews = array_values(array_filter($reviews, fn($r) => $r['role'] === 'evaluator'));
-$stage2_reviews = [];
 
-// For each submission, determine stage (stage1 = Subcommittee, stage2 = ITC)
+// Build the evaluator comparison for each submission.
 // Use verified_by role to classify the adjustment stage
 $submissions = [];
 foreach ($subs as $s) {
@@ -159,7 +158,6 @@ foreach ($subs as $s) {
     $vby_info = $vby_id ? ($checker_names[$vby_id] ?? null) : null;
 
     $checker_adjusted  = ($vby_id !== null) && ((float)$s['computed_points'] !== (float)$s['faculty_original_score']);
-    $is_stage2_checker = false;
 
     $submissions[] = [
         'submission_id'          => (int)$s['submission_id'],
@@ -168,7 +166,7 @@ foreach ($subs as $s) {
         'current_score'          => (float)$s['computed_points'],
         'checker_adjusted'       => $checker_adjusted,
         'adjusted_by'            => $vby_info ? $vby_info['name'] : null,
-        'adjusted_stage'         => $checker_adjusted ? ($is_stage2_checker ? 'stage2' : 'stage1') : null,
+        'adjusted_stage'         => $checker_adjusted ? 'stage1' : null,
         'verified'               => (bool)$s['verified'],
         'revision_status'        => $s['revision_status'],
         'revision_note'          => $s['revision_note'],
@@ -178,37 +176,26 @@ foreach ($subs as $s) {
 }
 
 // Compute weighted scores
-$kra_caps = ['Instruction' => 100, 'Research' => 100, 'Extension' => 100, 'Professional Development' => 100];
+$kra_caps = kraMaximumPoints();
 $faculty_raw = [];
 $checker_raw = [];
-$stage2_raw  = [];
 
 foreach ($submissions as $s) {
     $cat = $s['kra_category'];
     $faculty_raw[$cat] = ($faculty_raw[$cat] ?? 0) + $s['faculty_score'];
-    // Use current_score for stage1 if adjusted by stage1, else faculty_score
-    if ($s['adjusted_stage'] === 'stage2') {
-        $checker_raw[$cat] = ($checker_raw[$cat] ?? 0) + $s['faculty_score']; // stage1 unchanged
-        $stage2_raw[$cat]  = ($stage2_raw[$cat]  ?? 0) + $s['current_score'];
-    } else {
-        $checker_raw[$cat] = ($checker_raw[$cat] ?? 0) + $s['current_score'];
-        $stage2_raw[$cat]  = ($stage2_raw[$cat]  ?? 0) + $s['current_score'];
-    }
+    $checker_raw[$cat] = ($checker_raw[$cat] ?? 0) + $s['current_score'];
 }
 // Cap each KRA
 foreach ($kra_caps as $cat => $cap) {
     $faculty_raw[$cat] = min($cap, $faculty_raw[$cat] ?? 0);
     $checker_raw[$cat] = min($cap, $checker_raw[$cat] ?? 0);
-    $stage2_raw[$cat]  = min($cap, $stage2_raw[$cat]  ?? 0);
 }
 
 $faculty_rank    = $app['faculty_rank'] ?? '';
 $official_summary = getApplicationScoreSummary($pdo, (int)$app_id);
 $ws_faculty      = computeWeightedScore($faculty_raw, $faculty_rank)['weighted_score'];
 $ws_stage1       = $official_summary['weighted_score'];
-$ws_stage2       = !empty($stage2_reviews) ? $official_summary['weighted_score'] : null;
 
-$has_stage2      = !empty($stage2_reviews);
 $has_stage1      = !empty($stage1_reviews);
 
 // Build checker summary for display
@@ -218,11 +205,6 @@ $stage1_info = array_map(fn($r) => [
     'remarks'  => $r['remarks'],
 ], $stage1_reviews);
 
-$stage2_info = array_map(fn($r) => [
-    'name'     => checkerDisplayLabel($r),
-    'decision' => $r['decision'],
-    'remarks'  => $r['remarks'],
-], $stage2_reviews);
 
 echo json_encode([
     'ok'           => true,
@@ -230,12 +212,9 @@ echo json_encode([
     'status'       => $app['status'],
     'submissions'  => $submissions,
     'has_stage1'   => $has_stage1,
-    'has_stage2'   => $has_stage2,
     'stage1_info'  => $stage1_info,
-    'stage2_info'  => $stage2_info,
     'ws_faculty'   => $ws_faculty,
     'ws_stage1'    => $ws_stage1,
-    'ws_stage2'    => $ws_stage2,
     'potential_rank' => $official_summary['potential_rank'],
     'sub_rank_increment' => (int)$official_summary['sub_rank_increment'],
     'updated_at'   => date('H:i:s'),

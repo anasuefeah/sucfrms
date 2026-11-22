@@ -5,6 +5,7 @@ require_once __DIR__ . '/kra1_scorer.php';
 require_once __DIR__ . '/kra2_scorer.php';
 require_once __DIR__ . '/kra3_scorer.php';
 require_once __DIR__ . '/kra4_scorer.php';
+require_once __DIR__ . '/../criteria_snapshots.php';
 
 /** The server-side calculation used by entry saves and draft score repairs. */
 class EntryScores
@@ -35,19 +36,30 @@ class EntryScores
         $app = $query->fetch(\PDO::FETCH_ASSOC);
         if (!$app) return 0;
 
+        $reviewGuard = $pdo->query("SHOW COLUMNS FROM kra_submissions LIKE 'faculty_original_score'")->fetchColumn()
+            ? ' AND faculty_original_score IS NULL' : '';
         $rows = $pdo->prepare("SELECT submission_id, kra_category, remarks, computed_points
             FROM kra_submissions WHERE application_id=? AND verified=0 AND verified_by IS NULL
-            AND faculty_original_score IS NULL AND revision_by IS NULL");
+            AND revision_by IS NULL" . $reviewGuard);
         $rows->execute([$applicationId]);
-        $update = $pdo->prepare("UPDATE kra_submissions SET computed_points=?
-            WHERE submission_id=? AND application_id=? AND computed_points=?
-            AND verified=0 AND verified_by IS NULL AND faculty_original_score IS NULL AND revision_by IS NULL");
+        $update = $pdo->prepare("UPDATE kra_submissions SET computed_points=?, remarks=?
+            WHERE submission_id=? AND application_id=? AND computed_points <=> ? AND remarks=?
+            AND verified=0 AND verified_by IS NULL AND revision_by IS NULL" . $reviewGuard);
         $changed = 0;
+        $active = null;
         foreach ($rows->fetchAll(\PDO::FETCH_ASSOC) as $row) {
             if (trim((string)$row['remarks']) === '') continue;
-            $points = self::compute($pdo, $row['kra_category'], $row['remarks'], (int)$app['cycle_id'], $app['position_rank']);
-            if (abs($points - (float)$row['computed_points']) < 0.005) continue;
-            $update->execute([$points, $row['submission_id'], $applicationId, $row['computed_points']]);
+            $remarks = $row['remarks'];
+            $parts = explode('|||', $remarks);
+            if (($parts[0] ?? '') === 'CUSTOM') {
+                $active ??= array_column(\CriteriaSnapshots::rows($pdo, (int)$app['cycle_id'], $app['position_rank']), null, 'criterion_key');
+                $criterion = $active[$parts[2] ?? ''] ?? null;
+                if (!$criterion || $criterion['kra_category'] !== $row['kra_category']) continue;
+                $remarks = \kraAdditionalCriterionRemarks($criterion, $parts[5] ?? '');
+            }
+            $points = self::compute($pdo, $row['kra_category'], $remarks, (int)$app['cycle_id'], $app['position_rank']);
+            if ($remarks === $row['remarks'] && abs($points - (float)$row['computed_points']) < 0.005) continue;
+            $update->execute([$points, $remarks, $row['submission_id'], $applicationId, $row['computed_points'], $row['remarks']]);
             $changed += $update->rowCount();
         }
         return $changed;

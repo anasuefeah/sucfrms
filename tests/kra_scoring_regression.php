@@ -1,6 +1,7 @@
 <?php
 // Run: C:\xampp\php\php.exe tests/kra_scoring_regression.php
 require_once __DIR__ . '/../includes/scoring/entry_scores.php';
+require_once __DIR__ . '/../includes/scoring/autosubrank.php';
 require_once __DIR__ . '/../includes/apply/kra_entry_matching.php';
 
 $pdo = new PDO(
@@ -43,7 +44,7 @@ foreach ($criteria as $row) {
         $parts = [$type, 'Activity', $value, 'lead'];
     } elseif ($category === 'Professional Development' && isset($maps['key_to_pd'][$key])) {
         $pd = $maps['key_to_pd'][$key];
-        $parts = [$pd['type'], 'Activity', $pd['sub'] ?: '1'];
+        $parts = [$pd['type'], $pd['role'] ?? 'Activity', $pd['sub'] ?: '1'];
     } else {
         $parts = ['CUSTOM', $letter, $key, $row['criterion_label'], (string)$expected, 'Activity'];
     }
@@ -76,6 +77,17 @@ checkScore(Scoring\KRA4Scorer::score($doctorate)['criterion_b'] === 0.0, 'Doctor
 Scoring\KRA4Scorer::setDoctoratePointsOverride(40);
 checkScore(Scoring\KRA4Scorer::score($doctorate)['criterion_b'] === 40.0, 'Doctorate points-only credit missing');
 Scoring\KRA4Scorer::setDoctoratePointsOverride(null);
+
+// Preserve the application scoring handoff from Auto Sub Rank to KRA IV.
+foreach ([
+    ['Instructor I', $doctorate, 'triggered', 0.0],
+    ['Associate Professor V', $doctorate, 'not_eligible', 40.0],
+    ['Associate Professor V', [], 'not_eligible', 0.0],
+] as [$rank, $entries, $mode, $points]) {
+    $assessment = Scoring\AutoSubrank::compute($pdo, ['current_rank'=>$rank], [], 0.0, 0, $entries);
+    checkScore($assessment['doctorate_mode'] === $mode && $assessment['doctorate_points'] === $points,
+        "$rank: Auto Sub Rank returned the wrong doctorate credit for $mode");
+}
 
 // Check both per-entry and aggregate routing for the formerly misclassified types.
 foreach (['media-column-regular' => 10, 'media-column-occasional' => 2, 'media-guest' => 1,

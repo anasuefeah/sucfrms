@@ -15,31 +15,10 @@ catch (\Exception $e) {
 }
 
 // ── Core counts ────────────────────────────────────────────────
-$pending_stmt = $pdo->prepare("SELECT COUNT(*) FROM applications a
-    WHERE a.status IN ('submitted','under_review') AND a.user_id != ?
-    AND EXISTS (SELECT 1 FROM kra_submissions ks
-        JOIN checker_kra_assignments ka ON ka.cycle_id=a.cycle_id AND ka.kra_category=ks.kra_category AND ka.checker_id=?
-        WHERE ks.application_id=a.application_id)
-    AND NOT EXISTS (SELECT 1 FROM application_checker_reviews r
-        WHERE r.application_id=a.application_id AND r.checker_id=? AND r.decision IN ('approved','rejected'))");
-$pending_stmt->execute([$uid,$uid,$uid]);
-$pending = (int)$pending_stmt->fetchColumn();
-
-$needs_revision_stmt = $pdo->prepare("SELECT COUNT(*) FROM applications a
-    WHERE a.checker_id=? AND a.status='needs_revision'
-    AND EXISTS (SELECT 1 FROM kra_submissions ks
-        JOIN checker_kra_assignments ka ON ka.cycle_id=a.cycle_id AND ka.kra_category=ks.kra_category AND ka.checker_id=?
-        WHERE ks.application_id=a.application_id)");
-$needs_revision_stmt->execute([$uid, $uid]);
-$needs_revision = (int)$needs_revision_stmt->fetchColumn();
-
-$inprogress_count_stmt = $pdo->prepare("SELECT COUNT(*) FROM applications a
-    WHERE a.status = 'under_review' AND a.checker_id=? AND a.user_id != ?
-    AND EXISTS (SELECT 1 FROM kra_submissions ks
-        JOIN checker_kra_assignments ka ON ka.cycle_id=a.cycle_id AND ka.kra_category=ks.kra_category AND ka.checker_id=?
-        WHERE ks.application_id=a.application_id)");
-$inprogress_count_stmt->execute([$uid, $uid, $uid]);
-$inprogress_count = (int)$inprogress_count_stmt->fetchColumn();
+$reviewCounts = evaluatorDashboardCounts($pdo, (int)$uid);
+$pending = $reviewCounts['checker_pending'];
+$needs_revision = $reviewCounts['checker_revision'];
+$inprogress_count = $reviewCounts['checker_active'];
 
 $my_stats_stmt = $pdo->prepare("SELECT COUNT(*) AS total_reviewed,
     SUM(CASE WHEN r.decision='approved' THEN 1 ELSE 0 END) AS approved
@@ -69,9 +48,8 @@ $queue_stmt = $pdo->prepare("SELECT a.application_id, a.status, a.weighted_score
     LEFT JOIN campuses camp ON u.campus_id=camp.campus_id
     LEFT JOIN cycles c ON a.cycle_id=c.cycle_id
     WHERE a.status IN ('submitted','under_review') AND a.user_id != ?
-    AND EXISTS (SELECT 1 FROM kra_submissions ks
-        JOIN checker_kra_assignments ka ON ka.cycle_id=a.cycle_id AND ka.kra_category=ks.kra_category AND ka.checker_id=?
-        WHERE ks.application_id=a.application_id)
+    AND EXISTS (SELECT 1 FROM checker_kra_assignments ka
+        WHERE ka.cycle_id=a.cycle_id AND ka.checker_id=?)
     AND NOT EXISTS (SELECT 1 FROM application_checker_reviews r
         WHERE r.application_id=a.application_id AND r.checker_id=? AND r.decision IN ('approved','rejected'))
     ORDER BY c.evaluation_deadline ASC, a.submitted_at ASC

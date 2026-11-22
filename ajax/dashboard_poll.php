@@ -22,29 +22,10 @@ $data = ['ok' => true, 'role' => $role, 'counts' => []];
 
 try {
     if ($role === 'evaluator') {
-        // Awaiting Decision
-        $s = $pdo->prepare("SELECT COUNT(*) FROM applications a WHERE a.status IN ('submitted','under_review') AND a.user_id != ? AND NOT EXISTS (SELECT 1 FROM application_checker_reviews r WHERE r.application_id=a.application_id AND r.checker_id=? AND r.decision IN ('approved','rejected'))");
-        $s->execute([$uid, $uid]);
-        $data['counts']['checker_pending'] = (int)$s->fetchColumn();
-
-        // Active Reviews (under_review only — "In Progress" on dashboard)
-        $s = $pdo->prepare("SELECT COUNT(*) FROM applications a
-            WHERE a.status = 'under_review' AND a.checker_id=? AND a.user_id != ?");
-        $s->execute([$uid, $uid]);
-        $data['counts']['checker_active'] = (int)$s->fetchColumn();
-
-        // Needs Revision
-        $s = $pdo->prepare("SELECT COUNT(*) FROM applications WHERE checker_id=? AND status='needs_revision'");
-        $s->execute([$uid]);
-        $data['counts']['checker_revision'] = (int)$s->fetchColumn();
+        $data['counts'] = evaluatorDashboardCounts($pdo, (int)$uid);
 
     } elseif ($role === 'admin') {
-        $data['counts']['admin_faculty']   = (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role = 'faculty'")->fetchColumn();
-        $data['counts']['admin_applied']   = (int)$pdo->query("SELECT COUNT(DISTINCT user_id) FROM applications WHERE status != 'draft'")->fetchColumn();
-        $data['counts']['admin_pending']   = (int)$pdo->query("SELECT COUNT(*) FROM applications WHERE status='submitted'")->fetchColumn();
-        $data['counts']['admin_review']    = (int)$pdo->query("SELECT COUNT(*) FROM applications WHERE status='under_review'")->fetchColumn();
-        $data['counts']['admin_revision']  = (int)$pdo->query("SELECT COUNT(*) FROM applications WHERE status='needs_revision'")->fetchColumn();
-        $data['counts']['admin_approved']  = (int)$pdo->query("SELECT COUNT(*) FROM applications WHERE status='approved'")->fetchColumn();
+        $data['counts'] = adminDashboardCounts($pdo);
 
     } elseif ($role === 'faculty') {
         // Faculty: just return their application status

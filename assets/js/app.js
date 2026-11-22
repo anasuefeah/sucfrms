@@ -182,16 +182,18 @@
    type: 'error' | 'warning' | 'success' | 'info'  (default: 'error')
    ===================================================================== */
 window.showToast = (function () {
-    var container;
+    var containers = {};
 
-    function getContainer() {
+    function getContainer(bottomRight) {
+        var anchor = bottomRight ? 'bottom' : 'top';
+        var container = containers[anchor];
         if (!container || !document.body.contains(container)) {
             container = document.createElement('div');
-            container.id = 'sucfrms-toast-container';
+            container.id = bottomRight ? 'sucfrms-toast-container-bottom' : 'sucfrms-toast-container';
             container.style.cssText = [
                 'position:fixed',
-                'top:1.25rem',
-                'right:1.25rem',
+                bottomRight ? 'bottom:1.5rem' : 'top:1.25rem',
+                bottomRight ? 'right:1.5rem' : 'right:1.25rem',
                 'z-index:999999',
                 'display:flex',
                 'flex-direction:column',
@@ -199,6 +201,7 @@ window.showToast = (function () {
                 'pointer-events:none',
             ].join(';');
             document.body.appendChild(container);
+            containers[anchor] = container;
         }
         return container;
     }
@@ -210,10 +213,10 @@ window.showToast = (function () {
         info:    { bg:'#eff6ff', border:'#93c5fd', icon:'#1e4d8c', iconCls:'bi-info-circle-fill',      text:'#1e3a5f' },
     };
 
-    return function showToast(message, type) {
+    return function showToast(message, type, placement) {
         type = type || 'error';
         var p = palettes[type] || palettes.error;
-        var c = getContainer();
+        var c = getContainer(placement === 'bottom-right');
 
         var toast = document.createElement('div');
         toast.style.cssText = [

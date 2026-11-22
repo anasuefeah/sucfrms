@@ -187,31 +187,27 @@ foreach ($education as $ed_row) {
 <div class="profile-page">
 
     <!-- ── Banner — same hero image as portal ── -->
-    <div style="width:100%;height:150px;position:relative;overflow:hidden;background:#0f2952;">
+    <div class="profile-banner" style="width:100%;position:relative;overflow:hidden;background:#0f2952;">
         <img src="assets/images/portal_hero.jpg" alt=""
              style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center 30%;opacity:0.35;">
         <div style="position:absolute;inset:0;background:linear-gradient(to bottom,rgba(15,41,82,0.3) 0%,rgba(15,41,82,0.75) 100%);"></div>
     </div>
 
     <!-- ── Avatar + Identity Row ── -->
-    <div style="background:#fff;padding:0 2rem 1rem;display:flex;align-items:flex-end;gap:1.5rem;border-bottom:1px solid #e2e8f0;flex-wrap:wrap;">
-        <div style="flex-shrink:0;margin-top:-52px;position:relative;z-index:2;">
+    <div class="profile-identity">
+        <div class="profile-identity-avatar">
             <?php if (!empty($user['profile_pic'])): ?>
-            <img class="profile-avatar" id="profileAvatarImg" src="<?= sanitize($user['profile_pic']) ?>" alt="Profile"
-                 style="width:110px;height:110px;border-radius:50%;object-fit:cover;object-position:center;border:4px solid #fff;box-shadow:0 2px 12px rgba(0,0,0,0.18);display:block;">
+            <img class="profile-identity-image" id="profileAvatarImg" src="<?= sanitize($user['profile_pic']) ?>" alt="Profile">
             <?php elseif ($_SESSION['role'] === 'admin'): ?>
-            <img src="assets/images/logo.jpg" alt="SUCFRMS Logo"
-                 style="width:110px;height:110px;border-radius:50%;object-fit:cover;border:4px solid #fff;box-shadow:0 2px 12px rgba(0,0,0,0.18);display:block;">
+            <img class="profile-identity-image" src="assets/images/logo.jpg" alt="SUCFRMS Logo">
             <?php else: ?>
-            <div class="profile-avatar-placeholder" id="profileAvatarPlaceholder"
-                 style="width:110px;height:110px;border-radius:50%;border:4px solid #fff;background:#1a3a6b;
-                        display:flex;align-items:center;justify-content:center;box-shadow:0 2px 12px rgba(0,0,0,0.18);">
+            <div class="profile-avatar-placeholder profile-identity-image" id="profileAvatarPlaceholder" style="background:#1a3a6b;">
                 <span style="color:#fff;font-size:2.25rem;font-weight:700;"><?= htmlspecialchars($initials) ?></span>
             </div>
             <?php endif; ?>
 
             <?php if ($_SESSION['role'] !== 'admin'): ?>
-            <button type="button" onclick="document.getElementById('avatarFileInput').click()"
+            <button type="button" class="profile-avatar-control" onclick="document.getElementById('avatarFileInput').click()"
                     title="Change profile picture"
                     style="position:absolute;bottom:5px;right:5px;width:30px;height:30px;border-radius:50%;
                            background:#1a3a6b;border:2px solid #fff;color:#fff;cursor:pointer;
@@ -235,9 +231,9 @@ foreach ($education as $ed_row) {
             <?php endif; ?>
         </div>
 
-        <div style="flex:1;padding-bottom:0.75rem;padding-top:0.5rem;">
+        <div class="profile-identity-content">
             <div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:1rem;">
-                <div>
+                <div class="profile-identity-text">
                     <?php
                     $display_first  = trim($user['first_name']  ?? '');
                     $display_middle = trim($user['middle_name'] ?? '');
@@ -249,7 +245,7 @@ foreach ($education as $ed_row) {
                     ?>
                     <h2 style="font-size:1.4rem;font-weight:700;color:#0f172a;margin:0 0 0.2rem;letter-spacing:-0.01em;"><?= htmlspecialchars($display_name) ?></h2>
                     <p style="font-size:0.8rem;color:#94a3b8;margin:0 0 0.5rem;"><?= htmlspecialchars($user['email']) ?></p>
-                    <div style="display:flex;flex-wrap:wrap;gap:0.4rem;align-items:center;">
+                    <div class="profile-identity-meta">
                         <!-- Role badge — boxy -->
                         <span style="font-size:0.65rem;font-weight:700;letter-spacing:0.05em;padding:2px 8px;
                                      background:<?= $role==='admin'?'#1a3a6b':($role==='evaluator'?'#16a34a':'#1e4d8c') ?>;color:#fff;">
@@ -271,7 +267,7 @@ foreach ($education as $ed_row) {
                     </div>
                 </div>
                 <!-- Settings button -->
-                <button onclick="document.getElementById('pf-edit-modal').style.display='flex'"
+                <button type="button" class="profile-account-settings" onclick="document.getElementById('pf-edit-modal').style.display='flex'"
                         title="Account Settings"
                         style="width:36px;height:36px;background:#f8fafc;color:#475569;border:1px solid #e2e8f0;
                                display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;"
@@ -284,7 +280,7 @@ foreach ($education as $ed_row) {
     </div>
 
     <!-- ── Stats + Latest App ── -->
-    <div style="background:#fff;padding:1rem 2rem;border-bottom:1px solid #e2e8f0;">
+    <div class="profile-overview" style="background:#fff;border-bottom:1px solid #e2e8f0;">
         <div style="display:flex;flex-wrap:wrap;gap:0.65rem;margin-bottom:<?= ($_SESSION['role']==='faculty'&&$latest)?'0.65rem':'0' ?>;">
 
             <div style="display:flex;align-items:center;gap:0.6rem;background:#f8fafc;border:1px solid #e2e8f0;padding:0.6rem 1rem;flex:1;min-width:140px;">
@@ -401,192 +397,281 @@ foreach ($education as $ed_row) {
 
 <!-- -- Edit Profile Modal -- -->
 <div id="pf-edit-modal"
-     style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);z-index:9999;align-items:center;justify-content:center;padding:1rem;">
-    <div style="background:#fff;border-radius:12px;width:100%;max-width:640px;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.25);">
+     style="display:none;position:fixed;inset:0;background:rgba(15,23,42,0.55);z-index:9999;align-items:center;justify-content:center;padding:1rem;">
+    <div style="background:#fff;border:1px solid #e5e7eb;width:100%;max-width:620px;max-height:90vh;overflow-y:auto;display:flex;flex-direction:column;">
 
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:1.25rem 1.5rem;border-bottom:1px solid #e2e8f0;">
-            <h5 style="margin:0;font-weight:700;color:#1e293b;">Edit Profile</h5>
+        <!-- Header -->
+        <div style="background:#1a3a6b;padding:0.65rem 1rem;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;">
+            <div style="display:flex;align-items:center;gap:0.6rem;">
+                <i class="bi bi-person-gear" style="color:rgba(255,255,255,0.75);font-size:0.88rem;"></i>
+                <span style="font-size:0.85rem;font-weight:700;color:#fff;">Edit Profile</span>
+            </div>
             <button onclick="document.getElementById('pf-edit-modal').style.display='none'"
-                    style="background:none;border:none;font-size:1.25rem;cursor:pointer;color:#64748b;">&times;</button>
+                    style="background:none;border:none;color:rgba(255,255,255,0.65);font-size:1rem;cursor:pointer;line-height:1;padding:0;"
+                    onmouseover="this.style.color='#fff'" onmouseout="this.style.color='rgba(255,255,255,0.65)'">
+                <i class="bi bi-x-lg"></i>
+            </button>
         </div>
 
-        <div style="display:flex;border-bottom:2px solid #e2e8f0;padding:0 1.5rem;">
-            <button class="pf-modal-tab active" onclick="pfModalTab(this,'pf-mt-info')"
-                    style="background:none;border:none;border-bottom:2px solid #1e4d8c;margin-bottom:-2px;padding:0.65rem 1rem;font-size:0.875rem;font-weight:600;color:#1a3a6b;cursor:pointer;">
+        <!-- Tabs -->
+        <div style="display:flex;border-bottom:1px solid #e5e7eb;flex-shrink:0;">
+            <button class="pf-modal-tab" id="pf-tab-info" onclick="pfModalTab(this,'pf-mt-info')"
+                    style="background:none;border:none;border-bottom:2px solid #1a3a6b;padding:0.55rem 1rem;font-size:0.78rem;font-weight:700;color:#1a3a6b;cursor:pointer;margin-bottom:-1px;">
                 Account Settings
             </button>
-            <button class="pf-modal-tab" onclick="pfModalTab(this,'pf-mt-pw')"
-                    style="background:none;border:none;border-bottom:2px solid transparent;margin-bottom:-2px;padding:0.65rem 1rem;font-size:0.875rem;font-weight:500;color:#64748b;cursor:pointer;">
+            <button class="pf-modal-tab" id="pf-tab-pw" onclick="pfModalTab(this,'pf-mt-pw')"
+                    style="background:none;border:none;border-bottom:2px solid transparent;padding:0.55rem 1rem;font-size:0.78rem;font-weight:600;color:#9ca3af;cursor:pointer;margin-bottom:-1px;">
                 Change Password
             </button>
         </div>
 
-        <div id="pf-mt-info" style="padding:1.5rem;">
+        <!-- Account Settings tab -->
+        <div id="pf-mt-info" style="padding:1.1rem 1rem;">
             <form method="POST" action="index.php?page=profile" enctype="multipart/form-data">
                 <input type="hidden" name="action" value="update_info">
-                <?php if ($_SESSION['role'] !== 'admin'): ?>
-                <!-- Profile picture is changed via the camera icon on the avatar -->
-                <?php endif; ?>
-                <div class="row g-3">
-                    <div class="col-md-4">
-                        <label class="form-label">First Name <span class="text-danger">*</span></label>
-                        <input type="text" name="first_name" class="form-control"
-                               value="<?= htmlspecialchars($user['first_name'] ?? '') ?>" required>
+
+                <!-- Identity box -->
+                <div style="border:1px solid #e5e7eb;overflow:hidden;margin-bottom:0.75rem;">
+                    <div style="background:#f9fafb;border-bottom:1px solid #e5e7eb;padding:0.35rem 0.75rem;">
+                        <span style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#374151;">Identity</span>
                     </div>
-                    <div class="col-md-4">
-                        <label class="form-label">Middle Name</label>
-                        <input type="text" name="middle_name" class="form-control"
-                               value="<?= htmlspecialchars($user['middle_name'] ?? '') ?>"
-                               placeholder="Leave blank if none">
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label">Last Name <span class="text-danger">*</span></label>
-                        <input type="text" name="last_name" class="form-control"
-                               value="<?= htmlspecialchars($user['last_name'] ?? '') ?>" required>
-                    </div>
-                    <div class="col-md-4">
-                        <label class="form-label">Suffix</label>
-                        <input type="text" name="suffix" class="form-control"
-                               value="<?= htmlspecialchars($user['suffix'] ?? '') ?>"
-                               placeholder="Optional">
-                    </div>
-                    <div class="col-md-6">
-                        <label class="form-label">Email</label>
-                        <div class="input-group">
-                            <span class="input-group-text"><i class="bi bi-lock-fill"></i></span>
-                            <input type="email" class="form-control" value="<?= htmlspecialchars($user['email']) ?>" readonly>
+                    <div style="padding:0.75rem;display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.6rem;">
+                        <div>
+                            <label style="display:block;font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#6b7280;margin-bottom:4px;">First Name <span style="color:#dc2626;">*</span></label>
+                            <input type="text" name="first_name" required value="<?= htmlspecialchars($user['first_name'] ?? '') ?>"
+                                   style="width:100%;border:1px solid #e5e7eb;padding:0.38rem 0.55rem;font-size:0.82rem;box-sizing:border-box;outline:none;"
+                                   onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
                         </div>
-                        <div style="font-size:0.72rem;color:#94a3b8;margin-top:4px;">Email can only be changed by the Administrator.</div>
+                        <div>
+                            <label style="display:block;font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#6b7280;margin-bottom:4px;">Middle Name</label>
+                            <input type="text" name="middle_name" value="<?= htmlspecialchars($user['middle_name'] ?? '') ?>"
+                                   placeholder="Leave blank if none"
+                                   style="width:100%;border:1px solid #e5e7eb;padding:0.38rem 0.55rem;font-size:0.82rem;box-sizing:border-box;outline:none;"
+                                   onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
+                        </div>
+                        <div>
+                            <label style="display:block;font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#6b7280;margin-bottom:4px;">Last Name <span style="color:#dc2626;">*</span></label>
+                            <input type="text" name="last_name" required value="<?= htmlspecialchars($user['last_name'] ?? '') ?>"
+                                   style="width:100%;border:1px solid #e5e7eb;padding:0.38rem 0.55rem;font-size:0.82rem;box-sizing:border-box;outline:none;"
+                                   onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
+                        </div>
+                        <div>
+                            <label style="display:block;font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#6b7280;margin-bottom:4px;">Suffix</label>
+                            <input type="text" name="suffix" value="<?= htmlspecialchars($user['suffix'] ?? '') ?>"
+                                   placeholder="Optional"
+                                   style="width:100%;border:1px solid #e5e7eb;padding:0.38rem 0.55rem;font-size:0.82rem;box-sizing:border-box;outline:none;"
+                                   onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
+                        </div>
+                        <div style="grid-column:span 2;">
+                            <label style="display:block;font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#6b7280;margin-bottom:4px;">Email</label>
+                            <div style="display:flex;border:1px solid #e5e7eb;background:#f9fafb;">
+                                <div style="padding:0.38rem 0.55rem;border-right:1px solid #e5e7eb;display:flex;align-items:center;">
+                                    <i class="bi bi-lock" style="font-size:0.68rem;color:#9ca3af;"></i>
+                                </div>
+                                <input type="email" value="<?= htmlspecialchars($user['email']) ?>" readonly
+                                       style="flex:1;border:none;background:transparent;padding:0.38rem 0.55rem;font-size:0.82rem;color:#9ca3af;outline:none;">
+                            </div>
+                            <div style="font-size:0.62rem;color:#9ca3af;margin-top:3px;">Changed by Administrator only.</div>
+                        </div>
                     </div>
-                    <div class="col-md-6">
-                        <label class="form-label">Employee ID</label>
+                </div>
+
+                <!-- Account box -->
+                <div style="border:1px solid #e5e7eb;overflow:hidden;margin-bottom:0.75rem;">
+                    <div style="background:#f9fafb;border-bottom:1px solid #e5e7eb;padding:0.35rem 0.75rem;">
+                        <span style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#374151;">Account</span>
+                    </div>
+                    <div style="padding:0.75rem;display:grid;grid-template-columns:1fr 1fr;gap:0.6rem;">
+                        <div>
+                            <label style="display:block;font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#6b7280;margin-bottom:4px;">Employee ID</label>
+                            <?php if ($_SESSION['role'] === 'faculty'): ?>
+                            <input type="text" name="employee_id" value="<?= htmlspecialchars($user['employee_id'] ?? '') ?>"
+                                   style="width:100%;border:1px solid #e5e7eb;padding:0.38rem 0.55rem;font-size:0.82rem;box-sizing:border-box;outline:none;"
+                                   onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
+                            <?php else: ?>
+                            <input type="text" value="<?= htmlspecialchars($user['employee_id'] ?? '') ?>" disabled
+                                   style="width:100%;border:1px solid #e5e7eb;padding:0.38rem 0.55rem;font-size:0.82rem;box-sizing:border-box;background:#f9fafb;color:#9ca3af;">
+                            <?php endif; ?>
+                        </div>
+                        <?php if ($_SESSION['role'] !== 'admin'): ?>
+                        <div>
+                            <label style="display:block;font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#6b7280;margin-bottom:4px;">Campus</label>
+                            <select name="campus_id"
+                                    style="width:100%;border:1px solid #e5e7eb;padding:0.38rem 0.55rem;font-size:0.82rem;background:#fff;cursor:pointer;outline:none;"
+                                    onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
+                                <option value="" disabled <?= empty($user['campus_id']) ? 'selected' : '' ?>>Select campus</option>
+                                <?php
+                                $campuses = $pdo->query("SELECT * FROM campuses WHERE is_active=1 ORDER BY campus_name")->fetchAll();
+                                foreach ($campuses as $c): ?>
+                                <option value="<?= $c['campus_id'] ?>" <?= ($user['campus_id'] ?? 0) == $c['campus_id'] ? 'selected' : '' ?>>
+                                    <?= sanitize($c['campus_name']) ?>
+                                </option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+                        <div>
+                            <label style="display:block;font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#6b7280;margin-bottom:4px;">Faculty Rank</label>
+                            <select name="rank"
+                                    style="width:100%;border:1px solid #e5e7eb;padding:0.38rem 0.55rem;font-size:0.82rem;background:#fff;cursor:pointer;outline:none;"
+                                    onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
+                                <option value="" disabled <?= empty($user['rank']) ? 'selected' : '' ?>>Select rank</option>
+                                <?php foreach (facultyRanks() as $r): ?>
+                                <option value="<?= $r ?>" <?= ($user['rank'] ?? '') === $r ? 'selected' : '' ?>><?= $r ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
                         <?php if ($_SESSION['role'] === 'faculty'): ?>
-                        <input type="text" name="employee_id" class="form-control" value="<?= htmlspecialchars($user['employee_id'] ?? '') ?>">
-                        <?php else: ?>
-                        <input type="text" class="form-control" value="<?= htmlspecialchars($user['employee_id'] ?? '') ?>" disabled>
+                        <div>
+                            <label style="display:block;font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#6b7280;margin-bottom:4px;">Faculty Status</label>
+                            <select name="faculty_status"
+                                    style="width:100%;border:1px solid #e5e7eb;padding:0.38rem 0.55rem;font-size:0.82rem;background:#fff;cursor:pointer;outline:none;"
+                                    onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
+                                <option value="Existing Faculty" <?= ($user['faculty_status'] ?? '') === 'Existing Faculty' ? 'selected' : '' ?>>Existing Faculty</option>
+                                <option value="New Faculty" <?= ($user['faculty_status'] ?? 'New Faculty') === 'New Faculty' ? 'selected' : '' ?>>New Faculty</option>
+                            </select>
+                        </div>
+                        <?php endif; ?>
                         <?php endif; ?>
                     </div>
-                    <?php if ($_SESSION['role'] !== 'admin'): ?>
-                    <div class="col-md-6">
-                        <label class="form-label">Campus</label>
-                        <select name="campus_id" class="form-select">
-                            <option value="" disabled <?= empty($user['campus_id']) ? 'selected' : '' ?>>- Select Campus -</option>
-                            <?php
-                            $campuses = $pdo->query("SELECT * FROM campuses WHERE is_active=1 ORDER BY campus_name")->fetchAll();
-                            foreach ($campuses as $c):
-                            ?>
-                            <option value="<?= $c['campus_id'] ?>" <?= ($user['campus_id'] ?? 0) == $c['campus_id'] ? 'selected' : '' ?>>
-                                <?= sanitize($c['campus_name']) ?>
-                            </option>
-                            <?php endforeach; ?>
-                        </select>
+                </div>
+
+                <?php if ($_SESSION['role'] === 'faculty'): ?>
+                <!-- Education box -->
+                <div style="border:1px solid #e5e7eb;overflow:hidden;margin-bottom:0.75rem;">
+                    <div style="background:#f9fafb;border-bottom:1px solid #e5e7eb;padding:0.35rem 0.75rem;">
+                        <span style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#374151;">Educational Attainment</span>
                     </div>
-                    <div class="col-md-6">
-                        <label class="form-label">Faculty Rank</label>
-                        <select name="rank" class="form-select">
-                            <option value="" disabled <?= empty($user['rank']) ? 'selected' : '' ?>>- Select Rank -</option>
-                            <?php foreach (facultyRanks() as $r): ?>
-                            <option value="<?= $r ?>" <?= ($user['rank'] ?? '') === $r ? 'selected' : '' ?>><?= $r ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                    </div>
-                    <?php if ($_SESSION['role'] === 'faculty'): ?>
-                    <div class="col-md-6">
-                        <label class="form-label">Faculty Status</label>
-                        <select name="faculty_status" class="form-select">
-                            <option value="Existing Faculty" <?= ($user['faculty_status'] ?? '') === 'Existing Faculty' ? 'selected' : '' ?>>Existing Faculty</option>
-                            <option value="New Faculty" <?= ($user['faculty_status'] ?? 'New Faculty') === 'New Faculty' ? 'selected' : '' ?>>New Faculty</option>
-                        </select>
-                    </div>
-                    <div class="col-12">
-                        <div style="border-top:1px solid #e8edf5;margin-top:0.4rem;padding-top:1rem;">
-                            <div style="font-size:0.72rem;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:0.75rem;">Educational Attainment</div>
-                            <div style="display:flex;flex-direction:column;gap:0.75rem;">
-                                <?php foreach ($education_levels as $level_key => $level_label):
-                                    $ed = $education_by_level[$level_key] ?? [];
-                                    $is_required = $level_key === 'Bachelor';
-                                ?>
-                                <div style="background:#f8fafc;border:1px solid #e8edf5;border-radius:8px;padding:0.85rem;">
-                                    <input type="hidden" name="edu_level[]" value="<?= htmlspecialchars($level_key) ?>">
-                                    <div style="font-size:0.82rem;font-weight:800;color:#1a3a6b;margin-bottom:0.6rem;"><?= htmlspecialchars($level_label) ?></div>
-                                    <div class="pf-edu-edit-grid">
-                                        <div>
-                                            <label class="form-label">Name of Degree<?= $is_required ? ' *' : '' ?></label>
-                                            <input name="edu_degree[]" class="form-control" value="<?= htmlspecialchars($ed['degree_program'] ?? '') ?>" placeholder="<?= $is_required ? 'Bachelor of Science in...' : 'N/A if none' ?>" <?= $is_required ? 'required' : '' ?>>
-                                        </div>
-                                        <div>
-                                            <label class="form-label">Name of SUC<?= $is_required ? ' *' : '' ?></label>
-                                            <input name="edu_school[]" class="form-control" value="<?= htmlspecialchars($ed['school_university'] ?? '') ?>" placeholder="<?= $is_required ? 'School / University' : 'N/A if none' ?>" <?= $is_required ? 'required' : '' ?>>
-                                        </div>
-                                        <div>
-                                            <label class="form-label">Year Graduated<?= $is_required ? ' *' : '' ?></label>
-                                            <input name="edu_year[]" class="form-control" value="<?= htmlspecialchars($ed['year_graduated'] ?? '') ?>" placeholder="<?= $is_required ? 'YYYY' : 'N/A' ?>" <?= $is_required ? 'required' : '' ?>>
-                                        </div>
-                                    </div>
-                                </div>
-                                <?php endforeach; ?>
+                    <div style="padding:0.75rem;display:flex;flex-direction:column;gap:0.5rem;">
+                        <?php foreach ($education_levels as $level_key => $level_label):
+                            $ed = $education_by_level[$level_key] ?? [];
+                            $is_required = $level_key === 'Bachelor';
+                        ?>
+                        <div style="border:1px solid #e5e7eb;overflow:hidden;">
+                            <div style="background:#f9fafb;border-bottom:1px solid #e5e7eb;padding:0.28rem 0.65rem;display:flex;align-items:center;justify-content:space-between;">
+                                <span style="font-size:0.68rem;font-weight:700;color:#374151;"><?= htmlspecialchars($level_label) ?></span>
+                                <?php if (!$is_required): ?>
+                                <span style="font-size:0.6rem;color:#9ca3af;font-style:italic;">optional</span>
+                                <?php else: ?>
+                                <span style="font-size:0.6rem;font-weight:700;color:#374151;border:1px solid #d1d5db;padding:0 4px;">Required</span>
+                                <?php endif; ?>
                             </div>
-                            <div style="margin-top:0.85rem;">
-                                <label class="form-label">Applied during 1st Cycle</label>
-                                <select name="applied_first_cycle" class="form-select" style="max-width:220px;">
-                                    <option value="0" <?= empty($user['applied_first_cycle']) ? 'selected' : '' ?>>NO</option>
-                                    <option value="1" <?= !empty($user['applied_first_cycle']) ? 'selected' : '' ?>>YES</option>
-                                </select>
+                            <div style="padding:0.6rem 0.65rem;display:grid;grid-template-columns:1fr 1fr 90px;gap:0.5rem;">
+                                <input type="hidden" name="edu_level[]" value="<?= htmlspecialchars($level_key) ?>">
+                                <div>
+                                    <label style="display:block;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#6b7280;margin-bottom:3px;">Degree<?= $is_required ? ' *' : '' ?></label>
+                                    <input name="edu_degree[]" value="<?= htmlspecialchars($ed['degree_program'] ?? '') ?>"
+                                           placeholder="<?= $is_required ? 'Bachelor of Science in...' : 'N/A if none' ?>"
+                                           <?= $is_required ? 'required' : '' ?>
+                                           style="width:100%;border:1px solid #e5e7eb;padding:0.32rem 0.45rem;font-size:0.78rem;box-sizing:border-box;outline:none;"
+                                           onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
+                                </div>
+                                <div>
+                                    <label style="display:block;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#6b7280;margin-bottom:3px;">School<?= $is_required ? ' *' : '' ?></label>
+                                    <input name="edu_school[]" value="<?= htmlspecialchars($ed['school_university'] ?? '') ?>"
+                                           placeholder="<?= $is_required ? 'School / University' : 'N/A if none' ?>"
+                                           <?= $is_required ? 'required' : '' ?>
+                                           style="width:100%;border:1px solid #e5e7eb;padding:0.32rem 0.45rem;font-size:0.78rem;box-sizing:border-box;outline:none;"
+                                           onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
+                                </div>
+                                <div>
+                                    <label style="display:block;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#6b7280;margin-bottom:3px;">Year<?= $is_required ? ' *' : '' ?></label>
+                                    <input name="edu_year[]" value="<?= htmlspecialchars($ed['year_graduated'] ?? '') ?>"
+                                           placeholder="YYYY" <?= $is_required ? 'required' : '' ?>
+                                           style="width:100%;border:1px solid #e5e7eb;padding:0.32rem 0.45rem;font-size:0.78rem;box-sizing:border-box;outline:none;"
+                                           onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
+                                </div>
                             </div>
                         </div>
+                        <?php endforeach; ?>
+                        <div style="display:flex;align-items:center;gap:0.75rem;padding:0.35rem 0;">
+                            <label style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#6b7280;white-space:nowrap;">Applied 1st Cycle</label>
+                            <select name="applied_first_cycle"
+                                    style="border:1px solid #e5e7eb;padding:0.32rem 0.45rem;font-size:0.78rem;background:#fff;cursor:pointer;outline:none;width:100px;"
+                                    onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
+                                <option value="0" <?= empty($user['applied_first_cycle']) ? 'selected' : '' ?>>NO</option>
+                                <option value="1" <?= !empty($user['applied_first_cycle']) ? 'selected' : '' ?>>YES</option>
+                            </select>
+                        </div>
                     </div>
-                    <?php endif; ?>
-                    <?php endif; ?>
                 </div>
-                <div class="mt-4 d-flex gap-2">
-                    <button type="submit" class="btn btn-primary">Save Changes</button>
-                    <button type="button" onclick="document.getElementById('pf-edit-modal').style.display='none'" class="btn btn-outline-secondary">Cancel</button>
+                <?php endif; ?>
+
+                <!-- Footer -->
+                <div style="display:flex;gap:0.5rem;justify-content:flex-end;padding-top:0.25rem;">
+                    <button type="button" onclick="document.getElementById('pf-edit-modal').style.display='none'"
+                            style="padding:0.42rem 1rem;border:1px solid #e5e7eb;background:#fff;font-size:0.8rem;font-weight:600;color:#374151;cursor:pointer;"
+                            onmouseover="this.style.background='#f9fafb'" onmouseout="this.style.background='#fff'">Cancel</button>
+                    <button type="submit"
+                            style="padding:0.42rem 1.2rem;background:#1a3a6b;color:#fff;border:none;font-size:0.8rem;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:5px;"
+                            onmouseover="this.style.background='#152d54'" onmouseout="this.style.background='#1a3a6b'">
+                        <i class="bi bi-check2" style="font-size:0.75rem;"></i> Save Changes
+                    </button>
                 </div>
             </form>
         </div>
 
-        <div id="pf-mt-pw" style="display:none;padding:1.5rem;">
+        <!-- Change Password tab -->
+        <div id="pf-mt-pw" style="display:none;padding:1.1rem 1rem;">
             <form method="POST" action="index.php?page=profile">
                 <input type="hidden" name="action" value="change_password">
-                <div class="row g-3">
-                    <div class="col-md-6">
-                        <label class="form-label">New Password</label>
-                        <div class="input-group">
-                            <input type="password" name="new_password" id="pfNewPassword" class="form-control"
-                                   placeholder="e.g. Anasue@123" required
-                                   oninput="pfCheckPw(this.value)">
-                            <button type="button" class="btn btn-outline-secondary" onclick="pfTogglePw('pfNewPassword', this)"
-                                    tabindex="-1" style="border-color:#dee2e6;">
-                                <i class="bi bi-eye"></i>
-                            </button>
-                        </div>
-                        <div style="margin-top:5px;display:flex;gap:3px;">
-                            <div class="pf-pw-bar" style="flex:1;height:3px;border-radius:2px;background:#e2e8f0;transition:background 0.3s;"></div>
-                            <div class="pf-pw-bar" style="flex:1;height:3px;border-radius:2px;background:#e2e8f0;transition:background 0.3s;"></div>
-                            <div class="pf-pw-bar" style="flex:1;height:3px;border-radius:2px;background:#e2e8f0;transition:background 0.3s;"></div>
-                            <div class="pf-pw-bar" style="flex:1;height:3px;border-radius:2px;background:#e2e8f0;transition:background 0.3s;"></div>
-                        </div>
-                        <ul style="margin:5px 0 0;padding-left:1.1rem;font-size:0.72rem;color:#94a3b8;line-height:1.7;">
-                            <li id="pf-req-len"  >At least 8 characters</li>
-                            <li id="pf-req-num"  >A number</li>
-                            <li id="pf-req-sym"  >A special character (e.g. @, #, !)</li>
-                            <li id="pf-req-case" >Both uppercase and lowercase letters</li>
-                        </ul>
+
+                <div style="border:1px solid #e5e7eb;overflow:hidden;margin-bottom:0.75rem;">
+                    <div style="background:#f9fafb;border-bottom:1px solid #e5e7eb;padding:0.35rem 0.75rem;">
+                        <span style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#374151;">New Password</span>
                     </div>
-                    <div class="col-md-6">
-                        <label class="form-label">Confirm New Password</label>
-                        <div class="input-group">
-                            <input type="password" name="confirm_password" id="pfConfirmPassword" class="form-control" required>
-                            <button type="button" class="btn btn-outline-secondary" onclick="pfTogglePw('pfConfirmPassword', this)"
-                                    tabindex="-1" style="border-color:#dee2e6;">
-                                <i class="bi bi-eye"></i>
-                            </button>
+                    <div style="padding:0.75rem;display:grid;grid-template-columns:1fr 1fr;gap:0.6rem;">
+                        <div>
+                            <label style="display:block;font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#6b7280;margin-bottom:4px;">New Password</label>
+                            <div style="display:flex;border:1px solid #e5e7eb;" id="pfNewPwWrap">
+                                <input type="password" name="new_password" id="pfNewPassword" required
+                                       placeholder="e.g. Anasue@123"
+                                       oninput="pfCheckPw(this.value)"
+                                       onfocus="document.getElementById('pfNewPwWrap').style.borderColor='#374151'"
+                                       onblur="document.getElementById('pfNewPwWrap').style.borderColor='#e5e7eb'"
+                                       style="flex:1;border:none;padding:0.38rem 0.55rem;font-size:0.82rem;outline:none;">
+                                <button type="button" onclick="pfTogglePw('pfNewPassword',this)"
+                                        style="border:none;border-left:1px solid #e5e7eb;background:#f9fafb;padding:0 0.55rem;cursor:pointer;color:#9ca3af;">
+                                    <i class="bi bi-eye" style="font-size:0.75rem;"></i>
+                                </button>
+                            </div>
+                            <div style="margin-top:5px;display:flex;gap:3px;">
+                                <div class="pf-pw-bar" style="flex:1;height:3px;background:#e5e7eb;transition:background 0.3s;"></div>
+                                <div class="pf-pw-bar" style="flex:1;height:3px;background:#e5e7eb;transition:background 0.3s;"></div>
+                                <div class="pf-pw-bar" style="flex:1;height:3px;background:#e5e7eb;transition:background 0.3s;"></div>
+                                <div class="pf-pw-bar" style="flex:1;height:3px;background:#e5e7eb;transition:background 0.3s;"></div>
+                            </div>
+                            <ul style="margin:5px 0 0;padding-left:1.1rem;font-size:0.68rem;color:#9ca3af;line-height:1.7;">
+                                <li id="pf-req-len">At least 8 characters</li>
+                                <li id="pf-req-num">A number</li>
+                                <li id="pf-req-sym">A special character (@, #, !)</li>
+                                <li id="pf-req-case">Uppercase and lowercase letters</li>
+                            </ul>
+                        </div>
+                        <div>
+                            <label style="display:block;font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#6b7280;margin-bottom:4px;">Confirm Password</label>
+                            <div style="display:flex;border:1px solid #e5e7eb;" id="pfConfPwWrap">
+                                <input type="password" name="confirm_password" id="pfConfirmPassword" required
+                                       onfocus="document.getElementById('pfConfPwWrap').style.borderColor='#374151'"
+                                       onblur="document.getElementById('pfConfPwWrap').style.borderColor='#e5e7eb'"
+                                       style="flex:1;border:none;padding:0.38rem 0.55rem;font-size:0.82rem;outline:none;">
+                                <button type="button" onclick="pfTogglePw('pfConfirmPassword',this)"
+                                        style="border:none;border-left:1px solid #e5e7eb;background:#f9fafb;padding:0 0.55rem;cursor:pointer;color:#9ca3af;">
+                                    <i class="bi bi-eye" style="font-size:0.75rem;"></i>
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
-                <div class="mt-4 d-flex gap-2">
-                    <button type="submit" class="btn btn-primary">Update Password</button>
-                    <button type="button" onclick="document.getElementById('pf-edit-modal').style.display='none'" class="btn btn-outline-secondary">Cancel</button>
+
+                <div style="display:flex;gap:0.5rem;justify-content:flex-end;padding-top:0.25rem;">
+                    <button type="button" onclick="document.getElementById('pf-edit-modal').style.display='none'"
+                            style="padding:0.42rem 1rem;border:1px solid #e5e7eb;background:#fff;font-size:0.8rem;font-weight:600;color:#374151;cursor:pointer;"
+                            onmouseover="this.style.background='#f9fafb'" onmouseout="this.style.background='#fff'">Cancel</button>
+                    <button type="submit"
+                            style="padding:0.42rem 1.2rem;background:#1a3a6b;color:#fff;border:none;font-size:0.8rem;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:5px;"
+                            onmouseover="this.style.background='#152d54'" onmouseout="this.style.background='#1a3a6b'">
+                        <i class="bi bi-check2" style="font-size:0.75rem;"></i> Update Password
+                    </button>
                 </div>
             </form>
         </div>
@@ -759,7 +844,7 @@ function previewAndUploadAvatar(input) {
             newImg.id = 'profileAvatarImg';
             newImg.src = e.target.result;
             newImg.alt = 'Profile';
-            newImg.style.cssText = 'width:130px;height:130px;border-radius:50%;object-fit:cover;object-position:center;border:5px solid #fff;box-shadow:0 6px 24px rgba(0,0,0,0.2);display:block;';
+            newImg.className = 'profile-identity-image';
             placeholder.replaceWith(newImg);
         }
     };

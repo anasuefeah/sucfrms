@@ -55,14 +55,9 @@ $applications = $rows->fetchAll();
 // -- KRA scores ------------------------------------------------
 $kra_cats   = ['Instruction','Research','Extension','Professional Development'];
 $kra_scores = [];
-if ($applications) {
-    $app_ids      = array_column($applications, 'application_id');
-    $placeholders = implode(',', array_fill(0, count($app_ids), '?'));
-    $ks = $pdo->prepare("SELECT application_id, kra_category, computed_points FROM kra_submissions WHERE application_id IN ($placeholders)");
-    $ks->execute($app_ids);
-    foreach ($ks->fetchAll() as $k) {
-        $kra_scores[$k['application_id']][$k['kra_category']] = (float)$k['computed_points'];
-    }
+foreach ($applications as $application) {
+    $summary = getApplicationScoreSummary($pdo, (int)$application['application_id']);
+    $kra_scores[$application['application_id']] = array_map(static fn(array $row): float => (float)$row['pts'], $summary['kra_map']);
 }
 
 // -- Summary stats ---------------------------------------------
@@ -195,6 +190,7 @@ $kra_labels = [
 $pdf->SectionBar('AVERAGE KRA SCORES');
 $pdf->Ln(1);
 $kw = 65; $kx = 10; $ky = $pdf->GetY();
+$kraMaxima = kraMaximumPoints();
 foreach ($kra_avg_vals as $cat => $avg) {
     $pdf->SetXY($kx, $ky);
     $pdf->SetFillColor(241, 245, 249);
@@ -203,7 +199,7 @@ foreach ($kra_avg_vals as $cat => $avg) {
     $pdf->Cell($kw, 5, $kra_labels[$cat], 1, 0, 'L', true);
     $pdf->SetXY($kx, $ky + 5);
     $pdf->SetFont('Times', 'B', 11);
-    $pdf->Cell($kw, 7, $avg . ' / 100 pts', 1, 0, 'C', true);
+    $pdf->Cell($kw, 7, $avg . ' / ' . $kraMaxima[$cat] . ' pts', 1, 0, 'C', true);
     $pdf->SetTextColor(0, 0, 0);
     $kx += $kw;
 }

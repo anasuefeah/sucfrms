@@ -22,6 +22,8 @@
 
 namespace Scoring;
 
+require_once __DIR__ . '/../claim_review.php';
+
 class AutoSubRankCalculator
 {
     // Retained for old records and pre-existing UI text only.
@@ -79,7 +81,7 @@ class AutoSubRankCalculator
 
         // Load application + faculty rank
         $stmt = $this->pdo->prepare(
-            "SELECT a.weighted_score, u.user_id, u.`rank`
+            "SELECT a.*, u.`rank`
              FROM applications a
              JOIN users u ON a.user_id = u.user_id
              WHERE a.application_id = ?"
@@ -99,11 +101,12 @@ class AutoSubRankCalculator
         $weighted_score = (float)$row['weighted_score'];
         $rank           = (string)($row['rank'] ?? '');
 
-        // Detect doctorate from kra_submissions
-        [$has_doctorate, $doctorate_details] = $this->detectDoctoratFromSubmissions();
-
-        // Detect national/international award from kra_submissions
-        [$has_award, $award_details] = $this->detectAwardFromSubmissions();
+        $entries = \ClaimReview::loadEntries($this->pdo, $this->application_id);
+        $assessment = \ClaimReview::assess($row, $entries);
+        $development = array_filter(\ClaimReview::scoringEntries($row, $entries, $assessment),
+            static fn(array $entry): bool => $entry['kra_category'] === 'Professional Development');
+        [$has_doctorate, $doctorate_details] = $this->detectDoctoratFromSubmissions($development);
+        [$has_award, $award_details] = $this->detectAwardFromSubmissions($development);
 
         return $this->computeMode(
             $weighted_score,
@@ -451,17 +454,9 @@ class AutoSubRankCalculator
      * Detect doctorate from kra_submissions for the current application.
      * Returns [bool $found, string $details].
      */
-    public function detectDoctoratFromSubmissions(): array
+    public function detectDoctoratFromSubmissions(?array $entries = null): array
     {
-        $stmt = $this->pdo->prepare(
-            "SELECT remarks FROM kra_submissions
-             WHERE application_id = ?
-               AND kra_category = 'Professional Development'
-             ORDER BY submission_id ASC"
-        );
-        $stmt->execute([$this->application_id]);
-
-        foreach ($stmt->fetchAll(\PDO::FETCH_COLUMN) as $remarks) {
+        foreach ($this->professionalDevelopmentRemarks($entries) as $remarks) {
             $parts   = array_map('trim', explode('|||', $remarks));
             $crit    = $parts[0] ?? '';
             $subVal  = (float)($parts[2] ?? 0);
@@ -488,17 +483,9 @@ class AutoSubRankCalculator
      * C-award with sub-value = 0 = prestigious award sub-rank trigger
      * (Ramon Magsaysay-tier; requires human checker confirmation, never auto-approved).
      */
-    public function detectAwardFromSubmissions(): array
+    public function detectAwardFromSubmissions(?array $entries = null): array
     {
-        $stmt = $this->pdo->prepare(
-            "SELECT remarks FROM kra_submissions
-             WHERE application_id = ?
-               AND kra_category = 'Professional Development'
-             ORDER BY submission_id ASC"
-        );
-        $stmt->execute([$this->application_id]);
-
-        foreach ($stmt->fetchAll(\PDO::FETCH_COLUMN) as $remarks) {
+        foreach ($this->professionalDevelopmentRemarks($entries) as $remarks) {
             $parts  = array_map('trim', explode('|||', $remarks));
             $crit   = $parts[0] ?? '';
             $desc   = $parts[1] ?? '';
@@ -510,6 +497,15 @@ class AutoSubRankCalculator
         }
 
         return [false, ''];
+    }
+
+    private function professionalDevelopmentRemarks(?array $entries): array
+    {
+        if ($entries !== null) return array_column($entries, 'remarks');
+        $query = $this->pdo->prepare("SELECT remarks FROM kra_submissions
+            WHERE application_id=? AND kra_category='Professional Development' ORDER BY submission_id");
+        $query->execute([$this->application_id]);
+        return $query->fetchAll(\PDO::FETCH_COLUMN);
     }
 
     // -------------------------------------------------------------------------
@@ -751,7 +747,7 @@ class AutoSubrank
 
         $application_id = (int)($app['application_id'] ?? 0);
         $calc = new AutoSubRankCalculator($pdo, $application_id, (int)($app['faculty_user_id'] ?? 0));
-        [$has_doctorate, ] = $calc->detectDoctoratFromSubmissions();
+        [$has_doctorate, ] = $calc->detectDoctoratFromSubmissions($subs_by_cat['Professional Development'] ?? []);
 
         // Indexed journal article within the last 3 years (KRA II Criterion A).
         // We check for a publication year in the remarks (title/description fields
@@ -800,14 +796,14 @@ class AutoSubrank
      * bonus_increment the orchestrator adds on top of the score-based
      * reclassification.
      */
-    public static function compute(\PDO $pdo, array $app, array $kra4, float $weighted_score, int $sub_rank_increment): array
+    public static function compute(\PDO $pdo, array $app, array $kra4, float $weighted_score, int $sub_rank_increment, ?array $eligibleEntries = null): array
     {
         $rank           = $app['current_rank'] ?? $app['position_title'] ?? '';
         $application_id = (int)($app['application_id'] ?? 0);
         $calc = new AutoSubRankCalculator($pdo, $application_id, (int)($app['faculty_user_id'] ?? 0));
 
-        [$has_doctorate, $doctorate_details] = $calc->detectDoctoratFromSubmissions();
-        [$has_award, $award_details]         = $calc->detectAwardFromSubmissions();
+        [$has_doctorate, $doctorate_details] = $calc->detectDoctoratFromSubmissions($eligibleEntries);
+        [$has_award, $award_details]         = $calc->detectAwardFromSubmissions($eligibleEntries);
 
         $result = $calc->computeMode(
             $weighted_score, $rank,
@@ -846,6 +842,7 @@ class AutoSubrank
             'qualified_auto_subrank_phd'   => $qualified_phd,
             'qualified_auto_subrank_award' => $qualified_award,
             'doctorate_mode'               => $result['doctorate_mode'],
+            'doctorate_points'             => $result['doctorate_points'],
             'award_mode'                   => $result['award_mode'],
         ];
     }

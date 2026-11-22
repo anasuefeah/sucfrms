@@ -15,16 +15,15 @@ function appealUploadFiles(PDO $pdo, int $message_id, string $field = 'attachmen
     if (empty($_FILES[$field]['name']) || !is_array($_FILES[$field]['name'])) return;
     $dir = __DIR__ . '/../uploads/appeals/';
     if (!is_dir($dir)) @mkdir($dir, 0775, true);
-    $allowed = ['pdf','jpg','jpeg','png','webp','doc','docx'];
-    $finfo = class_exists('finfo') ? new finfo(FILEINFO_MIME_TYPE) : null;
     for ($i = 0; $i < count($_FILES[$field]['name']); $i++) {
         if (($_FILES[$field]['error'][$i] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) continue;
         if (($_FILES[$field]['size'][$i] ?? 0) > 5 * 1024 * 1024) continue;
         $orig = basename($_FILES[$field]['name'][$i]);
         $ext  = strtolower(pathinfo($orig, PATHINFO_EXTENSION));
-        if (!in_array($ext, $allowed, true)) continue;
-        $mime = $finfo ? ($finfo->file($_FILES[$field]['tmp_name'][$i]) ?: '') : '';
-        if ($mime && !preg_match('/^(application\/pdf|image\/|application\/msword|application\/vnd\.openxmlformats)/', $mime)) continue;
+        if (pdfUploadError([
+            'name'=>$orig, 'tmp_name'=>$_FILES[$field]['tmp_name'][$i],
+            'size'=>$_FILES[$field]['size'][$i], 'error'=>$_FILES[$field]['error'][$i],
+        ], 5 * 1024 * 1024) !== null) continue;
         $name = 'appeal_' . $message_id . '_' . bin2hex(random_bytes(6)) . '.' . $ext;
         if (move_uploaded_file($_FILES[$field]['tmp_name'][$i], $dir . $name)) {
             $pdo->prepare("INSERT INTO appeal_attachments (message_id, file_path, original_filename, file_size_bytes) VALUES (?,?,?,?)")
@@ -53,6 +52,10 @@ function fetchAppeal(PDO $pdo, int $appeal_id): array|false {
 
 // ── POST handlers ──────────────────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (isset($_FILES['attachments']) && ($error = pdfUploadBatchError($_FILES['attachments'], 5 * 1024 * 1024))) {
+        flashMessage('danger', $error);
+        echo "<script>window.location.href='index.php?page=appeals';</script>"; exit;
+    }
     $action = $_POST['action'] ?? '';
 
     if ($action === 'file_appeal' && isFaculty()) {
@@ -486,7 +489,7 @@ function openAppealModal(id) {
                 att_html += '</div>';
             }
             thread_html += '<div style="display:flex;align-items:flex-start;gap:0.6rem;">'
-                + '<div style="width:30px;height:30px;border-radius:50%;background:'+(m.is_me?'#1a3a6b':'#475569')+';flex-shrink:0;'
+                + '<div class="account-avatar" style="width:30px;height:30px;border-radius:50%;background:'+(m.is_me?'#1a3a6b':'#475569')+';flex-shrink:0;'
                 + 'display:flex;align-items:center;justify-content:center;color:#fff;font-size:0.62rem;font-weight:700;margin-top:1px;">'
                 + init + '</div>'
                 + '<div style="flex:1;min-width:0;">'
@@ -511,7 +514,7 @@ function openAppealModal(id) {
             + 'style="width:100%;border:1px solid #e2e8f0;padding:0.5rem 0.65rem;font-size:0.8rem;resize:vertical;font-family:inherit;box-sizing:border-box;">'
             + '</textarea>'
             + '<div style="display:flex;align-items:center;justify-content:space-between;margin-top:0.5rem;flex-wrap:wrap;gap:0.4rem;">'
-            + '<input type="file" name="attachments[]" multiple style="font-size:0.72rem;color:#64748b;">'
+            + '<input type="file" name="attachments[]" accept=".pdf,application/pdf" multiple style="font-size:0.72rem;color:#64748b;">'
             + '<button type="submit" style="padding:0.4rem 1.1rem;background:#1a3a6b;color:#fff;border:none;font-size:0.78rem;font-weight:600;cursor:pointer;">Send Reply</button>'
             + '</div></form></div>';
     }

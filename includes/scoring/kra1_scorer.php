@@ -30,6 +30,8 @@
 
 namespace Scoring;
 
+require_once __DIR__ . '/../criteria_hierarchy.php';
+
 class KRA1Scorer
 {
     const CAP = 100;
@@ -67,6 +69,7 @@ class KRA1Scorer
 
     public static function score(array $submissions): array
     {
+        $additionalGroups = [];
         $crit_a   = 0.0;
         $crit_b   = 0.0;
         $crit_c   = 0.0;
@@ -83,6 +86,7 @@ class KRA1Scorer
             if ($critType === 'CUSTOM') {
                 $letter = strtoupper($parts[1] ?? '');
                 $pts = max(0.0, (float)($parts[4] ?? 0));
+                if (!in_array($letter, ['A', 'B', 'C'], true) && \collectAdditionalParentScore($additionalGroups, $parts, $pts)) continue;
                 if ($letter === 'A') $crit_a += $pts;
                 elseif ($letter === 'B') $crit_b += $pts;
                 else $crit_c += $pts;
@@ -124,7 +128,7 @@ class KRA1Scorer
                     if ($sef > 0) $crit_a_sef_ratings[] = $sef;
 
                     if ($set === 0.0 && $sef === 0.0) {
-                        $pending[] = 'KRA I Crit A: SET and SEF ratings are both 0  -  pending documentation.';
+                        $pending[] = 'KRA I Crit A: Student Evaluation of Teaching and Supervisor Evaluation Form ratings are both 0  -  pending documentation.';
                     }
                     break;
 
@@ -138,7 +142,7 @@ class KRA1Scorer
                     if ($set === 0.0 && $sef === 0.0) {
                         $period = $parts[1] ?? 'Unknown period';
                         $sem    = $parts[2] ?? '?';
-                        $pending[] = "KRA I Crit A: {$period} semester {$sem} SET and SEF ratings are both 0 - pending documentation.";
+                        $pending[] = "KRA I Crit A: {$period} semester {$sem} Student Evaluation of Teaching and Supervisor Evaluation Form ratings are both 0 - pending documentation.";
                     }
                     break;
 
@@ -149,7 +153,7 @@ class KRA1Scorer
                     if ($set === 0.0) {
                         $period = $parts[1] ?? 'Unknown period';
                         $sem    = $parts[2] ?? '?';
-                        $pending[] = "KRA I Crit A: {$period} semester {$sem} SET rating is 0 - pending documentation.";
+                        $pending[] = "KRA I Crit A: {$period} semester {$sem} Student Evaluation of Teaching rating is 0 - pending documentation.";
                     }
                     break;
 
@@ -160,7 +164,7 @@ class KRA1Scorer
                     if ($sef === 0.0) {
                         $period = $parts[1] ?? 'Unknown period';
                         $sem    = $parts[2] ?? '?';
-                        $pending[] = "KRA I Crit A: {$period} semester {$sem} SEF rating is 0 - pending documentation.";
+                        $pending[] = "KRA I Crit A: {$period} semester {$sem} Supervisor Evaluation Form rating is 0 - pending documentation.";
                     }
                     break;
 
@@ -265,17 +269,20 @@ class KRA1Scorer
         if ($crit_a_set_ratings || $crit_a_sef_ratings) {
             $avg_set = $crit_a_set_ratings ? array_sum($crit_a_set_ratings) / count($crit_a_set_ratings) : 0;
             $avg_sef = $crit_a_sef_ratings ? array_sum($crit_a_sef_ratings) / count($crit_a_sef_ratings) : 0;
-            $crit_a = self::computeCriterionAScore($avg_set, $avg_sef);
+            $crit_a += self::computeCriterionAScore($avg_set, $avg_sef);
         }
 
         // Apply sub-caps
-        $crit_a = min(self::CAP_A, $crit_a);
-        $crit_b = min(self::CAP_B, $crit_b);
-        $crit_c = min(self::CAP_C, $crit_c);
+        $limits = \configuredParentLimits(self::$pdo_ref, self::$criteria_cycle_id, self::$criteria_position_rank, 'Instruction');
+        $crit_a = min($limits['A'] ?? self::CAP_A, $crit_a);
+        $crit_b = min($limits['B'] ?? self::CAP_B, $crit_b);
+        $crit_c = min($limits['C'] ?? self::CAP_C, $crit_c);
 
-        $subtotal = min(self::CAP, $crit_a + $crit_b + $crit_c);
+        $additionalParents = \additionalParentTotals($additionalGroups);
+        $subtotal = min(self::CAP, $crit_a + $crit_b + $crit_c + array_sum($additionalParents));
 
         return [
+            'parent_scores' => ['A'=>$crit_a, 'B'=>$crit_b, 'C'=>$crit_c] + $additionalParents,
             'criterion_a'           => $crit_a,
             'criterion_b'           => $crit_b,
             'criterion_c'           => $crit_c,
@@ -528,6 +535,7 @@ class KRA1Scorer
             foreach ($stmt->fetchAll(\PDO::FETCH_ASSOC) as $row) {
                 $key = self::normaliseCriterionLabel((string)$row['criterion_label']);
                 $score = self::criteriaScopeScore($row);
+                if ($score <= 0) continue;
                 if ($key !== '' && (!isset($best[$key]) || $score > $best[$key])) {
                     self::$criteria_label_points_cache[$key] = (float)$row['max_points'];
                     $best[$key] = $score;
@@ -569,7 +577,8 @@ class KRA1Scorer
                 foreach ($stmt->fetchAll(\PDO::FETCH_ASSOC) as $row) {
                     $key = $row['criterion_key'] === 'kra1_a_set' ? 'set' : 'sef';
                     $score = self::criteriaScopeScore($row);
-                    if ((float)$row['max_points'] > 0 && (!isset($best[$key]) || $score > $best[$key])) {
+                if ($score <= 0) continue;
+                    if ((float)$row['max_points'] >= 0 && (!isset($best[$key]) || $score > $best[$key])) {
                         $caps[$key] = (float)$row['max_points'];
                         $best[$key] = $score;
                     }
@@ -596,6 +605,7 @@ class KRA1Scorer
                 return 2;
             }
         }
+        if (self::$criteria_cycle_id !== null) return 0;
         if ($row_cycle === null || $row_cycle === 0) {
             return 1;
         }
@@ -621,6 +631,7 @@ class KRA1Scorer
             $best_val = null;
             foreach ($stmt->fetchAll(\PDO::FETCH_ASSOC) as $row) {
                 $score = self::criteriaScopeScore($row);
+                if ($score <= 0) continue;
                 if ($score > $best_score) {
                     $best_score = $score;
                     $best_val = $row['max_points'];

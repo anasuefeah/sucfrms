@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <link rel="stylesheet" href="assets/css/square-corners.css?v=<?= filemtime(__DIR__ . '/../assets/css/square-corners.css') ?>">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="mobile-web-app-capable" content="yes">
@@ -25,13 +26,19 @@
         opacity: 0;
         pointer-events: none;
     }
-    .loader-logo {
+    .loader-logo-frame {
         width: 56px;
         height: 56px;
         border-radius: 50%;
-        object-fit: cover;
+        overflow: hidden;
         border: 3px solid #1a3a6b;
         box-shadow: 0 4px 16px rgba(26,58,107,0.2);
+    }
+    .loader-logo-frame img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
     }
     .loader-spinner {
         width: 38px;
@@ -55,7 +62,9 @@
 
 <!-- Page loader — shown immediately, hidden once DOM is ready -->
 <div id="page-loader">
-    <img src="assets/images/logo.jpg" class="loader-logo" alt="SUCFRMS">
+    <div class="loader-logo-frame">
+        <img src="assets/images/logo.jpg" alt="SUCFRMS">
+    </div>
     <div class="loader-spinner"></div>
     <div class="loader-text">Loading&hellip;</div>
 </div>
@@ -250,7 +259,7 @@ window.addEventListener('pageshow', function(e) {
                         </div>
                         <input type="hidden" id="fbRating" value="">
                     </div>
-                    <div id="fbAlert" style="display:none;margin-bottom:0.75rem;padding:0.6rem 0.8rem;
+                    <div id="fbAlert" role="alert" style="display:none;margin-bottom:0.75rem;padding:0.6rem 0.8rem;
                          font-size:0.78rem;border-left:3px solid;"></div>
                     <div style="display:flex;gap:0.5rem;justify-content:flex-end;">
                         <button type="button"
@@ -272,6 +281,15 @@ window.addEventListener('pageshow', function(e) {
                         </button>
                     </div>
                 </form>
+                <div id="feedbackSuccess" class="feedback-success" style="display:none;" role="status" aria-live="polite" tabindex="-1">
+                    <svg class="feedback-success-check" viewBox="0 0 64 64" aria-hidden="true">
+                        <circle cx="32" cy="32" r="28" />
+                        <path d="M18 33l9 9 19-21" />
+                    </svg>
+                    <h2>Feedback sent!</h2>
+                    <p>Thank you. Your feedback has been submitted successfully.</p>
+                    <button type="button" onclick="document.getElementById('feedbackModal').style.display='none'">Done</button>
+                </div>
             </div>
         </div>
 
@@ -342,10 +360,9 @@ document.addEventListener('click', function(e) {
 <script>
 // -- Notification bell ----------------------------------------
 const NOTIF_ICONS = {
+    criteria_updated:     { icon: 'bi-sliders2',          color: '#1a3a6b' },
     new_submission:       { icon: 'bi-file-earmark-plus', color: '#1e4d8c' },
     under_review:         { icon: 'bi-hourglass-split',   color: '#475569' },
-    talisay_review:       { icon: 'bi-building-up',       color: '#1a3a6b' },
-    new_talisay_submission:{ icon: 'bi-building-exclamation', color: '#1a3a6b' },
     score_adjusted:       { icon: 'bi-pencil-square',     color: '#475569' },
     needs_revision:       { icon: 'bi-exclamation-triangle-fill', color: '#334155' },
     revision_resubmitted: { icon: 'bi-arrow-repeat',      color: '#1e4d8c' },
@@ -390,6 +407,7 @@ function renderNotifs(notifs) {
 
         // Map notification type -> correct page + anchor
         function notifLink(type, appId, submissionId, kraCategory) {
+            if (type === 'criteria_updated') return 'pages/self_assessment.php';
             if (!appId) return '#';
             const isFaculty   = role === 'faculty';
             const isEvaluator = role === 'evaluator';
@@ -410,11 +428,10 @@ function renderNotifs(notifs) {
                         ? `index.php?page=my_application&id=${appId}#app-status`
                         : `index.php?page=review_application&id=${appId}`;
 
-                // Faculty: application under review / returned / talisay
+                // Faculty: application under review / returned / completed
                 case 'under_review':
                 case 'rejected':
                 case 'approved':
-                case 'talisay_review':
                     return isFaculty
                         ? `index.php?page=my_application&id=${appId}#app-status`
                         : `index.php?page=review_application&id=${appId}`;
@@ -423,10 +440,6 @@ function renderNotifs(notifs) {
                 case 'new_submission':
                 case 'revision_resubmitted':
                     return `index.php?page=review_application&id=${appId}#kra-verification`;
-
-                // ITC: forwarded from the Subcommittee
-                case 'new_talisay_submission':
-                    return `index.php?page=review_application&id=${appId}`;
 
                 case 'appeal_opened':
                 case 'appeal_message':
@@ -607,7 +620,6 @@ setInterval(() => {
                 needs_revision: 'An evaluator has flagged an entry for revision.',
                 approved:       'Your evaluation is complete.',
                 rejected:       'Your application has been returned for revision.',
-                talisay_review: 'Your application is now in ITC review.',
             };
             const msg = labels[counts.faculty_status] || 'Your application status has changed.';
             showPollToast(msg, counts.faculty_status === 'approved' ? 'success' : 'info');
@@ -659,8 +671,17 @@ setInterval(() => {
 })();
 
 // -- Feedback modal ------------------------------------------
+let feedbackPending = false;
+
 function openFeedbackModal() {
+    document.getElementById('feedbackModal').style.display = 'flex';
+    if (feedbackPending) return;
+    document.getElementById('feedbackSuccess').style.display = 'none';
+    document.getElementById('feedbackForm').style.display = 'block';
     document.getElementById('feedbackForm').reset();
+    const btn = document.querySelector('#feedbackForm button[type=submit]');
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-send me-1"></i>Submit';
     document.getElementById('fbRating').value = '';
     document.getElementById('fbAlert').style.display = 'none';
     resetStars();
@@ -694,8 +715,11 @@ function paintStars(upto, solid) {
 
 document.getElementById('feedbackForm').addEventListener('submit', function(e) {
     e.preventDefault();
+    if (feedbackPending) return;
+    feedbackPending = true;
     const alert = document.getElementById('fbAlert');
     const btn   = this.querySelector('button[type=submit]');
+    alert.style.display = 'none';
     btn.disabled = true;
     btn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>Sending...';
 
@@ -708,18 +732,17 @@ document.getElementById('feedbackForm').addEventListener('submit', function(e) {
     fetch('index.php?action=submit_feedback', { method: 'POST', body: fd })
         .then(r => r.json())
         .then(d => {
-            alert.style.display = 'block';
             if (d.ok) {
-                alert.style.background = '#f0f4fb';
-                alert.style.color      = '#1a3a6b';
-                alert.style.borderLeftColor = '#1a3a6b';
-                alert.innerHTML = '<i class="bi bi-check-circle me-1"></i>Thank you! Your feedback has been submitted.';
-                setTimeout(() => document.getElementById('feedbackModal').style.display = 'none', 2000);
+                document.getElementById('feedbackForm').style.display = 'none';
+                const success = document.getElementById('feedbackSuccess');
+                success.style.display = 'block';
+                if (document.getElementById('feedbackModal').style.display !== 'none') success.focus();
             } else {
+                alert.style.display = 'block';
                 alert.style.background = '#f8fafc';
                 alert.style.color      = '#475569';
                 alert.style.borderLeftColor = '#94a3b8';
-                alert.innerHTML = '<i class="bi bi-exclamation-circle me-1"></i>' + (d.error || 'Something went wrong.');
+                alert.textContent = d.error || 'Something went wrong.';
                 btn.disabled = false;
                 btn.innerHTML = '<i class="bi bi-send me-1"></i>Submit';
             }
@@ -732,6 +755,7 @@ document.getElementById('feedbackForm').addEventListener('submit', function(e) {
             alert.innerHTML = '<i class="bi bi-exclamation-circle me-1"></i>Network error. Please try again.';
             btn.disabled = false;
             btn.innerHTML = '<i class="bi bi-send me-1"></i>Submit';
-        });
+        })
+        .finally(() => { feedbackPending = false; });
 });
 </script>

@@ -56,14 +56,9 @@ $applications = $rows->fetchAll();
 // Load KRA scores per application
 $kra_cats = ['Instruction','Research','Extension','Professional Development'];
 $kra_scores = [];
-if ($applications) {
-    $app_ids = array_column($applications, 'application_id');
-    $placeholders = implode(',', array_fill(0, count($app_ids), '?'));
-    $ks = $pdo->prepare("SELECT application_id, kra_category, computed_points FROM kra_submissions WHERE application_id IN ($placeholders)");
-    $ks->execute($app_ids);
-    foreach ($ks->fetchAll() as $k) {
-        $kra_scores[$k['application_id']][$k['kra_category']] = (float)$k['computed_points'];
-    }
+foreach ($applications as $application) {
+    $summary = getApplicationScoreSummary($pdo, (int)$application['application_id']);
+    $kra_scores[$application['application_id']] = array_map(static fn(array $row): float => (float)$row['pts'], $summary['kra_map']);
 }
 
 // Summary stats
@@ -97,6 +92,7 @@ $admin_name = $_SESSION['full_name'] ?? 'Administrator';
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <link rel="stylesheet" href="../assets/css/square-corners.css" media="screen">
 <meta charset="UTF-8">
 <title>OSS  -  Overall Score Summary</title>
 <style>
@@ -262,11 +258,12 @@ table.main tbody td.score-low  { color:#1e293b; font-weight:700; text-align:cent
             'Extension'                => 'KRA III - Extension',
             'Professional Development' => 'KRA IV - Prof. Dev.',
         ];
+        $kraMaxima = kraMaximumPoints();
         foreach ($kra_avg_vals as $cat => $avg): ?>
         <div class="kra-avg-box">
             <div class="kn"><?= $kra_short[$cat] ?></div>
             <div class="kv"><?= $avg ?></div>
-            <div class="km">avg / 100 pts</div>
+            <div class="km">avg / <?= (int)$kraMaxima[$cat] ?> pts</div>
         </div>
         <?php endforeach; ?>
     </div>

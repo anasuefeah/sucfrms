@@ -4,18 +4,25 @@ ensureKraAssignmentTable($pdo);
 
 $kra_categories = kraAssignmentCategories();
 $cycles         = $pdo->query("SELECT cycle_id, cycle_name, status FROM cycles ORDER BY created_at DESC")->fetchAll();
+$cycles_by_id   = array_column($cycles, null, 'cycle_id');
 
 $cycle_id = (int)($_GET['cycle_id'] ?? 0);
 if (!$cycle_id && $cycles) {
     foreach ($cycles as $cy) { if ($cy['status'] === 'open') { $cycle_id = (int)$cy['cycle_id']; break; } }
     if (!$cycle_id) $cycle_id = (int)$cycles[0]['cycle_id'];
 }
+$current_cycle = $cycles_by_id[$cycle_id] ?? null;
 
 // ── POST handlers ─────────────────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action   = $_POST['action'] ?? '';
     $post_cid = (int)($_POST['cycle_id'] ?? 0);
     $post_eid = (int)($_POST['eval_id']  ?? 0);
+
+    if (in_array($action, ['save_evaluator_kras', 'remove_evaluator_kras'], true) && !isset($cycles_by_id[$post_cid])) {
+        flashMessage('danger', 'Select a valid cycle before changing KRA assignments.');
+        echo "<script>window.location.href='index.php?page=kra_assignments&cycle_id={$cycle_id}';</script>"; exit;
+    }
 
     if ($action === 'save_evaluator_kras' && $post_cid && $post_eid) {
         $new_kras = array_values(array_intersect(array_keys($kra_categories), $_POST['kra_assignments'] ?? []));
@@ -36,7 +43,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $open = $pdo->prepare("SELECT COUNT(*) FROM kra_submissions ks
                     JOIN applications a ON a.application_id=ks.application_id
                     WHERE a.cycle_id=? AND ks.kra_category=?
-                      AND a.status IN ('submitted','under_review','needs_revision','talisay_review')
+                      AND a.status IN ('submitted','under_review','needs_revision')
                       AND (ks.verified_by=? OR ks.revision_by=?)");
                 $open->execute([$post_cid, $k, $post_eid, $post_eid]);
                 if ((int)$open->fetchColumn() > 0)
@@ -71,13 +78,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'copy_kra_assignments') {
         $from = (int)($_POST['from_cycle_id'] ?? 0);
         $to   = (int)($_POST['to_cycle_id']   ?? 0);
-        if ($from && $to && $from !== $to) {
-            $pdo->prepare("DELETE FROM checker_kra_assignments WHERE cycle_id=?")->execute([$to]);
-            $pdo->prepare("INSERT IGNORE INTO checker_kra_assignments (cycle_id,checker_id,kra_category,assigned_by)
-                SELECT ?,checker_id,kra_category,? FROM checker_kra_assignments WHERE cycle_id=?")
-                ->execute([$to, $_SESSION['user_id'], $from]);
-            logAudit($pdo, $_SESSION['user_id'], 'KRA Assignment Copied', "Copied from cycle #{$from} to #{$to}.");
-            flashMessage('success', 'Assignment setup copied.');
+        if (!isset($cycles_by_id[$from], $cycles_by_id[$to])) {
+            flashMessage('danger', 'Select a valid source and destination cycle before copying KRA assignments.');
+        } elseif ($from !== $to) {
+            $pdo->beginTransaction();
+            try {
+                $pdo->prepare("DELETE FROM checker_kra_assignments WHERE cycle_id=?")->execute([$to]);
+                $copy = $pdo->prepare("INSERT INTO checker_kra_assignments (cycle_id,checker_id,kra_category,assigned_by)
+                    SELECT ?,k.checker_id,k.kra_category,? FROM checker_kra_assignments k
+                    JOIN users u ON u.user_id=k.checker_id AND u.role='evaluator' AND u.status='active'
+                    WHERE k.cycle_id=?");
+                $copy->execute([$to, $_SESSION['user_id'], $from]);
+                if ($copy->rowCount() === 0) {
+                    $pdo->rollBack();
+                    flashMessage('danger', 'The source cycle has no assignments for active evaluators.');
+                } else {
+                    $pdo->commit();
+                    logAudit($pdo, $_SESSION['user_id'], 'KRA Assignment Copied', "Copied from cycle #{$from} to #{$to}.");
+                    flashMessage('success', 'Assignment setup copied.');
+                }
+            } catch (Throwable $error) {
+                if ($pdo->inTransaction()) $pdo->rollBack();
+                error_log('SUCFRMS KRA assignment copy: ' . $error->getMessage());
+                flashMessage('danger', 'Could not copy KRA assignments.');
+            }
         } else {
             flashMessage('danger', 'Please select a different source cycle.');
         }
@@ -90,6 +114,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // ── Fetch ─────────────────────────────────────────────────────────────────
 $evaluators = $pdo->query("SELECT user_id,checker_label,first_name,middle_name,last_name,email,status
     FROM users WHERE role='evaluator' ORDER BY status DESC, user_id ASC")->fetchAll();
+$activeEvaluatorIds = array_fill_keys(array_column(array_filter($evaluators, static fn(array $ev): bool => $ev['status'] === 'active'), 'user_id'), true);
 
 $assignment_map  = [];
 $coverage_counts = array_fill_keys(array_keys($kra_categories), 0);
@@ -98,16 +123,11 @@ if ($cycle_id) {
     $am->execute([$cycle_id]);
     foreach ($am->fetchAll() as $row) {
         $assignment_map[(int)$row['checker_id']][] = $row['kra_category'];
-        if (isset($coverage_counts[$row['kra_category']])) $coverage_counts[$row['kra_category']]++;
+        if (isset($activeEvaluatorIds[$row['checker_id']], $coverage_counts[$row['kra_category']])) $coverage_counts[$row['kra_category']]++;
     }
 }
 
 $missing_kras  = array_keys(array_filter($coverage_counts, fn($c) => (int)$c === 0));
-$current_cycle = null;
-foreach ($cycles as $cy) { if ((int)$cy['cycle_id'] === $cycle_id) { $current_cycle = $cy; break; } }
-
-$js_assignments = [];
-foreach ($evaluators as $ev) $js_assignments[(int)$ev['user_id']] = $assignment_map[(int)$ev['user_id']] ?? [];
 ?>
 
 <?php showFlash(); ?>
@@ -127,7 +147,9 @@ foreach ($evaluators as $ev) $js_assignments[(int)$ev['user_id']] = $assignment_
         </div>
         <div>
             <div style="font-weight:700;color:#1a3a6b;font-size:0.95rem;line-height:1.2;">KRA Assignments</div>
+            <?php if ($current_cycle): ?>
             <div style="font-size:0.72rem;color:#94a3b8;margin-top:2px;">Click a row to edit &nbsp;·&nbsp; An evaluator can hold multiple KRAs</div>
+            <?php endif; ?>
         </div>
     </div>
     <?php if ($cycles): ?>
@@ -137,6 +159,7 @@ foreach ($evaluators as $ev) $js_assignments[(int)$ev['user_id']] = $assignment_
         <select name="cycle_id" onchange="this.form.submit()"
                 style="border:1px solid #e2e8f0;padding:0.35rem 0.65rem;font-size:0.78rem;color:#1e293b;background:#fff;outline:none;cursor:pointer;min-width:220px;"
                 onfocus="this.style.borderColor='#1a3a6b'" onblur="this.style.borderColor='#e2e8f0'">
+            <?php if (!$current_cycle): ?><option value="" selected disabled>Select a cycle</option><?php endif; ?>
             <?php foreach ($cycles as $cy): ?>
             <option value="<?= (int)$cy['cycle_id'] ?>" <?= $cycle_id===(int)$cy['cycle_id']?'selected':'' ?>>
                 <?= sanitize($cy['cycle_name']) ?> (<?= ucfirst($cy['status']) ?>)
@@ -146,6 +169,15 @@ foreach ($evaluators as $ev) $js_assignments[(int)$ev['user_id']] = $assignment_
     </form>
     <?php endif; ?>
 </div>
+
+<?php if (!$current_cycle): ?>
+<div class="alert alert-danger kra-cycle-alert" role="alert">
+    <i class="bi bi-exclamation-circle-fill" aria-hidden="true"></i>
+    <div>A reclassification cycle is required before assigning KRAs to evaluators.
+        <a href="index.php?page=cycles">Go to Cycles</a>.
+    </div>
+</div>
+<?php return; endif; ?>
 
 <?php if ($missing_kras): ?>
 <div style="display:flex;align-items:flex-start;gap:0.65rem;background:#fffbeb;border:1px solid #fde68a;border-left:3px solid #d97706;

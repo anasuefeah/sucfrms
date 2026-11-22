@@ -65,7 +65,7 @@ if (
         exit;
     }
 
-    if (!in_array($app_row['status'], ['under_review', 'talisay_review', 'needs_revision'], true)) {
+    if (!in_array($app_row['status'], ['under_review', 'needs_revision'], true)) {
         echo json_encode(['ok' => false, 'error' => 'This application is not under active review.']);
         exit;
     }
@@ -138,18 +138,6 @@ if (isset($_GET['ping'])) {
 
 requireLogin();
 require_once 'config/db.php';
-
-// One-time cleanup: remove stale talisay_checker/checker notification mismatches
-if (empty($_SESSION['_notif_cleanup_done'])) {
-    try {
-        // Remove any leftover notification type mismatches from old role setup
-        $pdo->exec("DELETE n FROM notifications n
-            JOIN users u ON n.user_id = u.user_id
-            WHERE u.role = 'evaluator'
-              AND n.type = 'new_talisay_submission'");
-    } catch (\Exception $e) {}
-    $_SESSION['_notif_cleanup_done'] = true;
-}
 
 // -- AJAX: mark notifications as read --
 if (isset($_GET['notif_action'])) {
@@ -301,8 +289,37 @@ ensureAppealTables($pdo);
 
 // -- Runtime migration: ensure applications.status ENUM includes all needed values --
 try {
-    $pdo->exec("ALTER TABLE applications MODIFY COLUMN status ENUM('draft','submitted','under_review','talisay_review','approved','rejected','reclassified','admin_rejected','edit_requested','needs_revision') DEFAULT 'draft'");
+    $pdo->exec("ALTER TABLE applications MODIFY COLUMN status ENUM('draft','submitted','under_review','approved','rejected','reclassified','admin_rejected','edit_requested','needs_revision','expired') DEFAULT 'draft'");
 } catch (\Exception $e) { /* already updated */ }
+
+// -- Runtime migration: cycle integrity fixes --
+if (empty($_SESSION['_cycle_integrity_migrations_done'])) {
+    // Risk 4: Unique constraint — prevent duplicate (user_id, cycle_id) applications
+    try { $pdo->exec("ALTER TABLE applications ADD UNIQUE KEY uq_user_cycle (user_id, cycle_id)"); } catch (\Exception $e) {}
+
+    // Risk 6: One-open-at-a-time guard via generated column + unique key
+    try { $pdo->exec("ALTER TABLE cycles ADD COLUMN open_guard TINYINT(1) GENERATED ALWAYS AS (IF(status='open',1,NULL)) STORED"); } catch (\Exception $e) {}
+    try { $pdo->exec("ALTER TABLE cycles ADD UNIQUE KEY uq_one_open_cycle (open_guard)"); } catch (\Exception $e) {}
+
+    // Risk 3: Fix applications.cycle_id FK from ON DELETE SET NULL to CASCADE
+    // Find and drop the old FK by scanning information_schema, then re-add with CASCADE
+    try {
+        $fk = $pdo->query("
+            SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'applications'
+              AND COLUMN_NAME = 'cycle_id'
+              AND REFERENCED_TABLE_NAME = 'cycles'
+            LIMIT 1
+        ")->fetchColumn();
+        if ($fk) {
+            $pdo->exec("ALTER TABLE applications DROP FOREIGN KEY `{$fk}`");
+            $pdo->exec("ALTER TABLE applications ADD CONSTRAINT fk_applications_cycle FOREIGN KEY (cycle_id) REFERENCES cycles(cycle_id) ON DELETE CASCADE");
+        }
+    } catch (\Exception $e) {}
+
+    $_SESSION['_cycle_integrity_migrations_done'] = true;
+}
 
 // -- Runtime migration: create notifications table --
 try {
@@ -367,26 +384,7 @@ try {
     )");
 } catch (\Exception $e) { /* already exists */ }
 
-// -- Runtime migration: JC01 s.2026  -  reset mentorship points to 0 (confirmed source gap) --
-// kra1_c_mentor_competition had max_points = 3.00 (old hardcoded guess). Reset to 0.00 so
-// the admin is prompted to confirm the value with CHED-RO before it scores anything.
-try {
-    $pdo->exec("UPDATE scoring_criteria
-        SET max_points = 0.00
-        WHERE criterion_key = 'kra1_c_mentor_competition'
-          AND cycle_id IS NULL
-          AND max_points = 3.00");
-} catch (\Exception $e) { /* table may not exist yet */ }
-
-// -- Runtime migration: JC01 s.2026  -  correct panel member point values --
-// panel_masters: 2 -> 4 pts; panel_doctoral: 2 -> 6 pts per confirmed JC01 annex.
-try {
-    $pdo->exec("UPDATE scoring_criteria SET max_points = 4.00
-        WHERE criterion_key = 'kra1_c_panel_masters' AND max_points = 2.00 AND cycle_id IS NULL");
-    $pdo->exec("UPDATE scoring_criteria SET max_points = 6.00
-        WHERE criterion_key = 'kra1_c_panel_doctoral' AND max_points = 2.00 AND cycle_id IS NULL");
-} catch (\Exception $e) { /* already corrected or table missing */ }
-
+// Criteria values are managed through versioned records; never rewrite saved cycles here.
 // -- AJAX: submit feedback --
 // Runtime migration: de-duplicate scoring criteria and make NULL scopes unique.
 // MySQL unique indexes allow multiple NULLs, so repeated seeds could create
@@ -403,7 +401,8 @@ try {
          AND sc.position_rank <=> dup.position_rank
          AND sc.kra_category = dup.kra_category
          AND sc.criterion_label = dup.criterion_label
-         AND sc.criteria_id <> dup.keep_id");
+         AND sc.criteria_id <> dup.keep_id
+        WHERE sc.cycle_id IS NULL");
 
     $pdo->exec("DELETE sc FROM scoring_criteria sc
         JOIN (
@@ -415,7 +414,8 @@ try {
           ON sc.cycle_id <=> dup.cycle_id
          AND sc.position_rank <=> dup.position_rank
          AND sc.criterion_key = dup.criterion_key
-         AND sc.criteria_id <> dup.keep_id");
+         AND sc.criteria_id <> dup.keep_id
+        WHERE sc.cycle_id IS NULL");
 } catch (\Exception $e) { /* table may not exist yet */ }
 try {
     $pdo->exec("ALTER TABLE scoring_criteria
@@ -521,8 +521,60 @@ if (empty($_SESSION['_notif_names_fixed'])) {
     $_SESSION['_notif_names_fixed'] = true;
 }
 
+// ── Feature 5: Runtime migration — cycle_summary table ───────────────────
+if (empty($_SESSION['_cycle_summary_migrated'])) {
+    try {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS cycle_summary (
+            summary_id       INT AUTO_INCREMENT PRIMARY KEY,
+            cycle_id         INT NOT NULL UNIQUE,
+            cycle_name       VARCHAR(100) NOT NULL,
+            total_applicants INT DEFAULT 0,
+            submitted        INT DEFAULT 0,
+            approved         INT DEFAULT 0,
+            returned         INT DEFAULT 0,
+            expired_drafts   INT DEFAULT 0,
+            avg_weighted_score DECIMAL(6,2) DEFAULT 0,
+            avg_kra1         DECIMAL(6,2) DEFAULT 0,
+            avg_kra2         DECIMAL(6,2) DEFAULT 0,
+            avg_kra3         DECIMAL(6,2) DEFAULT 0,
+            avg_kra4         DECIMAL(6,2) DEFAULT 0,
+            snapshot_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            FOREIGN KEY (cycle_id) REFERENCES cycles(cycle_id) ON DELETE CASCADE
+        ) ENGINE=InnoDB");
+        $_SESSION['_cycle_summary_migrated'] = true;
+    } catch (\Exception $e) {
+        error_log('SUCFRMS cycle summary schema error: ' . $e->getMessage());
+    }
+}
+
+// ── Feature 3: Auto-close cycles whose end_date has passed ───────────────
+// Runs once per session to avoid a DB write on every single request.
+if (empty($_SESSION['_cycle_autoclose_checked'])) {
+    try {
+        $expiredCycles = $pdo->query("
+            SELECT cycle_id FROM cycles
+            WHERE status='open' AND end_date < CURDATE()
+        ")->fetchAll(PDO::FETCH_COLUMN);
+        foreach ($expiredCycles as $expCid) {
+            // Reuse changeCycleStatus so all close-side effects fire (expire drafts, notify, etc.)
+            if (!class_exists('CriteriaSnapshots')) require_once 'includes/criteria_snapshots.php';
+            CriteriaSnapshots::changeCycleStatus($pdo, (int)$expCid, 'closed');
+            logAudit($pdo, $_SESSION['user_id'], 'Cycle Auto-Closed', "Cycle #{$expCid} automatically closed — end_date passed.");
+            // Notify admin(s)
+            $admins = $pdo->query("SELECT user_id FROM users WHERE role='admin' AND status='active'")->fetchAll(PDO::FETCH_COLUMN);
+            $n = $pdo->prepare("INSERT INTO notifications (user_id,type,message) VALUES (?,'cycle_auto_closed',?)");
+            foreach ($admins as $aid) {
+                $n->execute([$aid, "Reclassification cycle #{$expCid} was automatically closed because its end date has passed."]);
+            }
+        }
+        $_SESSION['_cycle_autoclose_checked'] = true;
+    } catch (\Throwable $e) {
+        error_log('SUCFRMS automatic cycle close error: ' . $e->getMessage());
+    }
+}
+
 // Role-based allowed pages
-$faculty_pages   = ['dashboard','my_application','my_audit','profile','profile_entry','apply','score_comparison','appeals','help'];
+$faculty_pages   = ['dashboard','my_application','my_audit','profile','profile_entry','apply','score_comparison','appeals','help','my_history'];
 $evaluator_pages = ['dashboard','review_queue','review_application','appeals','checker_audit','profile','help'];
 $admin_pages     = ['dashboard','manage_users','audit','cycles','scoring_criteria','config','analytics','profile','all_applications','manage_campuses','view_application','appeals','help','feedback','kra_assignments','kra_assign_evaluator'];
 
@@ -540,9 +592,9 @@ if ($faculty_profile_incomplete && $page !== 'profile_entry') {
     exit;
 }
 
-// Return the Auto Sub-Rank review response before rendering any page HTML.
+// Return evaluator AJAX responses before rendering any page HTML.
 if ($_SERVER['REQUEST_METHOD'] === 'POST'
-    && ($_POST['action'] ?? '') === 'verify_asr_evidence'
+    && in_array($_POST['action'] ?? '', ['alter_score', 'verify_asr_evidence'], true)
     && ($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '') === 'XMLHttpRequest'
     && in_array($page, ['review_application', 'view_application'], true)) {
     ob_start();
@@ -550,7 +602,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
     ob_end_clean();
     header('Content-Type: application/json');
     http_response_code(400);
-    echo json_encode(['ok' => false, 'error' => 'This application is not available for evidence review.']);
+    echo json_encode(['ok' => false, 'error' => 'This application is not available for review.']);
     exit;
 }
 
@@ -568,12 +620,12 @@ include 'includes/header.php';
                     <div style="display:flex;align-items:center;gap:0.75rem;">
                         <!-- Avatar -->
                         <?php if ($role === 'admin'): ?>
-                        <img src="assets/images/logo.jpg" alt="SUCFRMS Logo"
+                        <img class="account-avatar" src="assets/images/logo.jpg" alt="SUCFRMS Logo"
                              style="width:40px;height:40px;border-radius:50%;object-fit:cover;flex-shrink:0;border:2px solid #e2e8f0;">
                         <?php else:
                             $pic = $_SESSION['profile_pic'] ?? '';
                             if ($pic): ?>
-                        <img src="<?= sanitize($pic) ?>" alt="Profile"
+                        <img class="account-avatar" src="<?= sanitize($pic) ?>" alt="Profile"
                              style="width:40px;height:40px;border-radius:50%;object-fit:cover;flex-shrink:0;border:2px solid #e2e8f0;">
                         <?php else:
                             $init_s = strtoupper(
@@ -581,7 +633,7 @@ include 'includes/header.php';
                                 substr($_SESSION['last_name']  ?? '', 0, 1)
                             ) ?: 'U';
                         ?>
-                        <div style="width:40px;height:40px;border-radius:50%;background:#1a3a6b;display:flex;align-items:center;justify-content:center;font-size:0.88rem;font-weight:700;color:#fff;flex-shrink:0;">
+                        <div class="account-avatar" style="width:40px;height:40px;border-radius:50%;background:#1a3a6b;display:flex;align-items:center;justify-content:center;font-size:0.88rem;font-weight:700;color:#fff;flex-shrink:0;">
                             <?= $init_s ?>
                         </div>
                         <?php endif; endif; ?>
@@ -769,6 +821,9 @@ include 'includes/header.php';
                     break;
                 case 'score_comparison':
                     include 'includes/faculty/score_comparison.php';
+                    break;
+                case 'my_history':
+                    include 'includes/faculty/my_history.php';
                     break;
                 case 'apply':
                     if ($role === 'faculty') include 'modules/apply.php';

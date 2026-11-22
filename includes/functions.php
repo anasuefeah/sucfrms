@@ -4,6 +4,9 @@
  */
 require_once __DIR__ . '/kra_numbering.php';
 require_once __DIR__ . '/revision_workflow.php';
+require_once __DIR__ . '/cycle_deletion.php';
+require_once __DIR__ . '/pdf_upload.php';
+require_once __DIR__ . '/criteria_snapshots.php';
 
 // -- Authentication --------------------------------------------
 function isLoggedIn(): bool { return isset($_SESSION['user_id']); }
@@ -155,6 +158,16 @@ function kraAssignmentCategories(): array {
 }
 
 function ensureKraAssignmentTable(PDO $pdo): void {
+    if ($pdo->inTransaction()) return;
+    try {
+        $pdo->query('SELECT assignment_id FROM checker_kra_assignments LIMIT 0');
+        return;
+    } catch (PDOException $e) {
+        if ($e->getCode() !== '42S02') {
+            error_log('SUCFRMS assignment schema check: ' . $e->getMessage());
+            return;
+        }
+    }
     try {
         $pdo->exec("CREATE TABLE IF NOT EXISTS checker_kra_assignments (
             assignment_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -170,20 +183,9 @@ function ensureKraAssignmentTable(PDO $pdo): void {
             FOREIGN KEY (checker_id) REFERENCES users(user_id) ON DELETE CASCADE,
             FOREIGN KEY (assigned_by) REFERENCES users(user_id) ON DELETE SET NULL
         )");
-        $count = (int)$pdo->query("SELECT COUNT(*) FROM checker_kra_assignments")->fetchColumn();
-        if ($count === 0) {
-            $ins = $pdo->prepare("INSERT IGNORE INTO checker_kra_assignments (cycle_id, checker_id, kra_category, assigned_by) VALUES (?,?,?,NULL)");
-            $cycles = $pdo->query("SELECT cycle_id FROM cycles")->fetchAll(PDO::FETCH_COLUMN);
-            $checkers = $pdo->query("SELECT user_id FROM users WHERE role='evaluator' AND status='active'")->fetchAll(PDO::FETCH_COLUMN);
-            foreach ($cycles as $cycle_id) {
-                foreach ($checkers as $checker_id) {
-                    foreach (array_keys(kraAssignmentCategories()) as $kra) {
-                        $ins->execute([(int)$cycle_id, (int)$checker_id, $kra]);
-                    }
-                }
-            }
-        }
-    } catch (\Exception $e) {}
+    } catch (PDOException $e) {
+        error_log('SUCFRMS assignment schema setup: ' . $e->getMessage());
+    }
 }
 
 function getCheckerAssignedKras(PDO $pdo, int $checker_id, int $cycle_id): array {
@@ -234,6 +236,32 @@ function countAssignedCheckersForCycle(PDO $pdo, int $cycle_id): int {
     } catch (\Exception $e) {
         return max(1, (int)$pdo->query("SELECT COUNT(*) FROM users WHERE role='evaluator' AND status='active'")->fetchColumn());
     }
+}
+
+function adminDashboardCounts(PDO $pdo): array {
+    $counts = $pdo->query("SELECT COUNT(*) AS admin_applied,
+        SUM(status='submitted') AS admin_pending,
+        SUM(status='under_review') AS admin_review,
+        SUM(status='needs_revision') AS admin_revision,
+        SUM(status IN ('approved','reclassified')) AS admin_approved
+        FROM applications WHERE status NOT IN ('draft','expired')")->fetch(PDO::FETCH_ASSOC);
+    $counts['admin_faculty'] = $pdo->query("SELECT COUNT(*) FROM users WHERE role='faculty'")->fetchColumn();
+    return array_map('intval', $counts);
+}
+
+function evaluatorDashboardCounts(PDO $pdo, int $evaluatorId): array {
+    $query = $pdo->prepare("SELECT
+        SUM(CASE WHEN a.status IN ('submitted','under_review') AND NOT EXISTS (
+            SELECT 1 FROM application_checker_reviews r
+            WHERE r.application_id=a.application_id AND r.checker_id=? AND r.decision IN ('approved','rejected')
+        ) THEN 1 ELSE 0 END) AS checker_pending,
+        SUM(a.status='under_review' AND a.checker_id=?) AS checker_active,
+        SUM(a.status='needs_revision' AND a.checker_id=?) AS checker_revision
+        FROM applications a WHERE a.user_id<>? AND a.status IN ('submitted','under_review','needs_revision')
+        AND EXISTS (SELECT 1 FROM checker_kra_assignments ka
+            WHERE ka.cycle_id=a.cycle_id AND ka.checker_id=?)");
+    $query->execute(array_fill(0, 5, $evaluatorId));
+    return array_map('intval', $query->fetch(PDO::FETCH_ASSOC));
 }
 
 function ensureAppealTables(PDO $pdo): void {
@@ -364,16 +392,34 @@ function getActiveCycle($pdo): array|false {
 
 
 function getOrCreateApplication($pdo, int $user_id, int $cycle_id): array {
+    // INSERT IGNORE handles the unique constraint (user_id, cycle_id) atomically
+    $pdo->prepare("INSERT IGNORE INTO applications (user_id, cycle_id, status) VALUES (?, ?, 'draft')")
+        ->execute([$user_id, $cycle_id]);
     $stmt = $pdo->prepare("SELECT * FROM applications WHERE user_id = ? AND cycle_id = ? LIMIT 1");
     $stmt->execute([$user_id, $cycle_id]);
-    $app = $stmt->fetch();
-    if (!$app) {
-        $pdo->prepare("INSERT INTO applications (user_id, cycle_id, status) VALUES (?, ?, 'draft')")
-            ->execute([$user_id, $cycle_id]);
-        $stmt->execute([$user_id, $cycle_id]);
-        $app = $stmt->fetch();
+    return $stmt->fetch();
+}
+
+function submitApplicationForReview(PDO $pdo, array $application): string {
+    $applicationId = (int)$application['application_id'];
+    $status = !empty($application['checker_id']) ? 'under_review' : 'submitted';
+    $pdo->beginTransaction();
+    try {
+        $update = $pdo->prepare("UPDATE applications SET status=?, submitted_at=NOW()
+            WHERE application_id=? AND status=?");
+        $update->execute([$status, $applicationId, $application['status']]);
+        if (!$update->rowCount()) throw new RuntimeException('Application status changed during submission.');
+        $pdo->prepare("UPDATE kra_submissions SET faculty_original_score=computed_points
+            WHERE application_id=? AND faculty_original_score IS NULL")->execute([$applicationId]);
+        require_once __DIR__ . '/scoring/orchestrator.php';
+        $result = \Scoring\Orchestrator::run($pdo, $applicationId);
+        if (!isset($result['weighted_score'])) throw new RuntimeException('The scoring engine did not return a score.');
+        $pdo->commit();
+        return $status;
+    } catch (Throwable $error) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        throw $error;
     }
-    return $app;
 }
 
 function recalcApplicationScore($pdo, int $application_id): float {
@@ -395,15 +441,19 @@ function recalcApplicationScore($pdo, int $application_id): float {
     }
 
     // -- Legacy fallback ----------------------------------------------
-    $info = $pdo->prepare("SELECT u.`rank` FROM applications a JOIN users u ON a.user_id=u.user_id WHERE a.application_id=?");
+    require_once __DIR__ . '/claim_review.php';
+    $info = $pdo->prepare("SELECT a.*, u.`rank` AS faculty_rank
+        FROM applications a JOIN users u ON a.user_id=u.user_id WHERE a.application_id=?");
     $info->execute([$application_id]);
-    $rank = $info->fetchColumn() ?? '';
+    $app = $info->fetch(PDO::FETCH_ASSOC);
+    if (!$app) return 0.0;
+    $rank = $app['faculty_rank'] ?? '';
 
-    $stmt = $pdo->prepare("SELECT kra_category, computed_points, remarks FROM kra_submissions WHERE application_id=?");
-    $stmt->execute([$application_id]);
+    $entries = ClaimReview::loadEntries($pdo, $application_id);
+    $entries = ClaimReview::scoringEntries($app, $entries, ClaimReview::assess($app, $entries));
     $raw = [];
     $has_national_award = false;
-    foreach ($stmt->fetchAll() as $r) {
+    foreach ($entries as $r) {
         $raw[$r['kra_category']] = ($raw[$r['kra_category']] ?? 0) + kraEffectiveComputedPoints($r);
         if ($r['kra_category'] === 'Professional Development') {
             $parts = array_map('trim', explode('|||', $r['remarks'] ?? ''));
@@ -435,40 +485,6 @@ function kraEffectiveComputedPoints(array $submission): float {
         return max($points, max(0.0, (float)($parts[4] ?? 0)));
     }
     return $points;
-}
-
-function recalcApplicationsAfterCriteriaChange(PDO $pdo, ?int $cycle_id = null, ?string $position_rank = null): int {
-    try {
-        $where = ["a.status <> 'draft'"];
-        $params = [];
-
-        if ($cycle_id) {
-            $where[] = 'a.cycle_id = ?';
-            $params[] = $cycle_id;
-        }
-        if ($position_rank !== null && $position_rank !== '') {
-            $where[] = "COALESCE(NULLIF(a.position_title, ''), u.`rank`) = ?";
-            $params[] = $position_rank;
-        }
-
-        $stmt = $pdo->prepare("
-            SELECT a.application_id
-            FROM applications a
-            JOIN users u ON u.user_id = a.user_id
-            WHERE " . implode(' AND ', $where)
-        );
-        $stmt->execute($params);
-
-        $count = 0;
-        foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $app_id) {
-            recalcApplicationScore($pdo, (int)$app_id);
-            $count++;
-        }
-        return $count;
-    } catch (\Throwable $e) {
-        error_log('SUCFRMS criteria recalculation error: ' . $e->getMessage());
-        return 0;
-    }
 }
 
 /**
@@ -507,12 +523,11 @@ function getApplicationScoreSummary($pdo, int $application_id, bool $refresh = t
     $app_stmt->execute([$application_id]);
     $app = $app_stmt->fetch(PDO::FETCH_ASSOC) ?: [];
 
-    $verified_stmt = $pdo->prepare("
-        SELECT kra_category, computed_points, remarks, verified
-        FROM kra_submissions
-        WHERE application_id = ?
-    ");
-    $verified_stmt->execute([$application_id]);
+    require_once __DIR__ . '/claim_review.php';
+    $entries = $app ? ClaimReview::loadEntries($pdo, $application_id) : [];
+    $claimCount = count($entries);
+    $assessment = ClaimReview::assess($app, $entries);
+    $entries = ClaimReview::scoringEntries($app, $entries, $assessment);
 
     $kra_map = [
         'Instruction'              => ['pts' => 0.0, 'entry_total' => 0.0, 'verified' => 0],
@@ -520,7 +535,7 @@ function getApplicationScoreSummary($pdo, int $application_id, bool $refresh = t
         'Extension'                => ['pts' => 0.0, 'entry_total' => 0.0, 'verified' => 0],
         'Professional Development' => ['pts' => 0.0, 'entry_total' => 0.0, 'verified' => 0],
     ];
-    foreach ($verified_stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+    foreach ($entries as $row) {
         if (!isset($kra_map[$row['kra_category']])) continue;
         $kra_map[$row['kra_category']]['entry_total'] += kraEffectiveComputedPoints($row);
         $kra_map[$row['kra_category']]['verified'] = max((int)$kra_map[$row['kra_category']]['verified'], (int)$row['verified']);
@@ -548,13 +563,15 @@ function getApplicationScoreSummary($pdo, int $application_id, bool $refresh = t
             'potential_rank' => $result['target_rank'] ?? ($app['potential_rank'] ?? ''),
             'kra_map' => $kra_map,
             'kra_results' => $kra_results,
+            'parent_scores' => $result['iss']['parent_scores'] ?? [],
             'pending_documentation' => $result['pending_documentation'] ?? [],
             'config_incomplete' => $result['config_incomplete'] ?? [],
             'source' => 'orchestrator',
         ];
     } else {
         $weights = getKraWeights($app['faculty_rank'] ?? '');
-        foreach ($kra_map as &$k) $k['pts'] = min(100, $k['entry_total']);
+        $maxima = kraMaximumPoints();
+        foreach ($kra_map as $category => &$k) $k['pts'] = min($maxima[$category], $k['entry_total']);
         unset($k);
         $weighted = round(
             ($kra_map['Instruction']['pts'] * $weights['Instruction']) +
@@ -583,6 +600,9 @@ function getApplicationScoreSummary($pdo, int $application_id, bool $refresh = t
         ];
     }
 
+    $summary['claim_count'] = $claimCount;
+    $summary['excluded_claims'] = $assessment['excluded'];
+    $summary['scoring_claims'] = array_fill_keys(array_column($entries, 'submission_id'), true);
     $cache[$cache_key] = $summary;
     return $summary;
 }
@@ -672,24 +692,8 @@ function getSubRankIncrement(float $score): int {
 }
 
 function getCriteria($pdo, string $key, ?int $cycle_id = null, ?string $position_rank = null): array|false {
-    // 1. Most specific: cycle + position
-    if ($cycle_id && $position_rank) {
-        $stmt = $pdo->prepare("SELECT * FROM scoring_criteria WHERE criterion_key=? AND cycle_id=? AND position_rank=? AND is_active=1 LIMIT 1");
-        $stmt->execute([$key, $cycle_id, $position_rank]);
-        $row = $stmt->fetch();
-        if ($row) return $row;
-    }
-    // 2. Cycle-wide (no position)
-    if ($cycle_id) {
-        $stmt = $pdo->prepare("SELECT * FROM scoring_criteria WHERE criterion_key=? AND cycle_id=? AND position_rank IS NULL AND is_active=1 LIMIT 1");
-        $stmt->execute([$key, $cycle_id]);
-        $row = $stmt->fetch();
-        if ($row) return $row;
-    }
-    // 3. Global default
-    $stmt = $pdo->prepare("SELECT * FROM scoring_criteria WHERE criterion_key=? AND cycle_id IS NULL AND position_rank IS NULL AND is_active=1 LIMIT 1");
-    $stmt->execute([$key]);
-    return $stmt->fetch();
+    $active = array_column(CriteriaSnapshots::rows($pdo, $cycle_id ?? 0, $position_rank), null, 'criterion_key');
+    return $active[$key] ?? false;
 }
 
 // -- UI helpers ------------------------------------------------
@@ -800,8 +804,8 @@ function formatKraRemarks(string $category, string $remarks): string {
             $notes    = $p[3] ?? '';
             if ($critType === 'A-set-sef') {
                 $parts = [];
-                $parts[] = '<span class="text-muted" style="font-size:0.75rem;">1.1 Student Evaluation (60%)</span> <strong>' . htmlspecialchars($d1, ENT_QUOTES) . '%</strong>';
-                $parts[] = '<span class="text-muted" style="font-size:0.75rem;">1.2 Supervisor\'s Evaluation (40%)</span> <strong>' . htmlspecialchars($d2, ENT_QUOTES) . '%</strong>';
+                $parts[] = '<span class="text-muted" style="font-size:0.75rem;">1.1 Student Evaluation of Teaching (60%)</span> <strong>' . htmlspecialchars($d1, ENT_QUOTES) . '%</strong>';
+                $parts[] = '<span class="text-muted" style="font-size:0.75rem;">1.2 Supervisor Evaluation Form (40%)</span> <strong>' . htmlspecialchars($d2, ENT_QUOTES) . '%</strong>';
                 $parts = array_filter($parts, fn($part) => !str_contains($part, '<strong>%</strong>'));
                 if ($notes !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">Notes:</span> ' . htmlspecialchars($notes, ENT_QUOTES);
                 return implode(' &nbsp;|&nbsp; ', $parts) ?: '-';
@@ -813,13 +817,13 @@ function formatKraRemarks(string $category, string $remarks): string {
                 $parts = [];
                 if ($period !== '') $parts[] = '<strong>' . htmlspecialchars($period, ENT_QUOTES) . '</strong>';
                 $parts[] = '<span class="text-muted" style="font-size:0.75rem;">' . $sem . '</span>';
-                if ($set !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">1.1 Student Evaluation (60%)</span> <strong>' . htmlspecialchars($set, ENT_QUOTES) . '%</strong>';
-                if ($sef !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">1.2 Supervisor\'s Evaluation (40%)</span> <strong>' . htmlspecialchars($sef, ENT_QUOTES) . '%</strong>';
+                if ($set !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">1.1 Student Evaluation of Teaching (60%)</span> <strong>' . htmlspecialchars($set, ENT_QUOTES) . '%</strong>';
+                if ($sef !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">1.2 Supervisor Evaluation Form (40%)</span> <strong>' . htmlspecialchars($sef, ENT_QUOTES) . '%</strong>';
                 return implode(' &nbsp;|&nbsp; ', $parts) ?: '-';
             } elseif ($critType === 'A-set-sem' || $critType === 'A-sef-sem') {
                 $period = $d1;
                 $sem    = $d2 === '2' ? '2nd Semester' : '1st Semester';
-                $label  = $numberedLabel !== '' ? $numberedLabel : ($critType === 'A-sef-sem' ? 'SEF' : 'SET');
+                $label  = $numberedLabel !== '' ? $numberedLabel : ($critType === 'A-sef-sem' ? 'Supervisor Evaluation Form' : 'Student Evaluation of Teaching');
                 $score  = $p[3] ?? '';
                 $parts = [];
                 if ($period !== '') $parts[] = '<strong>' . htmlspecialchars($period, ENT_QUOTES) . '</strong>';
@@ -856,8 +860,8 @@ function formatKraRemarks(string $category, string $remarks): string {
                 $sef   = $p[1] ?? '';
                 $notes = $p[2] ?? '';
                 $parts = [];
-                if ($set  !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">SET</span> <strong>' . htmlspecialchars($set, ENT_QUOTES) . '%</strong>';
-                if ($sef  !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">SEF</span> <strong>' . htmlspecialchars($sef, ENT_QUOTES) . '%</strong>';
+                if ($set  !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">Student Evaluation of Teaching</span> <strong>' . htmlspecialchars($set, ENT_QUOTES) . '%</strong>';
+                if ($sef  !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">Supervisor Evaluation Form</span> <strong>' . htmlspecialchars($sef, ENT_QUOTES) . '%</strong>';
                 if ($notes !== '') $parts[] = '<span class="text-muted" style="font-size:0.75rem;">Notes:</span> ' . htmlspecialchars($notes, ENT_QUOTES);
                 return implode(' &nbsp;|&nbsp; ', $parts) ?: '-';
             }
@@ -974,7 +978,6 @@ function statusBadge(string $status): string {
         'draft'          => ['#64748b', '#f1f5f9', 'Draft'],
         'submitted'      => ['#1a3a6b', '#e8eef7', 'Submitted'],
         'under_review'   => ['#1a3a6b', '#e8eef7', 'Under Evaluation'],
-        'talisay_review' => ['#1a3a6b', '#e8eef7', 'ITC Review'],
         'approved'       => ['#1a3a6b', '#f0f4fb', 'Evaluation Complete'],
         'reclassified'   => ['#1a3a6b', '#f0f4fb', 'Evaluation Complete'],
         'rejected'       => ['#475569', '#f8fafc', 'Returned for Revision'],

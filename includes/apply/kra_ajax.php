@@ -112,6 +112,10 @@ function kraRemarksAreMeaningful(string $category, string $remarks): bool {
     }
 
     if ($category === 'Professional Development') {
+        if (in_array($type, ['D-prior-academic', 'D-prior-industry'], true)) {
+            $years = $parts[2] ?? '';
+            return ($parts[1] ?? '') !== '' && is_numeric($years) && is_finite((float)$years) && (float)$years >= 1;
+        }
         return in_array($type, ['A-org', 'B-training', 'B-paper', 'B-degree', 'C-award'], true);
     }
 
@@ -252,6 +256,14 @@ if (!isLoggedIn() || !isFaculty()) {
 // Clear any accidental output
 while (ob_get_level()) ob_end_clean();
 header('Content-Type: application/json');
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    foreach (['evidence','evidence[]'] as $field) {
+        if (isset($_FILES[$field]) && ($error = pdfUploadBatchError($_FILES[$field]))) {
+            echo json_encode(['ok'=>false,'error'=>$error]);
+            exit;
+        }
+    }
+}
 
 $uid    = $_SESSION['user_id'];
 $app_id = intval($_POST['app_id'] ?? $_GET['app_id'] ?? 0);
@@ -259,7 +271,7 @@ $app_id = intval($_POST['app_id'] ?? $_GET['app_id'] ?? 0);
 // Verify this application belongs to the logged-in user
 if ($app_id) {
     $check = $pdo->prepare("
-        SELECT a.application_id, a.status, a.cycle_id, COALESCE(a.position_title, u.`rank`) AS position_rank
+        SELECT a.application_id, a.status, a.cycle_id, COALESCE(NULLIF(a.position_title, ''), u.`rank`) AS position_rank
         FROM applications a
         JOIN users u ON u.user_id = a.user_id
         WHERE a.application_id = ? AND a.user_id = ?
@@ -386,6 +398,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
 
+        $parts = explode('|||', $remarks);
+        if (($parts[0] ?? '') === 'CUSTOM') {
+            $configuredRemarks = configuredCustomCriterionRemarks($pdo, $kra_criteria_context['cycle_id'],
+                $kra_criteria_context['position_rank'], $category, $parts[2] ?? '', $parts[5] ?? '');
+            if ($configuredRemarks === null) {
+                echo json_encode(['ok'=>false, 'error'=>'This criterion is no longer available. Refresh the application and choose an active criterion.']); exit;
+            }
+            $remarks = $configuredRemarks;
+        }
+
         // -- Server-side score computation (never trust client-sent score) --
         if (!kraRemarksAreMeaningful($category, $remarks)) {
             echo json_encode(['ok' => false, 'error' => 'Please select a valid criterion and fill the required score fields before uploading or saving.']);
@@ -399,7 +421,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $sem    = $remarks_parts[2] ?? '';
             $rating = $remarks_parts[3] ?? '';
             if (!is_numeric($rating) || (float)$rating < 0 || (float)$rating > 100) {
-                echo json_encode(['ok' => false, 'error' => 'SET/SEF ratings must be percentages from 0 to 100.']);
+                echo json_encode(['ok' => false, 'error' => 'Student Evaluation of Teaching/Supervisor Evaluation Form ratings must be percentages from 0 to 100.']);
                 exit;
             }
             $dup = $pdo->prepare("SELECT submission_id FROM kra_submissions
@@ -408,7 +430,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 LIMIT 1");
             $dup->execute([$app_id, $edit_id, $remarks_type . '|||' . $period . '|||' . $sem . '|||%']);
             if ($dup->fetchColumn()) {
-                $label = $remarks_type === 'A-sef-sem' ? 'SEF' : 'SET';
+                $label = $remarks_type === 'A-sef-sem' ? 'Supervisor Evaluation Form' : 'Student Evaluation of Teaching';
                 echo json_encode(['ok' => false, 'error' => "{$label} already has an entry for {$period}, semester {$sem}."]);
                 exit;
             }
@@ -445,13 +467,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $project_root = rtrim(str_replace('/', DIRECTORY_SEPARATOR, realpath(__DIR__ . '/../../')), DIRECTORY_SEPARATOR);
         $rel_folder   = 'uploads/kra' . $kra_num . '/';
         $abs_folder   = $project_root . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'kra' . $kra_num . DIRECTORY_SEPARATOR;
-        $allowed_exts = ['pdf', 'jpg', 'jpeg', 'png'];
+        $allowed_exts = ['pdf'];
 
         $files_to_insert = [];
         foreach ($uploaded_files as $uf) {
             $ext = strtolower(pathinfo($uf['name'], PATHINFO_EXTENSION));
             if (!in_array($ext, $allowed_exts)) {
-                echo json_encode(['ok' => false, 'error' => 'Invalid file type. Use PDF, JPG, or PNG.']);
+                echo json_encode(['ok' => false, 'error' => 'Invalid file type. Use PDF only.']);
                 exit;
             }
             if ($uf['size'] > 50 * 1024 * 1024) {

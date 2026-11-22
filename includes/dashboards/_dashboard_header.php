@@ -9,6 +9,7 @@
  */
 
 $_dh_role      = $_SESSION['role'] ?? 'faculty';
+$_dh_avatar_radius = $_dh_role === 'admin' ? '0' : '50%';
 $_dh_uid       = (int)($_SESSION['user_id'] ?? 0);
 $_dh_pic       = $_SESSION['profile_pic'] ?? '';
 $_dh_first     = $_SESSION['first_name'] ?? '';
@@ -90,10 +91,10 @@ if ($cycle) {
     <!-- Left: avatar + name + meta -->
     <div style="display:flex;align-items:center;gap:0.85rem;min-width:0;">
         <?php if ($_dh_pic): ?>
-        <img src="<?= sanitize($_dh_pic) ?>" alt="Profile"
-             style="width:44px;height:44px;border-radius:50%;object-fit:cover;border:1px solid #e2e8f0;flex-shrink:0;">
+        <img class="account-avatar" src="<?= sanitize($_dh_pic) ?>" alt="Profile"
+             style="width:44px;height:44px;border-radius:<?= $_dh_avatar_radius ?>;object-fit:cover;border:1px solid #e2e8f0;flex-shrink:0;">
         <?php else: ?>
-        <div style="width:44px;height:44px;border-radius:50%;background:#1a3a6b;
+        <div class="account-avatar" style="width:44px;height:44px;border-radius:<?= $_dh_avatar_radius ?>;background:#1a3a6b;
                     display:flex;align-items:center;justify-content:center;
                     font-size:0.9rem;font-weight:700;color:#fff;flex-shrink:0;">
             <?= $_dh_initials ?>

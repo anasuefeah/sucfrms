@@ -31,7 +31,7 @@ catch (\Exception $e) {
 if (!$cycle) {
     // Show the most recently closed cycle for reference
     $last_cycle = $pdo->query("SELECT * FROM cycles ORDER BY created_at DESC LIMIT 1")->fetch();
-    echo '<div class="neon-card text-center py-5">
+    echo '<div class="neon-card rounded-0 shadow-none text-center py-5">
         <i class="bi bi-calendar-x fs-1 text-secondary mb-3 d-block"></i>
         <h5 style="color:#1a3a6b;font-weight:700;margin-bottom:0.5rem;">No Active Reclassification Cycle</h5>
         <p class="text-muted mb-1">There is currently no open cycle. Your account is ready.</p>
@@ -95,7 +95,7 @@ $potential_data_faculty = [
 
 // Pre-compute weighted scores per KRA category for the table display
 $score_result_fac = $score_summary_faculty;
-$kra_caps_fac     = ['Instruction'=>100,'Research'=>100,'Extension'=>100,'Professional Development'=>100];
+$kra_caps_fac     = kraMaximumPoints();
 $kra_weights_fac  = $score_result_fac['weights'];
 // Sum raw per category for proportional distribution per entry
 $kra_raw_totals_fac = [];
@@ -456,7 +456,7 @@ $kra_tabs = [
                 <div id="edRevisionNote" style="display:none;padding:0.75rem 1.1rem;border-bottom:1px solid #f1f5f9;background:#f8fafc;">
                     <div style="display:flex;align-items:flex-start;gap:0.6rem;">
                         <!-- Evaluator avatar -->
-                        <div style="width:28px;height:28px;border-radius:50%;background:#1a3a6b;
+                        <div class="account-avatar" style="width:28px;height:28px;border-radius:50%;background:#1a3a6b;
                                     display:flex;align-items:center;justify-content:center;
                                     font-size:0.6rem;font-weight:700;color:#fff;flex-shrink:0;margin-top:1px;">EV</div>
                         <div style="flex:1;min-width:0;">
@@ -626,8 +626,8 @@ $kra_tabs = [
             <label class="form-label">Reason for Appeal</label>
             <textarea name="reason" class="form-control" rows="4" required placeholder="Explain why this flag or score change should be reviewed."></textarea>
             <label class="form-label mt-3">Supporting Files</label>
-            <input type="file" name="attachments[]" class="form-control" multiple>
-            <div class="form-text">PDF, image, Word files. Max 5 MB each.</div>
+            <input type="file" name="attachments[]" accept=".pdf,application/pdf" class="form-control" multiple>
+            <div class="form-text">PDF only. Max 5 MB each.</div>
             <div class="d-flex justify-content-end gap-2 mt-3">
                 <button type="button" class="btn btn-outline-secondary" onclick="document.getElementById('appealModal').style.display='none'">Cancel</button>
                 <button class="btn btn-primary"><i class="bi bi-send me-1"></i>Submit Appeal</button>
@@ -648,13 +648,13 @@ function openAppealModal(submissionId, kraLabel) {
 // Score Comparison Table (live-polled)
 // Show as soon as the application has been submitted or is under review
 $show_comparison = in_array($app['status'], [
-    'submitted','under_review','talisay_review','approved',
+    'submitted','under_review','approved',
     'admin_rejected','needs_revision','rejected'
 ]) && !empty($subs);
 
 if ($show_comparison):
     // Is it still actively being reviewed? If so we poll for live updates.
-    $is_live = in_array($app['status'], ['submitted','under_review','talisay_review','needs_revision']);
+    $is_live = in_array($app['status'], ['submitted','under_review','needs_revision']);
 ?>
 <div id="score-comparison" style="scroll-margin-top:80px;"></div>
 <div class="neon-card p-0" style="overflow:hidden;margin-top:0.75rem;border-radius:0;box-shadow:none;" id="cmpCard">
@@ -689,13 +689,11 @@ if ($show_comparison):
 }
 .cmp-your-badge { background:#f1f5f9;color:#1a3a6b;padding:.18rem .55rem;font-weight:700;font-size:.8rem;border:1px solid #e2e8f0; }
 .cmp-s1-badge   { background:#1a3a6b;color:#fff;padding:.18rem .55rem;font-weight:700;font-size:.8rem; }
-.cmp-s2-badge   { background:#334155;color:#fff;padding:.18rem .55rem;font-weight:700;font-size:.8rem; }
 .cmp-nochange   { color:#94a3b8;font-size:.75rem; }
 .cmp-pending    { color:#cbd5e1;font-size:.75rem; }
 .cmp-rev-note   { padding:.3rem .55rem;background:#f8fafc;border-left:2px solid #475569;font-size:.7rem;margin-bottom:3px; }
 .cmp-ws-your    { background:#f1f5f9;color:#1a3a6b;padding:.28rem .7rem;font-weight:700;font-size:.88rem;border:1px solid #e2e8f0; }
 .cmp-ws-s1      { background:#1a3a6b;color:#fff;padding:.28rem .7rem;font-weight:700;font-size:.88rem; }
-.cmp-ws-s2      { background:#334155;color:#fff;padding:.28rem .7rem;font-weight:700;font-size:.88rem; }
 </style>
 
 <script>
@@ -716,9 +714,6 @@ if ($show_comparison):
     function buildTable(data) {
         const subs   = data.submissions || [];
         const hasS1  = data.has_stage1;
-        const hasS2  = data.has_stage2;
-        const s1Info = data.stage1_info || [];
-        const s2Info = data.stage2_info || [];
 
         const groups = {};
         KRA_ORDER.forEach(k => { groups[k] = []; });
@@ -732,14 +727,11 @@ if ($show_comparison):
             <th style="padding:.55rem .75rem;font-size:.62rem;text-transform:uppercase;letter-spacing:.07em;font-weight:700;text-align:center;color:#94a3b8;width:100px;">Your Score</th>`;
 
         if (hasS1) {
-            html += `<th style="padding:.55rem .75rem;font-size:.62rem;text-transform:uppercase;letter-spacing:.07em;font-weight:700;text-align:center;color:#94a3b8;width:100px;">Stage 1<div style="font-size:.6rem;font-weight:400;color:#cbd5e1;text-transform:none;letter-spacing:0;">Subcommittee</div></th>`;
+            html += `<th style="padding:.55rem .75rem;font-size:.62rem;text-transform:uppercase;letter-spacing:.07em;font-weight:700;text-align:center;color:#94a3b8;width:100px;">Evaluator Score<div style="font-size:.6rem;font-weight:400;color:#cbd5e1;text-transform:none;letter-spacing:0;">Evaluation</div></th>`;
         } else {
-            html += `<th style="padding:.55rem .75rem;font-size:.62rem;text-transform:uppercase;letter-spacing:.07em;font-weight:700;text-align:center;color:#cbd5e1;width:100px;">Stage 1<div style="font-size:.6rem;font-weight:400;text-transform:none;letter-spacing:0;">Pending</div></th>`;
+            html += `<th style="padding:.55rem .75rem;font-size:.62rem;text-transform:uppercase;letter-spacing:.07em;font-weight:700;text-align:center;color:#cbd5e1;width:100px;">Evaluator Score<div style="font-size:.6rem;font-weight:400;text-transform:none;letter-spacing:0;">Pending</div></th>`;
         }
 
-        if (hasS2) {
-            html += `<th style="padding:.55rem .75rem;font-size:.62rem;text-transform:uppercase;letter-spacing:.07em;font-weight:700;text-align:center;color:#94a3b8;width:100px;">Stage 2<div style="font-size:.6rem;font-weight:400;color:#cbd5e1;text-transform:none;letter-spacing:0;">ITC</div></th>`;
-        }
 
         html += `<th style="padding:.55rem .75rem;font-size:.62rem;text-transform:uppercase;letter-spacing:.07em;font-weight:700;color:#94a3b8;">Remarks</th>
         </tr></thead><tbody>`;
@@ -751,12 +743,11 @@ if ($show_comparison):
 
             // KRA group header row
             html += `<tr style="background:#f8fafc;border-top:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;">
-                <td colspan="${2 + (hasS1?1:0) + (hasS2?1:0) + 1}" style="padding:.4rem 1rem;font-size:.62rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.07em;">${esc(kra)}</td>
+                <td colspan="4" style="padding:.4rem 1rem;font-size:.62rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.07em;">${esc(kra)}</td>
             </tr>`;
 
             rows.forEach((s) => {
                 const s1Adj = s.checker_adjusted && s.adjusted_stage === 'stage1';
-                const s2Adj = s.checker_adjusted && s.adjusted_stage === 'stage2';
                 const hasRev = s.revision_status === 'needs_revision';
 
                 html += `<tr style="border-bottom:1px solid #f4f6f9;${hasRev ? 'background:#fffbf0;' : ''}">`;
@@ -778,20 +769,6 @@ if ($show_comparison):
                 }
                 html += `</td>`;
 
-                // Stage 2
-                if (hasS2) {
-                    html += `<td style="padding:.55rem .75rem;text-align:center;vertical-align:middle;">`;
-                    if (s2Adj) {
-                        html += `<span class="cmp-s2-badge">${fmt(s.current_score)}</span>`;
-                        if (s.adjusted_by) html += `<div style="font-size:.6rem;color:#64748b;margin-top:2px;">${esc(s.adjusted_by)}</div>`;
-                    } else if (hasS2) {
-                        html += `<span class="cmp-nochange">No change</span>`;
-                    } else {
-                        html += `<span class="cmp-pending">—</span>`;
-                    }
-                    html += `</td>`;
-                }
-
                 // Remarks
                 html += `<td style="padding:.55rem .75rem;vertical-align:middle;font-size:.75rem;color:#475569;">`;
                 let hasRem = false;
@@ -812,9 +789,7 @@ if ($show_comparison):
         // -- tfoot
         const wsY  = parseFloat(data.ws_faculty ?? 0);
         const wsS1 = parseFloat(data.ws_stage1  ?? 0);
-        const wsS2 = data.ws_stage2 !== null ? parseFloat(data.ws_stage2) : null;
         const d1   = Math.round((wsS1 - wsY) * 100) / 100;
-        const d2   = wsS2 !== null ? Math.round((wsS2 - wsY) * 100) / 100 : null;
 
         const diffHtml = (d) => {
             if (d === null) return '';
@@ -835,15 +810,6 @@ if ($show_comparison):
         }
         html += `</td>`;
 
-        if (hasS2) {
-            html += `<td style="padding:.65rem .75rem;text-align:center;">`;
-            if (wsS2 !== null) {
-                html += `<span class="cmp-ws-s2">${fmt(wsS2)}</span>${diffHtml(d2)}`;
-            } else {
-                html += `<span class="cmp-pending">—</span>`;
-            }
-            html += `</td>`;
-        }
 
         html += `<td style="padding:.65rem .75rem;font-size:.7rem;color:#94a3b8;vertical-align:middle;">
                 Evaluator score after all adjustments. Not a final decision.

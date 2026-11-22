@@ -21,13 +21,13 @@ function renderDatabaseSetupError(string $title, string $message, array $steps, 
             body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
                    background: #f4f7fb; color: #0f172a; padding: 2rem 1rem; }
             .box { max-width: 680px; margin: 3rem auto; background: #fff; border: 1px solid #e2e8f0;
-                   border-radius: 16px; box-shadow: 0 10px 30px rgba(15,23,42,.08); padding: 2rem; }
+                   box-shadow: 0 10px 30px rgba(15,23,42,.08); padding: 2rem; }
             h1 { font-size: 1.3rem; color: #334155; margin: 0 0 .5rem; }
             p { line-height: 1.6; }
             ol { line-height: 1.9; padding-left: 1.2rem; }
-            code { background: #f1f5f9; padding: .15rem .4rem; border-radius: 5px; font-size: .85em; }
+            code { background: #f1f5f9; padding: .15rem .4rem; font-size: .85em; }
             .detail { margin-top: 1.5rem; font-size: .8rem; color: #64748b; background: #f8fafc;
-                      border: 1px solid #e2e8f0; border-radius: 8px; padding: .75rem 1rem; word-break: break-word; }
+                      border: 1px solid #e2e8f0; padding: .75rem 1rem; word-break: break-word; }
         </style>
     </head>
     <body>
@@ -81,6 +81,25 @@ try {
             ],
             'Missing table(s): ' . implode(', ', $missingTables)
         );
+    }
+    // Run for every entry point, including standalone portal and AJAX pages.
+    require_once __DIR__ . '/../includes/claim_review.php';
+    if (empty($_SESSION['_claim_review_schema_ready'])) {
+        ClaimReview::ensureSchema($pdo);
+        if (session_status() === PHP_SESSION_ACTIVE) $_SESSION['_claim_review_schema_ready'] = true;
+    }
+    require_once __DIR__ . '/../includes/criteria_snapshots.php';
+    // A browser session can outlive a database reimport or replacement.
+    if (empty($_SESSION['_criteria_hierarchy_ready']) || !criteriaHierarchyIsReady($pdo)) {
+        CriteriaSnapshots::ensureSchema($pdo);
+        CriteriaSnapshots::baseline($pdo);
+        if (session_status() === PHP_SESSION_ACTIVE) $_SESSION['_criteria_hierarchy_ready'] = true;
+    }
+    require_once __DIR__ . '/../includes/review_workflow_migration.php';
+    if (empty($_SESSION['_single_stage_review_migrated'])) {
+        if (migrateSingleStageReview($pdo) && session_status() === PHP_SESSION_ACTIVE) {
+            $_SESSION['_single_stage_review_migrated'] = true;
+        }
     }
 } catch (PDOException $e) {
     $isUnknownDb = stripos($e->getMessage(), 'Unknown database') !== false;
