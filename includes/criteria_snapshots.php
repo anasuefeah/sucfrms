@@ -264,6 +264,50 @@ class CriteriaSnapshots {
         } catch (Throwable $e) { if ($pdo->inTransaction()) $pdo->rollBack(); throw $e; }
     }
 
+    public static function updateScoringDefaults(PDO $pdo): void
+    {
+        $changes = [
+            'kra1_c_mentor_competition' => [0, 1, 'Provisional rate based on the one-point panel service indicator. Regional, national or international competition, champion through third place.'],
+            'kra4_c_award_international' => [0, 5, 'Provisional rate. Institutional, local and national awards are rated at two, three and four points.'],
+            'kra2_b_software_updated_co' => [2, 4, null],
+            'kra2_c_essay' => [10, 2, null],
+            'kra2_c_poetry' => [10, 2, null],
+        ];
+        $pdo->beginTransaction();
+        try {
+            $cycles = self::lockScopes($pdo);
+            $scopes = [0];
+            foreach ($cycles as $cycle) {
+                if ($cycle['status'] === 'open') $scopes[] = (int)$cycle['cycle_id'];
+            }
+            $update = $pdo->prepare("UPDATE scoring_criteria
+                SET max_points = ?, description = COALESCE(?, description)
+                WHERE cycle_id <=> ? AND criterion_key = ? AND max_points = ? AND updated_by IS NULL");
+            $awardLabel = $pdo->prepare("UPDATE scoring_criteria SET criterion_label = 'Criterion C - International Award'
+                WHERE cycle_id <=> ? AND criterion_key = 'kra4_c_award_international'
+                  AND max_points = 5 AND updated_by IS NULL AND criterion_label LIKE '%CONFIG GAP%'");
+            $localCitation = $pdo->prepare("UPDATE scoring_criteria SET is_active = 0
+                WHERE cycle_id <=> ? AND criterion_key = 'kra2_a_citation_local'
+                  AND is_active = 1 AND max_points = 5 AND updated_by IS NULL");
+            foreach ($scopes as $scope) {
+                $changed = 0;
+                foreach ($changes as $key => [$oldPoints, $points, $description]) {
+                    $update->execute([$points, $description, $scope ?: null, $key, $oldPoints]);
+                    $changed += $update->rowCount();
+                }
+                $awardLabel->execute([$scope ?: null]);
+                $changed += $awardLabel->rowCount();
+                $localCitation->execute([$scope ?: null]);
+                $changed += $localCitation->rowCount();
+                if ($changed) self::record($pdo, $scope, null, 'Updated scoring rates for JC 2026', false);
+            }
+            $pdo->commit();
+        } catch (Throwable $e) {
+            $pdo->rollBack();
+            throw $e;
+        }
+    }
+
     public static function initializeCycle(PDO $pdo, int $cycleId, ?int $adminId, bool $notify = true): void {
         if (!$pdo->inTransaction()) throw new LogicException('Cycle setup requires a transaction.');
         $q = $pdo->prepare('SELECT revision FROM criteria_scope_state WHERE scope_id=?');

@@ -3,6 +3,15 @@ namespace Scoring;
 
 class EntryMetadata
 {
+    public static function reviewedPoints(array $entry, float $calculated): float
+    {
+        if (!empty($entry['verified']) && isset($entry['faculty_original_score'], $entry['computed_points'])
+            && (float)$entry['computed_points'] !== (float)$entry['faculty_original_score']) {
+            return max(0.0, (float)$entry['computed_points']);
+        }
+        return $calculated;
+    }
+
     public static function criterionKey(array $parts): string
     {
         foreach (array_reverse($parts) as $part) {

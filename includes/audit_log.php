@@ -239,11 +239,11 @@ function auditDisplayText(?string $text): string {
                 <tr style="background:#f8fafc;border-bottom:2px solid #e2e8f0;">
                     <th style="padding:0.55rem 0.9rem;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;width:44px;text-align:center;">#</th>
                     <?php if ($role === 'admin'): ?>
-                    <th style="padding:0.55rem 0.75rem;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;">User</th>
+                    <th style="padding:0.55rem 0.75rem;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;text-align:left;">User</th>
                     <th style="padding:0.55rem 0.75rem;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;width:90px;text-align:center;">Role</th>
                     <?php endif; ?>
-                    <th style="padding:0.55rem 0.75rem;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;width:180px;">Action</th>
-                    <th style="padding:0.55rem 0.75rem;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;">Details</th>
+                    <th style="padding:0.55rem 0.75rem;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;width:180px;text-align:left;">Action</th>
+                    <th style="padding:0.55rem 0.75rem;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;text-align:left;">Details</th>
                     <th style="padding:0.55rem 0.75rem;font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#94a3b8;width:130px;white-space:nowrap;text-align:right;">Date &amp; Time</th>
                 </tr>
             </thead>
@@ -295,7 +295,7 @@ function auditDisplayText(?string $text): string {
                 </td>
             </tr>
             <?php endforeach; else: ?>
-            <tr><td colspan="7" style="padding:2.5rem;text-align:center;color:#94a3b8;font-size:0.8rem;">
+            <tr><td colspan="<?= $role === 'admin' ? 6 : 4 ?>" style="padding:2.5rem;text-align:center;color:#94a3b8;font-size:0.8rem;">
                 <i class="bi bi-inbox" style="font-size:1.5rem;color:#e2e8f0;display:block;margin-bottom:0.5rem;"></i>
                 No logs found.
             </td></tr>

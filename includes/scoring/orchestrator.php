@@ -43,7 +43,7 @@ class Orchestrator
         $app = $pdo->prepare("
             SELECT a.*, u.`rank` AS current_rank, u.user_id AS faculty_user_id,
                    u.first_name, u.last_name, u.employee_id,
-                   c.status AS cycle_status
+                   c.status AS cycle_status, c.start_date AS cycle_start, c.end_date AS cycle_end
             FROM applications a
             JOIN users u ON a.user_id = u.user_id
             LEFT JOIN cycles c ON a.cycle_id = c.cycle_id
@@ -103,7 +103,8 @@ class Orchestrator
                 $subs_by_cat[$category] = kraCurrentCriterionEntries($entries, array_filter($criteria, static fn(array $row): bool => $row['kra_category'] === $category));
             }
         }
-        $kra1 = KRA1Scorer::score($subs_by_cat['Instruction'] ?? []);
+        $divisors = explode(',', (string)($app['teaching_divisors'] ?? ''));
+        $kra1 = KRA1Scorer::score($subs_by_cat['Instruction'] ?? [], (int)($divisors[0] ?: 6), (int)($divisors[1] ?? 6));
         $kra2 = KRA2Scorer::score($subs_by_cat['Research'] ?? []);
         $kra3 = KRA3Scorer::score($subs_by_cat['Extension'] ?? []);
 
@@ -115,11 +116,17 @@ class Orchestrator
         $auto_bump_pre    = (int)($auto_subrank_pre['bonus_increment'] ?? 0);
         $doctorate_points_for_kra4 = in_array(($auto_subrank_pre['doctorate_mode'] ?? ''), ['points_only', 'blocked_historical', 'not_eligible'], true)
             && (float)($auto_subrank_pre['doctorate_points'] ?? 0) > 0
-            ? AutoSubRankCalculator::DOCTORATE_POINTS
+            ? (float)$auto_subrank_pre['doctorate_points']
             : 0.0;
         KRA4Scorer::setDoctoratePointsOverride($doctorate_points_for_kra4);
-        $kra4 = KRA4Scorer::score($subs_by_cat['Professional Development'] ?? []);
-        KRA4Scorer::setDoctoratePointsOverride(null);
+        try {
+            $kra4 = KRA4Scorer::score(
+                $subs_by_cat['Professional Development'] ?? [],
+                KRA4Scorer::isNewlyAppointed($pdo, $faculty_id, $app['cycle_start'], $app['cycle_end'])
+            );
+        } finally {
+            KRA4Scorer::setDoctoratePointsOverride(null);
+        }
 
         // -- STEP 5: Aggregate ----------------------------------------
         $grand_total = $kra1['subtotal'] + $kra2['subtotal'] + $kra3['subtotal'] + $kra4['subtotal'];
@@ -199,12 +206,19 @@ class Orchestrator
         // computed above as $final_rank (Step 4 of the spec: the two mechanisms
         // are added together, not blended into the two-pass weight lookups).
         $target_rank     = $final_rank;
+        $lockedResult = in_array($app['status'], ['approved', 'reclassified', 'admin_rejected'], true);
+        if ($lockedResult) {
+            $grand_total = (float)$app['total_score'];
+            $weighted_score = (float)$app['weighted_score'];
+            $sub_rank_increment = (int)$app['sub_rank_increment'];
+            $target_rank = $app['potential_rank'] ?: $target_rank;
+        }
         $committee_route = AutoSubrank::routeCommittee($target_rank);
 
         // -- Persist results to DB -------------------------------------
         $workflow = self::mapWorkflowStatus($app['status'] ?? 'draft');
 
-        self::persist($pdo, $application_id, [
+        if (!$lockedResult) self::persist($pdo, $application_id, [
             'grand_total'           => $grand_total,
             'weighted_score'        => $weighted_score,
             'sub_rank_increment'    => $sub_rank_increment,
@@ -250,7 +264,7 @@ class Orchestrator
             'qualified_auto_subrank_phd'   => $auto_subrank['qualified_auto_subrank_phd'],
             'qualified_auto_subrank_award' => $auto_subrank['qualified_auto_subrank_award'],
             'auto_subrank_bonus'           => $auto_bump,
-            'final_rank'                   => $final_rank,
+            'final_rank'                   => $target_rank,
             // Back-compat top-level fields other callers of buildISS's output may expect.
             'weighted_score'               => $weighted_score,
             'sub_rank_increment'           => $sub_rank_increment,

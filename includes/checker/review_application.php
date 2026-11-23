@@ -55,7 +55,7 @@ catch (\Exception $e) {
     $pdo->exec("ALTER TABLE kra_submissions
         ADD COLUMN faculty_original_score DECIMAL(6,2) DEFAULT NULL AFTER computed_points");
     $pdo->exec("UPDATE kra_submissions SET faculty_original_score = computed_points
-        WHERE faculty_original_score IS NULL");
+        WHERE faculty_original_score IS NULL AND verified = 1");
 }
 try { $pdo->query("SELECT review_id FROM application_checker_reviews LIMIT 1"); }
 catch (\Exception $e) {
@@ -167,6 +167,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $remarks    = trim($_POST['checker_remarks'] ?? '');
     $checker_id = $_SESSION['user_id'];
 
+    if ($action === 'save_teaching_divisors' && in_array($app['status'], ['under_review', 'needs_revision'], true)) {
+        $returnUrl = $kraReviewUrl('Instruction');
+        blockUnassignedKra($pdo, $checker_id, (int)$app['cycle_id'], 'Instruction', $returnUrl);
+        $set = filter_var($_POST['set_divisor'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => 9]]);
+        $sef = filter_var($_POST['sef_divisor'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => 9]]);
+        if ($set === false || $sef === false) {
+            flashMessage('danger', 'Enter a divisor from 1 to 9 for each evaluation.');
+        } else {
+            $update = $pdo->prepare("UPDATE applications SET teaching_divisors = ?
+                WHERE application_id = ? AND status IN ('under_review', 'needs_revision')");
+            $update->execute(["{$set},{$sef}", $app_id]);
+            recalcApplicationScore($pdo, $app_id);
+            logAudit($pdo, $checker_id, 'Teaching Divisors Updated', "Application #{$app_id}: SET {$set}, SEF {$sef}.");
+            flashMessage('success', 'Teaching evaluation divisors saved.');
+        }
+        echo '<script>window.location.href=' . json_encode($returnUrl, JSON_HEX_TAG) . ';</script>';
+        exit;
+    }
+
     // Start review  -  first checker to act moves app to under_review
     if ($action === 'start_review' && $app['status'] === 'submitted') {
         if (isEvaluator() && !$assigned_kras) {
@@ -177,7 +196,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ->execute([$checker_id, $app_id]);
         logAudit($pdo, $checker_id, 'Review Started', "You started reviewing {$app['full_name']}'s application.");
         // Notify faculty their application is now under review
-        createNotif($pdo, $app['user_id'], 'under_review', 'Your application is now under review by the Subcommittee.', $app_id);
+        createNotif($pdo, $app['user_id'], 'under_review', 'Your application is now under review by the evaluators.', $app_id);
         flashMessage('success', 'Review started.');
         echo "<script>window.location.href='index.php?page={$return_page}&id={$app_id}';</script>"; exit;
     }
@@ -466,6 +485,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'verify_asr_evidence'
         && in_array($app['status'], ['under_review','needs_revision','submitted'])
         && (isEvaluator() || isAdmin())) {
+        blockUnassignedKra($pdo, $checker_id, (int)$app['cycle_id'], 'Professional Development', $kraReviewUrl('Professional Development'));
 
         if (!class_exists('\Scoring\AutoSubRankCalculator')) {
             require_once __DIR__ . '/../../includes/scoring/autosubrank.php';
@@ -492,17 +512,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             // Build the right column set
             if ($criterion === 'doctorate') {
+                $doctorateMode = $decision === 'verified' && ($_POST['doctorate_credit'] ?? '') === 'points_only'
+                    ? 'points_only' : 'not_eligible';
                 $pdo->prepare("
                     INSERT INTO auto_sub_rank
                         (application_id, doctorate_verified, doctorate_verified_by,
-                         doctorate_verified_at, doctorate_verification_notes)
-                    VALUES (?, ?, ?, NOW(), ?)
+                         doctorate_verified_at, doctorate_verification_notes, doctorate_mode)
+                    VALUES (?, ?, ?, NOW(), ?, ?)
                     ON DUPLICATE KEY UPDATE
                         doctorate_verified       = VALUES(doctorate_verified),
                         doctorate_verified_by    = VALUES(doctorate_verified_by),
                         doctorate_verified_at    = NOW(),
-                        doctorate_verification_notes = VALUES(doctorate_verification_notes)
-                ")->execute([$app_id, $decision, $checker_id, $notes]);
+                        doctorate_verification_notes = VALUES(doctorate_verification_notes),
+                        doctorate_mode = VALUES(doctorate_mode)
+                ")->execute([$app_id, $decision, $checker_id, $notes, $doctorateMode]);
             } else {
                 $pdo->prepare("
                     INSERT INTO auto_sub_rank
@@ -875,6 +898,7 @@ $ck_ri         = $asr_checker_res['total_rank_increase'];
 
 // Can checker act? Not if app is already approved/rejected/archived
 $ck_can_verify = !isAdmin()
+    && checkerCanReviewKra($pdo, (int)$_SESSION['user_id'], (int)$app['cycle_id'], 'Professional Development')
     && in_array($app['status'], ['submitted','under_review','needs_revision']);
 ?>
 
@@ -972,6 +996,11 @@ $ck_can_verify = !isAdmin()
                         </button>
                     </div>
                     <input type="hidden" name="verification" id="asr-doc-decision" value="">
+                    <label for="doctorate-credit">Doctorate credit</label>
+                    <select id="doctorate-credit" name="doctorate_credit" class="form-select form-select-sm mb-2">
+                        <option value="automatic">First doctorate meets the automatic sub-rank requirements</option>
+                        <option value="points_only" <?= $ck_d_mode === 'points_only' ? 'selected' : '' ?>>Eligible for points and never used for an automatic sub-rank</option>
+                    </select>
                     <textarea name="verify_notes" id="asr-doc-notes"
                               placeholder="Optional: note your reason (required when marking not acceptable)"
                               style="width:100%;border:1px solid #e2e8f0;border-radius:5px;padding:0.4rem 0.6rem;font-size:0.78rem;resize:vertical;min-height:52px;font-family:inherit;"
@@ -1263,9 +1292,21 @@ async function submitAsrVerify(formId, decision, badgeId, color, label) {
         $kra_weight = $kra_weights_rev[$kra] ?? 0;
         $cat_raw    = $kra_raw_totals[$kra] ?? 0;
         $cat_cap    = $kra_caps_rev[$kra] ?? 100;
-        $cat_capped = min($cat_cap, $cat_raw);
+        $cat_capped = (float)($score_result['kra_map'][$kra]['pts'] ?? min($cat_cap, $cat_raw));
     ?>
     <div id="<?= $tab_id ?>" style="display:<?= $is_def ? 'block' : 'none' ?>;">
+
+        <?php if ($kra === 'Instruction' && $entries && $can_review_this_kra
+            && in_array($app['status'], ['under_review', 'needs_revision'], true)): ?>
+        <?php $divisors = explode(',', (string)($app['teaching_divisors'] ?? '6,6')); ?>
+        <form method="post" class="d-flex flex-wrap align-items-end gap-2 p-3">
+            <input type="hidden" name="action" value="save_teaching_divisors">
+            <label>SET divisor <input class="form-control form-control-sm" type="number" name="set_divisor" min="1" max="9" required value="<?= (int)($divisors[0] ?: 6) ?>"></label>
+            <label>SEF divisor <input class="form-control form-control-sm" type="number" name="sef_divisor" min="1" max="9" required value="<?= (int)($divisors[1] ?? 6) ?>"></label>
+            <button class="btn btn-sm btn-outline-primary">Save divisors</button>
+            <span class="small text-muted">Use 6 for a standard cycle. Change only for documented exceptions.</span>
+        </form>
+        <?php endif; ?>
 
         <?php if (!$entries): ?>
         <!-- Empty state -->

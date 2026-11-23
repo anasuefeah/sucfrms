@@ -114,7 +114,7 @@ function kraRemarksAreMeaningful(string $category, string $remarks): bool {
     if ($category === 'Professional Development') {
         if (in_array($type, ['D-prior-academic', 'D-prior-industry'], true)) {
             $years = $parts[2] ?? '';
-            return ($parts[1] ?? '') !== '' && is_numeric($years) && is_finite((float)$years) && (float)$years >= 1;
+            return ($parts[1] ?? '') !== '' && is_numeric($years) && is_finite((float)$years) && (float)$years > 0;
         }
         return in_array($type, ['A-org', 'B-training', 'B-paper', 'B-degree', 'C-award'], true);
     }

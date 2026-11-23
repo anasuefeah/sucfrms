@@ -77,12 +77,10 @@ function peAggregateScores(\PDO $pdo, int $uid, string $rank): array
     // -- Provide PDO + criteria context to all scorers ---------------
     // Use the active open cycle + faculty rank for cycle-specific criteria,
     // falling back to globals (cycle_id=0) if no open cycle exists.
-    $pe_open_cycle = null;
-    try {
-        $pe_open_stmt = $pdo->query("SELECT cycle_id FROM cycles WHERE status='open' ORDER BY created_at DESC LIMIT 1");
-        $pe_open_cycle = $pe_open_stmt ? (int)($pe_open_stmt->fetchColumn() ?: 0) : 0;
-    } catch (\Exception $e) { $pe_open_cycle = 0; }
-    $pe_scorer_cycle = $pe_open_cycle ?: 0;
+    $openCycle = $pdo->query("SELECT cycle_id, start_date, end_date FROM cycles WHERE status='open' ORDER BY created_at DESC LIMIT 1")
+        ->fetch(\PDO::FETCH_ASSOC) ?: [];
+    $pe_scorer_cycle = (int)($openCycle['cycle_id'] ?? 0);
+    $priorServiceEligible = \Scoring\KRA4Scorer::isNewlyAppointed($pdo, $uid, $openCycle['start_date'] ?? null, $openCycle['end_date'] ?? null);
     $pe_scorer_rank  = (trim($rank) !== '') ? trim($rank) : null;
     $criteria = CriteriaSnapshots::rows($pdo, $pe_scorer_cycle, $pe_scorer_rank);
     $additionalScores = [];
@@ -115,7 +113,7 @@ function peAggregateScores(\PDO $pdo, int $uid, string $rank): array
 
     // First KRA IV pass — detect doctorate/award flags before override
     $kra4_pre = class_exists('\Scoring\KRA4Scorer')
-        ? \Scoring\KRA4Scorer::score($by_cat['Professional Development'] ?? [])
+        ? \Scoring\KRA4Scorer::score($by_cat['Professional Development'] ?? [], $priorServiceEligible)
         : ['subtotal'=>0,'criterion_a'=>0,'criterion_b'=>0,'criterion_c'=>0,'criterion_d_bonus'=>0,'cap'=>100,'has_doctorate'=>false,'has_national_award'=>false,'pending_documentation'=>[],'config_incomplete'=>[]];
 
     $has_doctorate = $kra4_pre['has_doctorate']     ?? false;
@@ -145,7 +143,7 @@ function peAggregateScores(\PDO $pdo, int $uid, string $rank): array
     // Re-score KRA IV with doctorate override
     if (class_exists('\Scoring\KRA4Scorer')) {
         \Scoring\KRA4Scorer::setDoctoratePointsOverride($doctorate_pts_for_kra4 > 0.0 ? $doctorate_pts_for_kra4 : null);
-        $kra4 = \Scoring\KRA4Scorer::score($by_cat['Professional Development'] ?? []);
+        $kra4 = \Scoring\KRA4Scorer::score($by_cat['Professional Development'] ?? [], $priorServiceEligible);
         \Scoring\KRA4Scorer::setDoctoratePointsOverride(null);
     } else {
         $kra4 = $kra4_pre;

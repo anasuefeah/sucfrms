@@ -197,15 +197,15 @@ if ($errors) {
 }
 ?>
 
-<div style="background:#fff;border:1px solid #e5e7eb;padding:0 1.1rem;margin-bottom:1.25rem;
+<div class="profile-setup-intro" style="background:#fff;border:1px solid #e5e7eb;padding:0 1.1rem;margin-bottom:1.25rem;
             display:flex;align-items:center;justify-content:space-between;min-height:58px;gap:1rem;">
-    <div style="display:flex;align-items:center;gap:0.75rem;">
+    <div class="profile-setup-intro-main" style="display:flex;align-items:center;gap:0.75rem;">
         <div style="width:36px;height:36px;background:#1a3a6b;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
             <i class="bi bi-person-lines-fill" style="color:#fff;font-size:0.9rem;"></i>
         </div>
         <div>
             <div style="font-weight:700;color:#1a3a6b;font-size:0.95rem;line-height:1.2;">Profile Setup</div>
-            <div style="font-size:0.72rem;color:#9ca3af;margin-top:1px;">
+            <div class="profile-setup-intro-copy" style="font-size:0.72rem;color:#9ca3af;margin-top:1px;">
                 Complete all steps to unlock your account and begin your reclassification application.
                 <a href="#" onclick="document.getElementById('peInfoModal').style.display='flex';return false;"
                    style="color:#1a3a6b;font-weight:600;text-decoration:underline;margin-left:3px;">Why do we need this?</a>
@@ -227,7 +227,7 @@ if ($errors) {
 </div>
 <?php endif; ?>
 
-<!-- Ã¢â€â‚¬Ã¢â€â‚¬ STEP INDICATOR Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ -->
+<!-- STEP INDICATOR -->
 <div style="display:grid;grid-template-columns:repeat(4,1fr);margin-bottom:1.75rem;position:relative;" id="stepIndicator">
     <div style="position:absolute;top:14px;left:calc(12.5%);right:calc(12.5%);height:1px;background:#e5e7eb;z-index:0;" id="stepTrack"></div>
     <?php $steps = ['Personal & Account','Education','Employment','Review'];
@@ -248,7 +248,7 @@ if ($errors) {
 <input type="hidden" name="csrf" value="<?= htmlspecialchars($_SESSION['profile_entry_csrf']) ?>">
 
 <?php
-/* Ã¢â€â‚¬Ã¢â€â‚¬ shared label/input styles as PHP vars for DRY HTML Ã¢â€â‚¬Ã¢â€â‚¬ */
+/* shared label/input styles as PHP vars for DRY HTML */
 $lbl = 'display:block;font-size:0.68rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#6b7280;margin-bottom:4px;';
 $inp = 'width:100%;border:1px solid #e5e7eb;padding:0.38rem 0.55rem;font-size:0.82rem;color:#111827;background:#fff;outline:none;box-sizing:border-box;';
 $req = '<span style="color:#374151;">*</span>';
@@ -263,13 +263,11 @@ function peBox(string $title): string {
 function peBoxEnd(): string { return '</div></div>'; }
 ?>
 
-<!-- Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
-     STEP 1
-Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â -->
+<!-- STEP 1 -->
 <div id="step1" class="wizard-step">
 
     <?= peBox('Identity') ?>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 90px;gap:0.65rem;align-items:start;">
+    <div class="profile-setup-grid" style="display:grid;grid-template-columns:1fr 1fr 1fr 90px;gap:0.65rem;align-items:start;">
 
 
         <div>
@@ -311,7 +309,7 @@ function peBoxEnd(): string { return '</div></div>'; }
             </select>
             <input type="text" name="suffix" id="suffixInput"
                    value="<?= $val('suffix') ?>"
-                   placeholder="Type suffixâ€¦"
+                   placeholder="Type suffix&hellip;"
                    style="<?= $inp ?>margin-top:0.35rem;<?= (!$isOther && $curSuffix === '' || !$isOther) ? 'display:none;' : '' ?>"
                    onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
         </div>
@@ -319,7 +317,7 @@ function peBoxEnd(): string { return '</div></div>'; }
     <?= peBoxEnd() ?>
 
     <?= peBox('Account &amp; Placement') ?>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.65rem;">
+    <div class="profile-setup-grid" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.65rem;">
         <div>
             <label style="<?= $lbl ?>">Email</label>
             <div style="display:flex;border:1px solid #e5e7eb;background:#f9fafb;">
@@ -350,7 +348,7 @@ function peBoxEnd(): string { return '</div></div>'; }
     <?= peBoxEnd() ?>
 
     <?= peBox('Rank &amp; Status') ?>
-    <div style="display:grid;grid-template-columns:1fr 180px;gap:0.65rem;">
+    <div class="profile-setup-grid" style="display:grid;grid-template-columns:1fr 180px;gap:0.65rem;">
         <div>
             <label style="<?= $lbl ?>">Faculty Rank <?= $req ?></label>
             <select name="rank" required style="<?= $inp ?>cursor:pointer;"
@@ -372,7 +370,7 @@ function peBoxEnd(): string { return '</div></div>'; }
     </div>
     <?= peBoxEnd() ?>
 
-    <div style="display:flex;justify-content:flex-end;margin-top:0.25rem;">
+    <div class="profile-setup-actions" style="display:flex;justify-content:flex-end;margin-top:0.25rem;">
         <button type="button" onclick="goStep(2)"
                 style="padding:0.45rem 1.4rem;background:#1a3a6b;color:#fff;border:none;font-size:0.82rem;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:5px;"
                 onmouseover="this.style.background='#152d54'" onmouseout="this.style.background='#1a3a6b'">
@@ -381,9 +379,7 @@ function peBoxEnd(): string { return '</div></div>'; }
     </div>
 </div>
 
-<!-- Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
-     STEP 2
-Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â -->
+<!-- STEP 2 -->
 <div id="step2" class="wizard-step" style="display:none;">
 
     <?= peBox('Educational Attainment') ?>
@@ -411,7 +407,7 @@ function peBoxEnd(): string { return '</div></div>'; }
         </div>
         <div style="padding:0.65rem 0.75rem;">
             <input type="hidden" name="edu_level[]" value="<?= htmlspecialchars($level_value) ?>">
-            <div style="display:grid;grid-template-columns:1fr 1fr 100px;gap:0.55rem;">
+            <div class="profile-setup-grid" style="display:grid;grid-template-columns:1fr 1fr 100px;gap:0.55rem;">
                 <div>
                     <label style="<?= $lbl ?>">Name of Degree<?= $is_required ? ' '.$req : '' ?></label>
                     <input name="edu_degree[]" value="<?= htmlspecialchars($degree_value) ?>"
@@ -439,7 +435,7 @@ function peBoxEnd(): string { return '</div></div>'; }
     <?= peBoxEnd() ?>
 
     <?= peBox('Application History') ?>
-    <div style="display:flex;align-items:center;gap:1rem;">
+    <div class="profile-setup-history" style="display:flex;align-items:center;gap:1rem;">
         <label style="<?= $lbl ?>margin-bottom:0;">Applied during 1st Cycle <?= $req ?></label>
         <select name="applied_first_cycle" required style="border:1px solid #e5e7eb;padding:0.38rem 0.55rem;font-size:0.82rem;background:#fff;outline:none;cursor:pointer;width:100px;"
                 onfocus="this.style.borderColor='#374151'" onblur="this.style.borderColor='#e5e7eb'">
@@ -449,7 +445,7 @@ function peBoxEnd(): string { return '</div></div>'; }
     </div>
     <?= peBoxEnd() ?>
 
-    <div style="display:flex;justify-content:space-between;margin-top:0.25rem;">
+    <div class="profile-setup-actions" style="display:flex;justify-content:space-between;margin-top:0.25rem;">
         <button type="button" onclick="goStep(1)"
                 style="padding:0.45rem 1.2rem;background:#fff;color:#374151;border:1px solid #e5e7eb;font-size:0.82rem;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:5px;"
                 onmouseover="this.style.background='#f9fafb'" onmouseout="this.style.background='#fff'">
@@ -463,19 +459,17 @@ function peBoxEnd(): string { return '</div></div>'; }
     </div>
 </div>
 
-<!-- Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
-     STEP 3
-Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â -->
+<!-- STEP 3 -->
 <div id="step3" class="wizard-step" style="display:none;">
 
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.65rem;margin-bottom:0.65rem;">
+    <div class="profile-setup-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:0.65rem;margin-bottom:0.65rem;">
 
         <!-- Current -->
         <div style="border:1px solid #e5e7eb;overflow:hidden;">
             <div style="background:#f9fafb;border-bottom:1px solid #e5e7eb;padding:0.4rem 0.9rem;">
                 <span style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#374151;">Current Employment</span>
             </div>
-            <div style="padding:0.85rem 0.9rem;display:grid;grid-template-columns:1fr 1fr;gap:0.55rem;">
+            <div class="profile-setup-grid" style="padding:0.85rem 0.9rem;display:grid;grid-template-columns:1fr 1fr;gap:0.55rem;">
                 <div>
                     <label style="<?= $lbl ?>">Faculty Rank <?= $req ?></label>
                     <div style="border:1px solid #e5e7eb;background:#f9fafb;padding:0.38rem 0.55rem;font-size:0.82rem;color:#374151;display:flex;align-items:center;justify-content:space-between;gap:0.5rem;">
@@ -575,7 +569,7 @@ function peBoxEnd(): string { return '</div></div>'; }
             <div style="background:#f9fafb;border-bottom:1px solid #e5e7eb;padding:0.4rem 0.9rem;">
                 <span style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#374151;">Previous Employment</span>
             </div>
-            <div style="padding:0.85rem 0.9rem;display:grid;grid-template-columns:1fr 1fr;gap:0.55rem;">
+            <div class="profile-setup-grid" style="padding:0.85rem 0.9rem;display:grid;grid-template-columns:1fr 1fr;gap:0.55rem;">
                 <div>
                     <label style="<?= $lbl ?>">Previous Rank <?= $req ?></label>
                     <select name="previous_rank" required style="<?= $inp ?>cursor:pointer;"
@@ -641,7 +635,7 @@ function peBoxEnd(): string { return '</div></div>'; }
         </div>
     </div>
 
-    <div style="display:flex;justify-content:space-between;margin-top:0.25rem;">
+    <div class="profile-setup-actions" style="display:flex;justify-content:space-between;margin-top:0.25rem;">
         <button type="button" onclick="goStep(2)"
                 style="padding:0.45rem 1.2rem;background:#fff;color:#374151;border:1px solid #e5e7eb;font-size:0.82rem;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:5px;"
                 onmouseover="this.style.background='#f9fafb'" onmouseout="this.style.background='#fff'">
@@ -655,9 +649,7 @@ function peBoxEnd(): string { return '</div></div>'; }
     </div>
 </div>
 
-<!-- Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
-     STEP 4
-Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â -->
+<!-- STEP 4 -->
 <div id="step4" class="wizard-step" style="display:none;">
 
     <div style="border:1px solid #e5e7eb;overflow:hidden;margin-bottom:0.65rem;">
@@ -707,7 +699,7 @@ function peBoxEnd(): string { return '</div></div>'; }
         </div>
     </div>
 
-    <div style="display:flex;justify-content:space-between;">
+    <div class="profile-setup-actions" style="display:flex;justify-content:space-between;">
         <button type="button" onclick="goStep(3)"
                 style="padding:0.45rem 1.2rem;background:#fff;color:#374151;border:1px solid #e5e7eb;font-size:0.82rem;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:5px;"
                 onmouseover="this.style.background='#f9fafb'" onmouseout="this.style.background='#fff'">
@@ -908,7 +900,7 @@ function peBoxEnd(): string { return '</div></div>'; }
     }
     function field(label, value) {
         const v = (value ?? '').trim();
-        return `<div style="min-width:0;flex:1;">
+        return `<div class="profile-setup-review-field" style="min-width:0;flex:1;">
             <div style="font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#9ca3af;margin-bottom:2px;">${esc(label)}</div>
             <div style="font-size:0.82rem;color:${v?'#111827':'#d1d5db'};font-weight:500;word-break:break-all;overflow-wrap:anywhere;">${v ? esc(v) : '&mdash;'}</div>
         </div>`;
@@ -1150,8 +1142,35 @@ function handleSuffixChange(sel) {
 <style>
 .wizard-step { transition: none; }
 @media (max-width: 768px) {
-    #stepIndicator { gap: 0; }
-    #stepIndicator [id^="stepLabel"] { font-size: 0.55rem !important; }
+    .profile-setup-intro {
+        margin-top: .75rem;
+        padding: .85rem !important;
+        flex-direction: column;
+        align-items: flex-start !important;
+        gap: .65rem !important;
+    }
+    .profile-setup-intro-main { align-items: flex-start !important; }
+    .profile-setup-intro-copy { font-size: .85rem !important; line-height: 1.5; color: #475569 !important; }
+    .profile-setup-intro-copy a { display: inline-block; margin: .25rem 0 0 !important; }
+    #stepIndicator { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; }
+    #stepIndicator [id^="stepLabel"] { white-space: normal !important; line-height: 1.3; padding-inline: .2rem; }
+
+    #profileWizard .profile-setup-grid { grid-template-columns: minmax(0, 1fr) !important; gap: .9rem !important; }
+    #profileWizard .profile-setup-grid > * { min-width: 0; }
+    #profileWizard .profile-setup-grid > .col-span-2 { grid-column: 1 / -1 !important; }
+    #profileWizard .profile-setup-grid label,
+    #profileWizard .profile-setup-history label { font-size: .8rem !important; line-height: 1.4; letter-spacing: normal !important; text-transform: none !important; }
+    #profileWizard .profile-setup-history { flex-wrap: wrap; gap: .45rem !important; }
+    #profileWizard .profile-setup-history select { width: 100% !important; }
+    #profileWizard input:not([type="checkbox"]):not([type="hidden"]),
+    #profileWizard select { min-width: 0; max-width: 100%; min-height: 44px; font-size: 1rem !important; }
+    #profileWizard .profile-setup-actions { flex-wrap: wrap; gap: .5rem; }
+    #profileWizard .profile-setup-actions button { min-height: 44px; }
+
+    #profileWizard .profile-setup-review-field { flex: 0 0 100% !important; }
+    #profileWizard .profile-setup-review-field > :first-child { font-size: .72rem !important; }
+    #profileWizard .profile-setup-review-field > :last-child { word-break: normal !important; }
+    #profileWizard #privacyNudge { width: min(24rem, calc(100% - 2rem)); }
 }
 </style>
 

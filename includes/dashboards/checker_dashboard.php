@@ -124,7 +124,7 @@ $deadlineLabel = function(?string $dl): array {
 <?php include __DIR__ . '/_dashboard_header.php'; ?>
 
 <!-- ── KPI Row ───────────────────────────────────────────────── -->
-<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:0.65rem;margin-bottom:1.1rem;">
+<div class="checker-dashboard-kpis">
 <?php
 $kpis = [
     [
@@ -167,7 +167,7 @@ $kpis = [
 foreach ($kpis as $k):
 ?>
 <a href="<?= $k['link'] ?>" style="text-decoration:none;display:block;">
-    <div style="background:#fff;border:1px solid <?= $k['urgent'] ? $k['accent'].'55' : '#e2e8f0' ?>;
+    <div class="checker-dashboard-kpi" style="background:#fff;border:1px solid <?= $k['urgent'] ? $k['accent'].'55' : '#e2e8f0' ?>;
                 border-top:3px solid <?= $k['accent'] ?>;padding:0.9rem 1rem;
                 transition:box-shadow 0.15s;"
          onmouseover="this.style.boxShadow='0 4px 14px rgba(0,0,0,0.08)'"
@@ -188,7 +188,7 @@ foreach ($kpis as $k):
 
 <!-- ── My KRA Assignments ────────────────────────────────────── -->
 <?php if ($cycle && $my_kras): ?>
-<div style="background:#fff;border:1px solid #e2e8f0;padding:0.75rem 1rem;margin-bottom:1.1rem;
+<div class="checker-dashboard-assignments" style="background:#fff;border:1px solid #e2e8f0;padding:0.75rem 1rem;margin-bottom:1.1rem;
             display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
     <div style="font-size:0.65rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.07em;flex-shrink:0;">
         My Assigned KRAs
@@ -213,7 +213,7 @@ foreach ($kpis as $k):
 <?php endif; ?>
 
 <!-- ── Main 2-column layout ──────────────────────────────────── -->
-<div style="display:grid;grid-template-columns:1fr 340px;gap:0.85rem;align-items:start;">
+<div class="checker-dashboard-columns">
 
     <!-- LEFT: Action lists ──────────────────────────────────── -->
     <div style="display:flex;flex-direction:column;gap:0.85rem;">
@@ -243,7 +243,7 @@ foreach ($kpis as $k):
                 $score = (float)$q['weighted_score'];
                 $score_color = $score >= 41 ? '#16a34a' : '#c2410c';
             ?>
-            <div style="display:grid;grid-template-columns:1fr auto;align-items:center;gap:0.75rem;
+            <div class="checker-dashboard-queue-row" style="align-items:center;
                         padding:0.8rem 1rem;border-bottom:1px solid #f1f5f9;"
                  onmouseover="this.style.background='#fafbff'" onmouseout="this.style.background=''">
                 <div>
@@ -294,7 +294,7 @@ foreach ($kpis as $k):
                 $pct        = (int)round(($verified / $total_subs) * 100);
                 [$due_label, $due_color] = $deadlineLabel($ip['evaluation_deadline'] ?? null);
             ?>
-            <div style="padding:0.75rem 1rem;border-bottom:1px solid #f1f5f9;display:grid;grid-template-columns:1fr auto;gap:0.75rem;align-items:center;"
+            <div class="checker-dashboard-queue-row" style="padding:0.75rem 1rem;border-bottom:1px solid #f1f5f9;align-items:center;"
                  onmouseover="this.style.background='#fafbff'" onmouseout="this.style.background=''">
                 <div>
                     <div style="font-weight:600;font-size:0.83rem;color:#0f172a;"><?= htmlspecialchars(formatDisplayName($ip)) ?></div>
@@ -334,11 +334,11 @@ foreach ($kpis as $k):
                 $days = (int)$rv['days_waiting'];
                 $flagged = (int)$rv['flagged_count'];
             ?>
-            <div style="padding:0.75rem 1rem;border-bottom:1px solid #fef3c7;display:grid;grid-template-columns:1fr auto;gap:0.75rem;align-items:center;"
+            <div class="checker-dashboard-queue-row" style="padding:0.75rem 1rem;border-bottom:1px solid #fef3c7;align-items:center;"
                  onmouseover="this.style.background='#fffdf5'" onmouseout="this.style.background=''">
                 <div>
                     <div style="font-weight:600;font-size:0.83rem;color:#0f172a;"><?= htmlspecialchars(formatDisplayName($rv)) ?></div>
-                    <div style="font-size:0.7rem;color:#92400e;margin-top:3px;display:flex;align-items:center;gap:0.4rem;">
+                    <div style="font-size:0.7rem;color:#92400e;margin-top:3px;display:flex;align-items:center;gap:0.4rem;flex-wrap:wrap;">
                         <span><?= sanitize($rv['campus_name']) ?></span>
                         <span>·</span>
                         <span><?= $flagged ?> entr<?= $flagged===1?'y':'ies' ?> flagged</span>
@@ -478,6 +478,23 @@ foreach ($kpis as $k):
 </div><!-- /grid -->
 
 <style>
+.checker-dashboard-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.65rem;margin-bottom:1.1rem;}
+.checker-dashboard-kpi{height:100%;}
+.checker-dashboard-columns{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:.85rem;align-items:start;}
+.checker-dashboard-columns > *{min-width:0;}
+.checker-dashboard-queue-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.75rem;overflow-wrap:anywhere;}
+
+@media(max-width:991.98px){
+    .checker-dashboard-kpis{grid-template-columns:repeat(2,minmax(0,1fr));}
+    .checker-dashboard-columns{grid-template-columns:minmax(0,1fr);}
+}
+@media(max-width:575.98px){
+    .checker-dashboard-kpi{padding:.75rem !important;overflow-wrap:anywhere;}
+    .checker-dashboard-assignments{align-items:flex-start !important;flex-direction:column;gap:.5rem !important;}
+    .checker-dashboard-queue-row{grid-template-columns:minmax(0,1fr);gap:.5rem;}
+    .checker-dashboard-queue-row > a{justify-self:start;display:inline-flex;align-items:center;min-height:44px;}
+}
+
 @keyframes dotPulse {
     0%,100%{opacity:1;transform:scale(1)}
     50%{opacity:0.4;transform:scale(1.4)}

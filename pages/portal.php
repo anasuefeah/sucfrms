@@ -635,10 +635,11 @@ body::before,body::after{display:none!important;content:none!important;}
 
 <!-- ── Application History Module ─────────────────────── -->
 <style>
-#historyModal table td,
-#historyModal table th { color: inherit; }
-#historyModal a { color: inherit; text-decoration: none; }
-#historyModal .modal-body * { box-sizing: border-box; }
+#historyModal .history-header { display:flex; align-items:center; justify-content:space-between; gap:.75rem; padding:.75rem 1rem; border-bottom:1px solid #e5e7eb; flex-shrink:0; }
+#historyModal .history-close { background:none; border:0; color:#475569; font-size:1rem; cursor:pointer; padding:.25rem; }
+#historyModal .history-close:hover { color:#111827; }
+#historyModal .history-status { display:inline-block; padding:.15rem .5rem; border:1px solid #e5e7eb; color:#374151; font-size:.68rem; font-weight:600; }
+#historyModal tbody tr:hover { background:#f9fafb; }
 </style>
 <div id="historyModal"
      style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(15,23,42,0.55);
@@ -647,22 +648,15 @@ body::before,body::after{display:none!important;content:none!important;}
     <div style="background:#fff;width:100%;max-width:800px;max-height:88vh;display:flex;flex-direction:column;border:1px solid #e5e7eb;overflow:hidden;color:#374151;font-family:'Segoe UI',Arial,sans-serif;">
 
         <!-- Header -->
-        <div style="background:#1a3a6b;padding:0.65rem 1rem;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;">
-            <div style="display:flex;align-items:center;gap:0.6rem;">
-                <i class="bi bi-clock-history" style="color:rgba(255,255,255,0.75);font-size:0.88rem;"></i>
-                <div>
-                    <div style="font-size:0.85rem;font-weight:700;color:#fff;">Application History</div>
-                    <div style="font-size:0.62rem;color:rgba(255,255,255,0.5);margin-top:1px;">Your reclassification record across all cycles</div>
-                </div>
-            </div>
+        <div class="history-header">
+            <div style="font-size:0.9rem;font-weight:700;color:#111827;">Application History</div>
             <div style="display:flex;align-items:center;gap:0.75rem;">
-                <span style="font-size:0.65rem;font-weight:700;color:rgba(255,255,255,0.5);border:1px solid rgba(255,255,255,0.2);padding:1px 8px;">
-                    <?= count($_portal_history) ?> RECORD<?= count($_portal_history) !== 1 ? 'S' : '' ?>
+                <span style="font-size:0.72rem;color:#6b7280;white-space:nowrap;">
+                    <?= count($_portal_history) ?> record<?= count($_portal_history) !== 1 ? 's' : '' ?>
                 </span>
-                <button onclick="document.getElementById('historyModal').style.display='none'"
-                        style="background:none;border:none;color:rgba(255,255,255,0.65);font-size:1rem;cursor:pointer;line-height:1;padding:0;"
-                        onmouseover="this.style.color='#fff'" onmouseout="this.style.color='rgba(255,255,255,0.65)'">
-                    <i class="bi bi-x-lg"></i>
+                <button type="button" class="history-close" aria-label="Close application history"
+                        onclick="document.getElementById('historyModal').style.display='none'">
+                    <i class="bi bi-x-lg" aria-hidden="true"></i>
                 </button>
             </div>
         </div>
@@ -677,16 +671,16 @@ body::before,body::after{display:none!important;content:none!important;}
             </div>
             <?php else: ?>
             <?php
-            $_hist_status_cfg = [
-                'approved'      => ['#f0fdf4','#15803d','#bbf7d0','Approved'],
-                'reclassified'  => ['#f0fdf4','#15803d','#bbf7d0','Approved'],
-                'submitted'     => ['#eff6ff','#1e4d8c','#bfdbfe','Submitted'],
-                'under_review'  => ['#eff6ff','#1e4d8c','#bfdbfe','Under Evaluation'],
-                'needs_revision'=> ['#fff7ed','#c2410c','#fed7aa','Needs Revision'],
-                'rejected'      => ['#fef2f2','#dc2626','#fecaca','Returned'],
-                'admin_rejected'=> ['#fef2f2','#dc2626','#fecaca','Returned'],
-                'expired'       => ['#f9fafb','#9ca3af','#e5e7eb','Expired'],
-                'draft'         => ['#f9fafb','#6b7280','#e5e7eb','Draft'],
+            $_hist_status_labels = [
+                'approved'       => 'Approved',
+                'reclassified'   => 'Approved',
+                'submitted'      => 'Submitted',
+                'under_review'   => 'Under Evaluation',
+                'needs_revision' => 'Needs Revision',
+                'rejected'       => 'Returned',
+                'admin_rejected' => 'Returned',
+                'expired'        => 'Expired',
+                'draft'          => 'Draft',
             ];
             ?>
             <table style="width:100%;border-collapse:collapse;font-size:0.78rem;color:#374151;">
@@ -703,32 +697,29 @@ body::before,body::after{display:none!important;content:none!important;}
                 </thead>
                 <tbody>
                 <?php foreach ($_portal_history as $_hr):
-                    [$_hbg,$_hcol,$_hbd,$_hlbl] = $_hist_status_cfg[$_hr['status']] ?? ['#f9fafb','#6b7280','#e5e7eb',ucfirst(str_replace('_',' ',$_hr['status']))];
+                    $_hlbl = $_hist_status_labels[$_hr['status']] ?? ucfirst(str_replace('_', ' ', $_hr['status']));
                     $_submitted = !in_array($_hr['status'], ['draft','expired']);
-                    $_meets = (float)$_hr['weighted_score'] >= 41;
                 ?>
-                <tr style="border-bottom:1px solid #f3f4f6;color:#374151;" onmouseover="this.style.background='#f9fafb'" onmouseout="this.style.background=''">
+                <tr style="border-bottom:1px solid #f3f4f6;color:#374151;">
                     <td style="padding:0.55rem 0.9rem;font-weight:600;color:#111827;">
                         <?= htmlspecialchars($_hr['cycle_name'] ?? '—') ?>
                         <?php if (($_hr['cycle_status'] ?? '') === 'open'): ?>
-                        <span style="font-size:0.58rem;font-weight:700;padding:0 5px;background:#1a3a6b;color:#fff;margin-left:4px;vertical-align:middle;">ACTIVE</span>
+                        <span style="font-size:0.65rem;font-weight:500;color:#6b7280;margin-left:4px;">Active</span>
                         <?php endif; ?>
                     </td>
                     <td style="padding:0.55rem 0.9rem;color:#6b7280;white-space:nowrap;font-size:0.75rem;">
                         <?= $_hr['start_date'] ? date('M Y', strtotime($_hr['start_date'])) . ' – ' . date('M Y', strtotime($_hr['end_date'])) : '—' ?>
                     </td>
                     <td style="padding:0.55rem 0.9rem;text-align:center;">
-                        <span style="font-size:0.65rem;font-weight:700;padding:2px 9px;background:<?= $_hbg ?>;color:<?= $_hcol ?>;border:1px solid <?= $_hbd ?>;">
-                            <?= $_hlbl ?>
-                        </span>
+                        <span class="history-status"><?= htmlspecialchars($_hlbl) ?></span>
                     </td>
-                    <td style="padding:0.55rem 0.9rem;text-align:center;font-weight:700;font-size:0.85rem;color:<?= $_submitted ? ($_meets ? '#15803d' : '#dc2626') : '#9ca3af' ?>;">
+                    <td style="padding:0.55rem 0.9rem;text-align:center;font-weight:600;font-variant-numeric:tabular-nums;">
                         <?= $_submitted ? number_format((float)$_hr['weighted_score'], 2) : '—' ?>
                     </td>
                     <td style="padding:0.55rem 0.9rem;color:#374151;font-weight:600;font-size:0.75rem;">
                         <?= htmlspecialchars($_hr['potential_rank'] ?: '—') ?>
                     </td>
-                    <td style="padding:0.55rem 0.9rem;text-align:center;font-weight:700;color:<?= (int)$_hr['sub_rank_increment'] > 0 ? '#15803d' : '#9ca3af' ?>;">
+                    <td style="padding:0.55rem 0.9rem;text-align:center;font-weight:600;font-variant-numeric:tabular-nums;">
                         <?= $_submitted ? (((int)$_hr['sub_rank_increment'] > 0 ? '+' : '') . (int)$_hr['sub_rank_increment']) : '—' ?>
                     </td>
                     <td style="padding:0.55rem 0.9rem;color:#6b7280;white-space:nowrap;font-size:0.75rem;">
@@ -742,7 +733,7 @@ body::before,body::after{display:none!important;content:none!important;}
         </div>
 
         <!-- Footer -->
-        <div style="padding:0.6rem 1rem;border-top:1px solid #e5e7eb;background:#f9fafb;display:flex;justify-content:flex-end;flex-shrink:0;">
+        <div style="padding:0.6rem 1rem;border-top:1px solid #e5e7eb;display:flex;justify-content:flex-end;flex-shrink:0;">
             <button onclick="document.getElementById('historyModal').style.display='none'"
                     style="padding:0.4rem 1.1rem;border:1px solid #e5e7eb;background:#fff;font-size:0.8rem;font-weight:600;color:#374151;cursor:pointer;"
                     onmouseover="this.style.background='#f3f4f6'" onmouseout="this.style.background='#fff'">Close</button>

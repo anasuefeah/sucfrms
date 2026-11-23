@@ -19,10 +19,6 @@
  *   Adjustments apply for: newly appointed faculty, study leave, maternity leave,
  *   sabbatical, and lab-school faculty (see JC01 s.2026 Section 15, item 1).
  *
- *   IMPORTANT: The scorer averages however many semester entries are submitted.
- *   The correct number of semesters (divisor) is enforced at the data-entry and
- *   checker-review layer, NOT here. The scorer trusts the entries as submitted.
- *
  *   Instrument by term:
  *   - NBC 461 QCE (transmuted to 100-point scale): through 1st Sem AY2025–2026
  *   - FEDAF (Annex D, CMO 19 s.2025): mandatory from 2nd Sem AY2025–2026 onward
@@ -31,6 +27,7 @@
 namespace Scoring;
 
 require_once __DIR__ . '/../criteria_hierarchy.php';
+require_once __DIR__ . '/entry_metadata.php';
 
 class KRA1Scorer
 {
@@ -67,7 +64,7 @@ class KRA1Scorer
         'panel_doctoral'    => 6,   // corrected from old seed (was 2)
     ];
 
-    public static function score(array $submissions): array
+    public static function score(array $submissions, int $setDivisor = 6, int $sefDivisor = 6): array
     {
         $additionalGroups = [];
         $crit_a   = 0.0;
@@ -75,6 +72,7 @@ class KRA1Scorer
         $crit_c   = 0.0;
         $crit_a_set_ratings = [];
         $crit_a_sef_ratings = [];
+        $overallRatings = [];
         $pending  = [];
         $config_i = [];
 
@@ -85,7 +83,7 @@ class KRA1Scorer
 
             if ($critType === 'CUSTOM') {
                 $letter = strtoupper($parts[1] ?? '');
-                $pts = max(0.0, (float)($parts[4] ?? 0));
+                $pts = EntryMetadata::reviewedPoints($s, max(0.0, (float)($parts[4] ?? 0)));
                 if (!in_array($letter, ['A', 'B', 'C'], true) && \collectAdditionalParentScore($additionalGroups, $parts, $pts)) continue;
                 if ($letter === 'A') $crit_a += $pts;
                 elseif ($letter === 'B') $crit_b += $pts;
@@ -100,7 +98,7 @@ class KRA1Scorer
                 $contrib = min(100, max(1, (float)($parts[2] ?? 100)));
                 $base    = self::configuredPointsForLabel($label) ?? (float)str_replace('co', '', $rawPts);
                 $pts     = round(str_ends_with($rawPts, 'co') ? $base * ($contrib / 100) : $base, 2);
-                $crit_b += $pts;
+                $crit_b += EntryMetadata::reviewedPoints($s, $pts);
                 if (empty($s['evidence_names'])) {
                     $pending[] = "KRA I Crit B: '{$label}' - no evidence files attached.";
                 }
@@ -110,8 +108,16 @@ class KRA1Scorer
             if (str_starts_with($critType, 'C|')) {
                 $flat  = explode('|', $critType);
                 $label = implode('|', array_slice($flat, 2));
+                if (self::isMentorship($parts)) {
+                    $pts = self::mentorshipClaimPoints($parts[2] ?? '', $parts[3] ?? '');
+                    if ($pts > 0) $crit_c += EntryMetadata::reviewedPoints($s, $pts);
+                    if ($pts <= 0 || empty($s['evidence_names'])) {
+                        $pending[] = 'Competition mentorship requires a qualifying competition level, placement, and supporting evidence.';
+                    }
+                    continue;
+                }
                 $pts   = self::configuredPointsForLabel($label) ?? (float)($flat[1] ?? 0);
-                $crit_c += $pts;
+                $crit_c += EntryMetadata::reviewedPoints($s, $pts);
                 if (empty($s['evidence_names'])) {
                     $pending[] = "KRA I Crit C: '{$label}' - missing approval sheet / RRPA / COPC evidence.";
                 }
@@ -124,20 +130,21 @@ class KRA1Scorer
                     $set = min(100, max(0, (float)($parts[1] ?? 0)));
                     $sef = min(100, max(0, (float)($parts[2] ?? 0)));
                     // Formula: SET/100 x configured SET cap + SEF/100 x configured SEF cap
-                    if ($set > 0) $crit_a_set_ratings[] = $set;
-                    if ($sef > 0) $crit_a_sef_ratings[] = $sef;
+                    $overallRatings[] = [$set, $sef, $s];
 
                     if ($set === 0.0 && $sef === 0.0) {
                         $pending[] = 'KRA I Crit A: Student Evaluation of Teaching and Supervisor Evaluation Form ratings are both 0  -  pending documentation.';
                     }
                     break;
 
-                // -- Criterion B: Instructional Materials ------------
+                // -- Combined semester record ------------------------
                 case 'A-set-sef-sem':
                     $set = min(100, max(0, (float)($parts[3] ?? 0)));
                     $sef = min(100, max(0, (float)($parts[4] ?? 0)));
-                    if ($set > 0) $crit_a_set_ratings[] = $set;
-                    if ($sef > 0) $crit_a_sef_ratings[] = $sef;
+                    $calculated = self::computeCriterionAScore($set, $sef);
+                    $factor = $calculated > 0 ? EntryMetadata::reviewedPoints($s, $calculated) / $calculated : 1.0;
+                    if (is_numeric($parts[3] ?? null)) $crit_a_set_ratings[] = $set * $factor;
+                    if (is_numeric($parts[4] ?? null)) $crit_a_sef_ratings[] = $sef * $factor;
 
                     if ($set === 0.0 && $sef === 0.0) {
                         $period = $parts[1] ?? 'Unknown period';
@@ -149,7 +156,10 @@ class KRA1Scorer
                 case 'A-set-sem':
                     $setRaw = $parts[3] ?? '';
                     $set = min(100, max(0, (float)$setRaw));
-                    if ($setRaw !== '' && is_numeric($setRaw)) $crit_a_set_ratings[] = $set;
+                    $setCap = self::getCriterionACaps()['set'];
+                    if ($setRaw !== '' && is_numeric($setRaw) && $setCap > 0) {
+                        $crit_a_set_ratings[] = min(100, 100 * EntryMetadata::reviewedPoints($s, $set * $setCap / 100) / $setCap);
+                    }
                     if ($set === 0.0) {
                         $period = $parts[1] ?? 'Unknown period';
                         $sem    = $parts[2] ?? '?';
@@ -160,7 +170,10 @@ class KRA1Scorer
                 case 'A-sef-sem':
                     $sefRaw = $parts[3] ?? '';
                     $sef = min(100, max(0, (float)$sefRaw));
-                    if ($sefRaw !== '' && is_numeric($sefRaw)) $crit_a_sef_ratings[] = $sef;
+                    $sefCap = self::getCriterionACaps()['sef'];
+                    if ($sefRaw !== '' && is_numeric($sefRaw) && $sefCap > 0) {
+                        $crit_a_sef_ratings[] = min(100, 100 * EntryMetadata::reviewedPoints($s, $sef * $sefCap / 100) / $sefCap);
+                    }
                     if ($sef === 0.0) {
                         $period = $parts[1] ?? 'Unknown period';
                         $sem    = $parts[2] ?? '?';
@@ -178,7 +191,7 @@ class KRA1Scorer
                         if ($isCo && empty($parts[2])) {
                             $pending[] = "KRA I Crit B: Co-author entry '{$label}' missing Annex C (Certificate of Contribution Form_IM).";
                         }
-                        $crit_b += $pts;
+                    $crit_b += EntryMetadata::reviewedPoints($s, $pts);
                     }
                     // Evidence baseline check
                     if (empty($s['evidence_names'])) {
@@ -190,67 +203,17 @@ class KRA1Scorer
                 case 'C-thesis':
                     $label = $parts[1] ?? '';
                     $pts   = self::resolveThesisPoints($label, $config_i);
-                    $crit_c += $pts;
+                    $crit_c += EntryMetadata::reviewedPoints($s, $pts);
                     if (empty($s['evidence_names'])) {
                         $pending[] = "KRA I Crit C: '{$label}'  -  missing approval sheet / RRPA / COPC evidence.";
                     }
                     break;
 
                 case 'C-mentor':
-                    /*
-                     * Mentorship Services  -  CONFIRMED SOURCE GAP (JC01 s.2026, Section 15 item 2, p.78)
-                     * The Points column is blank in the official circular. This is NOT an extraction
-                     * error  -  verified directly against the scanned page.
-                     *
-                     * CONFIG_MENTORSHIP_POINTS must be explicitly set by a system administrator
-                     * before this indicator can score anything. Until set, always returns
-                     * PENDING_DOCUMENTATION  -  never 0, never a guessed figure.
-                     *
-                     * Suggested starting point for discussion: 1 pt (matching Panel Member,
-                     * Special/Capstone  -  lowest confirmed rate in this criterion), but this is a
-                     * design recommendation, NOT a sourced value. Confirm with CHED-RO or adviser.
-                     */
-                    $competition = $parts[1] ?? 'unknown competition';
-                    $level       = strtolower(trim($parts[2] ?? ''));
-                    $placement   = strtolower(trim($parts[3] ?? ''));
-
-                    // Hard rule 1: local-only competitions do not qualify regardless of point value
-                    if ($level === 'local' || $level === '') {
-                        $config_i[] = "KRA I Crit C - Mentorship: '{$competition}'  -  local-only competition does not qualify. Must be regional, national, or international. Entry excluded.";
-                        break;
-                    }
-
-                    // Hard rule 2: only Champion through 3rd place qualify; consolation prizes excluded
-                    $qualifies = in_array($placement, [
-                        '1st','2nd','3rd','1','2','3',
-                        'champion','first place','second place','third place',
-                        '1st place','2nd place','3rd place',
-                    ]);
-                    if (!$qualifies) {
-                        $config_i[] = "KRA I Crit C - Mentorship: '{$competition}' placement '{$placement}' does not qualify. Only Champion through 3rd place in regional/national/international competitions count. Consolation prizes excluded. Entry excluded.";
-                        break;
-                    }
-
-                    // Entry passes hard rules  -  but point value is a confirmed source gap.
-                    // Read CONFIG_MENTORSHIP_POINTS from scoring_criteria table if available.
-                    $mentor_pts = self::getMentorshipPoints();
-
-                    if ($mentor_pts === null) {
-                        // Not configured  -  must not score; raise as PENDING_DOCUMENTATION
-                        $pending[] = "KRA I Crit C - Mentorship: '{$competition}' ({$level}, {$placement})  -  PENDING_DOCUMENTATION. "
-                                   . "CONFIG_MENTORSHIP_POINTS has not been set by a system administrator. "
-                                   . "This entry cannot be scored until the point value is confirmed with CHED-RO or your adviser and entered in the Scoring Criteria configuration. "
-                                   . "Suggested starting point for discussion: 1 pt (not a sourced value  -  disclosed design recommendation only).";
-                    } else {
-                        $pts = (float)$mentor_pts;
-                        $crit_c += $pts;
-                        $config_i[] = "KRA I Crit C - Mentorship: '{$competition}' scored at {$pts} pt(s) using administrator-configured CONFIG_MENTORSHIP_POINTS. "
-                                    . "Note: this value was not sourced from the JC01 circular (p.78 Points column is blank)  -  confirm with CHED-RO before finalising.";
-                    }
-
-                    // Evidence requirements always apply
-                    if (empty($s['evidence_names'])) {
-                        $pending[] = "KRA I Crit C - Mentorship: '{$competition}'  -  missing required evidence: (1) award certificate or photo of trophy/plaque/medal, (2) competition mechanics document, (3) profile/mandate/history of the award-giving organization including prior winners list.";
+                    $pts = self::mentorshipClaimPoints($parts[2] ?? '', $parts[3] ?? '');
+                    if ($pts > 0) $crit_c += EntryMetadata::reviewedPoints($s, $pts);
+                    if ($pts <= 0 || empty($s['evidence_names'])) {
+                        $pending[] = 'Competition mentorship requires a qualifying competition level, placement, and supporting evidence.';
                     }
                     break;
 
@@ -266,11 +229,20 @@ class KRA1Scorer
             }
         }
 
-        if ($crit_a_set_ratings || $crit_a_sef_ratings) {
-            $avg_set = $crit_a_set_ratings ? array_sum($crit_a_set_ratings) / count($crit_a_set_ratings) : 0;
-            $avg_sef = $crit_a_sef_ratings ? array_sum($crit_a_sef_ratings) / count($crit_a_sef_ratings) : 0;
-            $crit_a += self::computeCriterionAScore($avg_set, $avg_sef);
+        $avg_set = array_sum($crit_a_set_ratings) / max(1, $setDivisor, count($crit_a_set_ratings));
+        $avg_sef = array_sum($crit_a_sef_ratings) / max(1, $sefDivisor, count($crit_a_sef_ratings));
+        $setPoints = self::computeCriterionASetScore($avg_set);
+        $sefPoints = self::computeCriterionASefScore($avg_sef);
+        if ($overallRatings && !$crit_a_set_ratings && !$crit_a_sef_ratings) {
+            $setPoints = self::computeCriterionASetScore(array_sum(array_column($overallRatings, 0)) / count($overallRatings));
+            $sefPoints = self::computeCriterionASefScore(array_sum(array_column($overallRatings, 1)) / count($overallRatings));
+            if (count($overallRatings) === 1 && $setPoints + $sefPoints > 0) {
+                $factor = EntryMetadata::reviewedPoints($overallRatings[0][2], $setPoints + $sefPoints) / ($setPoints + $sefPoints);
+                $setPoints *= $factor;
+                $sefPoints *= $factor;
+            }
         }
+        $crit_a += $setPoints + $sefPoints;
 
         // Apply sub-caps
         $limits = \configuredParentLimits(self::$pdo_ref, self::$criteria_cycle_id, self::$criteria_position_rank, 'Instruction');
@@ -284,6 +256,8 @@ class KRA1Scorer
         return [
             'parent_scores' => ['A'=>$crit_a, 'B'=>$crit_b, 'C'=>$crit_c] + $additionalParents,
             'criterion_a'           => $crit_a,
+            'criterion_a_set'       => $setPoints,
+            'criterion_a_sef'       => $sefPoints,
             'criterion_b'           => $crit_b,
             'criterion_c'           => $crit_c,
             'subtotal'              => $subtotal,
@@ -375,6 +349,7 @@ class KRA1Scorer
         }
 
         if (str_starts_with($critType, 'C|')) {
+            if (self::isMentorship($parts)) return self::mentorshipClaimPoints($parts[2] ?? '', $parts[3] ?? '');
             $flat = explode('|', $critType);
             $label = implode('|', array_slice($flat, 2));
             return self::configuredPointsForLabel($label) ?? (float)($flat[1] ?? 0);
@@ -421,14 +396,7 @@ class KRA1Scorer
                 return self::resolveThesisPoints($parts[1] ?? '', $dummy_config);
 
             case 'C-mentor':
-                /*
-                 * CONFIG_MENTORSHIP_POINTS is a confirmed source gap (JC01 p.78 blank).
-                 * Per-entry computation cannot score this without the configured value.
-                 * Returns 0.0 here; the orchestrator's full score() method raises
-                 * PENDING_DOCUMENTATION. The UI must show the pending flag  -  never
-                 * silently credit 0 as if the entry was scored.
-                 */
-                return 0.0;
+                return self::mentorshipClaimPoints($parts[2] ?? '', $parts[3] ?? '');
 
             default:
                 // Legacy SET/SEF
@@ -610,6 +578,19 @@ class KRA1Scorer
             return 1;
         }
         return 0;
+    }
+
+    private static function isMentorship(array $parts): bool
+    {
+        return EntryMetadata::criterionKey($parts) === 'kra1_c_mentor_competition'
+            || stripos($parts[0] ?? '', 'Mentor: Student/Team Competition Winner') !== false;
+    }
+
+    private static function mentorshipClaimPoints(string $level, string $placement): float
+    {
+        $eligibleLevel = in_array(strtolower(trim($level)), ['regional', 'national', 'international'], true);
+        $eligiblePlacement = preg_match('/^(champion|[123]|1st|2nd|3rd|first|second|third)( place)?$/i', trim($placement));
+        return $eligibleLevel && $eligiblePlacement ? (self::getMentorshipPoints() ?? 0.0) : 0.0;
     }
 
     private static function getMentorshipPoints(): ?float

@@ -2,7 +2,8 @@
 
 function kraPdfText(string $text): string
 {
-    return iconv('UTF-8', 'windows-1252//TRANSLIT//IGNORE', $text) ?: '';
+    $encoded = iconv('UTF-8', 'windows-1252//TRANSLIT//IGNORE', $text);
+    return $encoded === false ? '' : $encoded;
 }
 
 function criteriaPdfLineCount(FPDF $pdf, float $width, string $text): int

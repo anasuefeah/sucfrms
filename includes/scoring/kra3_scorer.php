@@ -60,6 +60,8 @@ class KRA3Scorer
 
         // Track ISR sub-total (nested cap within Crit B)
         $isr_subtotal = 0.0;
+        $incomeByRole = ['lead' => 0.0, 'co' => 0.0];
+        $csrPoints = [];
         // Track column total for media sub-item caps
         $media_occasional_count = 0;  // max 10 pts from occasional columns
         $technical_guest_count  = 0;  // max 10 pts from guesting
@@ -89,7 +91,7 @@ class KRA3Scorer
 
             if ($subtype === 'custom') {
                 $letter = strtoupper($parts[1] ?? '');
-                $pts = max(0.0, (float)($parts[4] ?? 0));
+                $pts = EntryMetadata::reviewedPoints($s, max(0.0, (float)($parts[4] ?? 0)));
                 if (!in_array($letter, ['A', 'B', 'C', 'D'], true) && \collectAdditionalParentScore($additionalGroups, $parts, $pts)) continue;
                 if ($letter === 'A') $crit_a += $pts;
                 elseif ($letter === 'B') $crit_b += $pts;
@@ -101,7 +103,15 @@ class KRA3Scorer
             // -- Criterion A: Service to the Institution --------------
             if (self::isCritA($subtype)) {
                 $pts = self::scoreCritA($subtype, $val1, $val2, $config_i, $pending, $s);
-                $crit_a += $pts;
+                $reviewed = EntryMetadata::reviewedPoints($s, $pts);
+                if (str_contains($subtype, 'income')) {
+                    if ($reviewed <= 0.0) continue;
+                    $role = preg_match('/co|contrib/i', $val2) ? 'co' : 'lead';
+                    $incomeByRole[$role] += max(0, (float)$val1);
+                    $crit_a += $reviewed - $pts;
+                } else {
+                    $crit_a += $reviewed;
+                }
             }
             // -- Criterion B: Service to the Community ----------------
             elseif (self::isCritB($subtype)) {
@@ -110,8 +120,12 @@ class KRA3Scorer
                     $media_occasional_count, $technical_guest_count,
                     $isr_subtotal, $config_i, $pending, $s
                 );
-                $crit_b      += $pts;
-                $isr_subtotal += $isr_inc;
+                $pts = EntryMetadata::reviewedPoints($s, $pts);
+                if (str_contains($subtype, 'outreach') || str_contains($subtype, 'isr')) {
+                    $pts = min($pts, self::ISR_CAP - $isr_subtotal);
+                    $isr_subtotal += $pts;
+                }
+                $crit_b += $pts;
             }
             // -- Criterion C: Quality of Extension Services -----------
             elseif (self::isCritC($subtype)) {
@@ -119,13 +133,13 @@ class KRA3Scorer
                 $csr_projects_c[] = $project_key;
 
                 // CROSS-VALIDATION: only credit if project was declared under ISR in Crit B
-                if (!in_array($project_key, $isr_projects_b) && !empty($project_key)) {
+                if ($project_key === '' || !in_array($project_key, $isr_projects_b, true)) {
                     $config_i[] = "KRA III Crit C: Project '{$title}'  -  cross-validation FAILED. This project was not declared under ISR (Criterion B outreach/ISR). CSR credit was not counted per JC01 rule.";
                 } else {
                     $rating = min(100, max(0, (float)$val1));
                     $cap = self::configuredMax('kra3_c_satisfaction', 20.0);
                     $pts = round(($rating / 100) * $cap, 2);
-                    $crit_c += $pts;
+                    $csrPoints[] = EntryMetadata::reviewedPoints($s, $pts);
                     if ($rating === 0.0) {
                         $pending[] = "KRA III Crit C: '{$title}'  -  CSR rating is 0. Provide CMO 18 s.2025 instrument summary.";
                     }
@@ -134,7 +148,7 @@ class KRA3Scorer
             // -- Criterion D: Bonus Admin Designation -----------------
             elseif (self::isCritD($subtype)) {
                 $pts    = self::scoreCritD($subtype, (float)$val1, $pending, $s);
-                $crit_d += $pts;
+                if ((float)$val1 >= 1) $crit_d += EntryMetadata::reviewedPoints($s, $pts);
             }
             // Legacy extension format (activity|||income|||moa|||outreach)
             else {
@@ -155,9 +169,14 @@ class KRA3Scorer
             }
         }
 
+        foreach ($incomeByRole as $role => $income) {
+            $crit_a += self::scoreCritA('income', (string)$income, $role, $config_i, $pending, ['evidence_names' => true]);
+        }
+        if ($csrPoints) $crit_c += array_sum($csrPoints) / count($csrPoints);
+
         // Apply sub-caps
         $limits = \configuredParentLimits(self::$pdo_ref, self::$criteria_cycle_id, self::$criteria_position_rank, 'Extension');
-        $crit_a = min($limits['A'] ?? self::CAP_A, $crit_a);
+        $crit_a = min($limits['A'] ?? self::CAP_A, max(0.0, $crit_a));
         $crit_b = min($limits['B'] ?? self::CAP_B, $crit_b);
         $crit_c = min($limits['C'] ?? self::CAP_C, $crit_c);
         $crit_d = min($limits['D'] ?? self::CAP_D, $crit_d);
@@ -238,9 +257,9 @@ class KRA3Scorer
 
             $tier_pts = 0;
             if ($income > 12000000)       $tier_pts = self::configuredMax('kra3_a_income_above12m', 18.0);
-            elseif ($income >= 6000001)   $tier_pts = self::configuredMax('kra3_a_income_6to12m', 12.0);
-            elseif ($income >= 500001)    $tier_pts = self::configuredMax('kra3_a_income_below6m', 6.0);
-            elseif ($income >= 100001)    $tier_pts = 4;
+            elseif ($income > 6000000)    $tier_pts = self::configuredMax('kra3_a_income_6to12m', 12.0);
+            elseif ($income > 500000)     $tier_pts = self::configuredMax('kra3_a_income_below6m', 6.0);
+            elseif ($income > 100000)     $tier_pts = 4;
             elseif ($income > 0)          $tier_pts = 2;
 
             $pts = $lead ? (float)$tier_pts : round($tier_pts / 2, 2);
@@ -292,7 +311,7 @@ class KRA3Scorer
         }
         elseif (str_contains($subtype, 'resource') || str_contains($subtype, 'speaker') || str_contains($subtype, 'facilitator')) {
             $rate  = str_contains($subtype, 'intl') ? self::configuredMax('kra3_b_resource_intl', 3.0) : self::configuredMax('kra3_b_resource_local', 2.0);
-            $hours = max(1.0, (float)($val1 ?: 1));
+            $hours = max(0.0, (float)$val1);
             $pts   = round($rate * $hours, 2);
             if (empty($s['evidence_names'])) $pending[] = "KRA III Crit B: Resource person '{$title}'  -  missing invitation letter, program, certificate of appreciation.";
         }
@@ -317,7 +336,7 @@ class KRA3Scorer
         string $subtype, float $years, array &$pending, array $s
     ): float {
         // All rates are per year served (minimum 1 continuous year)
-        $years = max(1, $years ?: 1);
+        if ($years < 1) return 0.0;
 
         // Institutional level
         if (str_contains($subtype, 'president') && !str_contains($subtype, 'vice') && !str_contains($subtype, 'program')) return round(self::configuredMax('kra3_d_president', 20.0) * $years, 2);
@@ -376,7 +395,7 @@ class KRA3Scorer
             $rating = min(100, max(0, (float)$val1));
             return round(($rating / 100) * self::configuredMax('kra3_c_satisfaction', 20.0), 2);
         }
-        if (self::isCritD($subtype)) return self::scoreCritD($subtype, (float)($val1 ?: 1), $dummy_pd, $dummy_s);
+        if (self::isCritD($subtype)) return self::scoreCritD($subtype, (float)$val1, $dummy_pd, $dummy_s);
         if (self::isCritB($subtype)) {
             [$pts,] = self::scoreCritB($subtype, $parts[1] ?? '', $val1, $val2, $med_occ, $tech_g, $isr_sub, $dummy_ci, $dummy_pd, $dummy_s);
             return $pts;

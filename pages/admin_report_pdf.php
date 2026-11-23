@@ -5,6 +5,7 @@ session_start();
 require_once __DIR__ . '/../includes/functions.php';
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../fpdf/fpdf.php';
+require_once __DIR__ . '/../includes/criteria_pdf_rows.php';
 
 if (!isLoggedIn() || !isAdmin()) { http_response_code(403); die('Access denied.'); }
 
@@ -118,7 +119,7 @@ class AdminReport_PDF extends FPDF {
 // -- Build PDF --------------------------------------------------
 $pdf = new AdminReport_PDF('L','mm','A4');
 $pdf->AliasNbPages();
-$pdf->cyc_name   = $selected_cycle['cycle_name'] ?? 'All Cycles';
+$pdf->cyc_name   = kraPdfText($selected_cycle['cycle_name'] ?? 'All Cycles');
 $pdf->generated  = $generated_at;
 $pdf->admin_name = $admin_name;
 $pdf->SetMargins(10,38,10);
@@ -149,7 +150,7 @@ $pdf->SetTextColor(0,0,0);
 $pdf->Ln(3);
 
 // -- KRA Averages -----------------------------------------------
-$pdf->SectionBar('AVERAGE KRA SCORES - ' . ($selected_cycle['cycle_name'] ?? 'All Cycles'));
+$pdf->SectionBar('AVERAGE KRA SCORES - ' . $pdf->cyc_name);
 $pdf->Ln(1);
 
 $kra_labels = ['Instruction'=>'KRA I - Instruction','Research'=>'KRA II - Research','Extension'=>'KRA III - Extension','Professional Development'=>'KRA IV - Prof. Dev.'];

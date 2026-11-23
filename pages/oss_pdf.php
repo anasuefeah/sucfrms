@@ -7,6 +7,7 @@ if (session_status() === PHP_SESSION_NONE) session_start();
 require_once __DIR__ . '/../includes/functions.php';
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../fpdf/fpdf.php';
+require_once __DIR__ . '/../includes/criteria_pdf_rows.php';
 
 requireLogin();
 if (!isAdmin() && !isEvaluator()) { http_response_code(403); die('Access denied.'); }
@@ -142,7 +143,7 @@ class OSS_PDF extends FPDF {
 // -- Build PDF -------------------------------------------------
 $pdf = new OSS_PDF('L', 'mm', 'A4');
 $pdf->AliasNbPages();
-$pdf->cyc_name   = $selected_cycle['cycle_name'] ?? 'All Cycles';
+$pdf->cyc_name   = kraPdfText($selected_cycle['cycle_name'] ?? 'All Cycles');
 $pdf->printed_at = $printed_at;
 $pdf->admin_name = $admin_name;
 $pdf->SetMargins(10, 38, 10);

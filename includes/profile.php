@@ -235,13 +235,7 @@ foreach ($education as $ed_row) {
             <div style="display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:1rem;">
                 <div class="profile-identity-text">
                     <?php
-                    $display_first  = trim($user['first_name']  ?? '');
-                    $display_middle = trim($user['middle_name'] ?? '');
-                    $display_last   = trim($user['last_name']   ?? '');
-                    $display_mi     = $display_middle !== '' ? ' ' . strtoupper(substr($display_middle, 0, 1)) . '.' : '';
-                    $display_name   = $display_first !== '' || $display_last !== ''
-                        ? trim($display_first . $display_mi . ' ' . $display_last)
-                        : htmlspecialchars($user['full_name'] ?? '');
+                    $display_name = trim(formatDisplayName($user) . ' ' . trim($user['suffix'] ?? ''));
                     ?>
                     <h2 style="font-size:1.4rem;font-weight:700;color:#0f172a;margin:0 0 0.2rem;letter-spacing:-0.01em;"><?= htmlspecialchars($display_name) ?></h2>
                     <p style="font-size:0.8rem;color:#94a3b8;margin:0 0 0.5rem;"><?= htmlspecialchars($user['email']) ?></p>
@@ -251,12 +245,12 @@ foreach ($education as $ed_row) {
                                      background:<?= $role==='admin'?'#1a3a6b':($role==='evaluator'?'#16a34a':'#1e4d8c') ?>;color:#fff;">
                             <?= strtoupper($_SESSION['role']) ?>
                         </span>
-                        <?php if ($campus_name): ?>
+                        <?php if (!isEvaluator() && $campus_name): ?>
                         <span style="font-size:0.72rem;color:#475569;background:#f8fafc;padding:2px 8px;border:1px solid #e2e8f0;display:inline-flex;align-items:center;gap:3px;">
                             <i class="bi bi-building" style="font-size:0.65rem;"></i><?= htmlspecialchars($campus_name) ?>
                         </span>
                         <?php endif; ?>
-                        <?php if (!empty($user['rank'])): ?>
+                        <?php if (!isEvaluator() && !empty($user['rank'])): ?>
                         <span style="font-size:0.72rem;color:#475569;background:#f8fafc;padding:2px 8px;border:1px solid #e2e8f0;display:inline-flex;align-items:center;gap:3px;">
                             <i class="bi bi-award" style="font-size:0.65rem;"></i><?= htmlspecialchars($user['rank']) ?>
                         </span>
@@ -283,6 +277,7 @@ foreach ($education as $ed_row) {
     <div class="profile-overview" style="background:#fff;border-bottom:1px solid #e2e8f0;">
         <div style="display:flex;flex-wrap:wrap;gap:0.65rem;margin-bottom:<?= ($_SESSION['role']==='faculty'&&$latest)?'0.65rem':'0' ?>;">
 
+            <?php if (!isEvaluator()): ?>
             <div style="display:flex;align-items:center;gap:0.6rem;background:#f8fafc;border:1px solid #e2e8f0;padding:0.6rem 1rem;flex:1;min-width:140px;">
                 <i class="bi bi-person-badge" style="color:#1a3a6b;font-size:1rem;flex-shrink:0;"></i>
                 <div>
@@ -290,6 +285,7 @@ foreach ($education as $ed_row) {
                     <div style="font-size:0.88rem;font-weight:700;color:#0f172a;margin-top:1px;"><?= htmlspecialchars($user['employee_id'] ?? '—') ?></div>
                 </div>
             </div>
+            <?php endif; ?>
 
             <div style="display:flex;align-items:center;gap:0.6rem;background:#f8fafc;border:1px solid #e2e8f0;padding:0.6rem 1rem;flex:1;min-width:140px;">
                 <i class="bi bi-calendar3" style="color:#1a3a6b;font-size:1rem;flex-shrink:0;"></i>
@@ -476,6 +472,7 @@ foreach ($education as $ed_row) {
                     </div>
                 </div>
 
+                <?php if (!isEvaluator()): ?>
                 <!-- Account box -->
                 <div style="border:1px solid #e5e7eb;overflow:hidden;margin-bottom:0.75rem;">
                     <div style="background:#f9fafb;border-bottom:1px solid #e5e7eb;padding:0.35rem 0.75rem;">
@@ -534,6 +531,8 @@ foreach ($education as $ed_row) {
                         <?php endif; ?>
                     </div>
                 </div>
+
+                <?php endif; ?>
 
                 <?php if ($_SESSION['role'] === 'faculty'): ?>
                 <!-- Education box -->

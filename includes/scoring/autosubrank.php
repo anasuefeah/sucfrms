@@ -39,7 +39,7 @@ class AutoSubRankCalculator
     const INELIGIBLE_RANK_PATTERNS = [
         '/^Associate\s+Professor\s+V$/i',
         '/^Professor\s+(I|II|III|IV|V|VI)$/i',
-        '/^University\s+Professor/i',
+        '/^(College|University)\s+Professor/i',
     ];
 
     private \PDO $pdo;
@@ -115,7 +115,8 @@ class AutoSubRankCalculator
             $doctorate_details,
             $has_award,
             $award_details,
-            false   // isPreEval = false
+            false,
+            !in_array($row['status'], ['draft', 'rejected', 'needs_revision'], true)
         );
     }
 
@@ -160,7 +161,8 @@ class AutoSubRankCalculator
                  award_mode, award_details,
                  calculation_reason, weighted_score_at_calc, rank_at_calc,
                  historical_usage_checked)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, 1 FROM applications
+            WHERE application_id = ? AND status NOT IN ('approved', 'reclassified', 'admin_rejected')
             ON DUPLICATE KEY UPDATE
                 doctorate_mode          = VALUES(doctorate_mode),
                 doctorate_points        = VALUES(doctorate_points),
@@ -181,6 +183,7 @@ class AutoSubRankCalculator
             $result['calculation_reason'],
             $result['weighted_score_at_calc'],
             $result['rank_at_calc'],
+            $this->application_id,
         ]);
     }
 
@@ -267,7 +270,7 @@ class AutoSubRankCalculator
         // not_eligible covers rank-blocked faculty (Associate Professor V, Professor ranks) who
         // still have a doctorate — it contributes points to KRA IV instead of a rank trigger.
         if (in_array($row['doctorate_mode'], ['points_only', 'blocked_historical'], true)) {
-            return (float)($row['doctorate_points'] ?: self::DOCTORATE_POINTS);
+            return (float)$row['doctorate_points'];
         }
         if ($row['doctorate_mode'] === 'not_eligible' && (float)($row['doctorate_points'] ?? 0) > 0) {
             return (float)$row['doctorate_points'];
@@ -293,7 +296,7 @@ class AutoSubRankCalculator
         if (!$row) return 0.0;
         if ($row['doctorate_mode'] === 'triggered') return 0.0;
         if (in_array($row['doctorate_mode'], ['points_only', 'blocked_historical'])) {
-            return (float)($row['doctorate_points'] ?: self::DOCTORATE_POINTS);
+            return (float)$row['doctorate_points'];
         }
         if ($row['doctorate_mode'] === 'not_eligible' && (float)($row['doctorate_points'] ?? 0) > 0) {
             return (float)$row['doctorate_points'];
@@ -310,7 +313,7 @@ class AutoSubRankCalculator
             'triggered'          => 'TRIGGERED (+1 Rank)',
             'points_only'        => 'POINTS ONLY (40 pts)',
             'not_eligible'       => 'NOT ELIGIBLE',
-            'blocked_historical' => 'ALREADY USED (40 pts)',
+            'blocked_historical' => 'ALREADY USED (0 pts)',
             'insufficient_score' => 'NEEDS REVIEW',
             default              => strtoupper(str_replace('_', ' ', $mode)),
         };
@@ -354,7 +357,8 @@ class AutoSubRankCalculator
         string $doctorate_details,
         bool   $has_award,
         string $award_details,
-        bool   $isPreEval
+        bool   $isPreEval,
+        bool   $requireDoctorateReview = false
     ): array {
         // -- Doctorate decision -----------------------------------------------
         $doctorate_mode    = 'not_eligible';
@@ -364,32 +368,26 @@ class AutoSubRankCalculator
 
         if ($has_doctorate) {
             $rank_eligible = $this->isRankEligibleForTrigger($rank);
-
-            if (!$rank_eligible) {
-                $doctorate_mode   = 'not_eligible';
+            $decision = $isPreEval ? [] : $this->doctorateReview();
+            $historical_usage = $isPreEval ? false : $this->checkHistoricalUsage();
+            if (($decision['doctorate_verified'] ?? '') === 'rejected') {
+                $doctorate_reason = 'The evaluator rejected the doctorate evidence.';
+            } elseif (($decision['doctorate_verified'] ?? '') === 'verified'
+                && ($decision['doctorate_mode'] ?? '') === 'points_only') {
+                $doctorate_mode = 'points_only';
                 $doctorate_points = self::DOCTORATE_POINTS;
-                $doctorate_reason = "Your rank ({$rank}) is not eligible for doctorate-based sub-rank increase per JC01 s.2026 "
-                                  . "(Associate Professor V and all Professor ranks are excluded). "
-                                  . "Doctorate contributes " . (int)self::DOCTORATE_POINTS . " points to your KRA IV score.";
+                $doctorate_reason = 'The evaluator approved this doctorate for Criterion B points.';
+            } elseif ($historical_usage !== false) {
+                $doctorate_mode = 'blocked_historical';
+                $doctorate_reason = 'A doctorate already earned an automatic sub-rank. A different, eligible degree must be approved for points.';
+            } elseif ($requireDoctorateReview && ($decision['doctorate_verified'] ?? '') !== 'verified') {
+                $doctorate_reason = 'The doctorate needs evaluator confirmation before it can earn points or an automatic sub-rank.';
+            } elseif (!$rank_eligible) {
+                $doctorate_points = self::DOCTORATE_POINTS;
+                $doctorate_reason = 'This rank is eligible for doctorate points when the degree qualifies.';
             } else {
-                // Check historical usage (only for real applications, not pre-eval)
-                $historical_usage = $isPreEval ? false : $this->checkHistoricalUsage();
-
-                if ($historical_usage !== false) {
-                    $cycle  = htmlspecialchars($historical_usage['cycle_name'] ?? 'a previous cycle');
-                    $date   = !empty($historical_usage['reviewed_at'])
-                            ? date('M d, Y', strtotime($historical_usage['reviewed_at']))
-                            : 'date unknown';
-                    $doctorate_mode   = 'blocked_historical';
-                    $doctorate_points = self::DOCTORATE_POINTS;
-                    $doctorate_reason = "Your doctorate was already used for auto sub-rank in {$cycle} (evaluation completed {$date}). "
-                                      . "It now contributes " . (int)self::DOCTORATE_POINTS . " points to your score instead.";
-                } else {
-                    $doctorate_mode   = 'triggered';
-                    $doctorate_points = 0.0;
-                    $doctorate_reason = "Your doctorate is detected for auto sub-rank review. "
-                                      . "JC01 s.2026 treats the doctorate as a rank trigger when rank and first-doctorate rules are met, not as ordinary KRA IV points.";
-                }
+                $doctorate_mode = 'triggered';
+                $doctorate_reason = 'The first doctorate is eligible for an automatic sub-rank if the evaluator confirms the requirements.';
             }
         } else {
             $doctorate_reason = "No doctorate degree found in your Professional Development entries. "
@@ -530,6 +528,19 @@ class AutoSubRankCalculator
      * Check if this faculty already triggered doctorate in any prior APPROVED application.
      * Returns false if never used, or array with usage details if found.
      */
+    private function doctorateReview(): array
+    {
+        if (!$this->application_id) return [];
+        try {
+            $stmt = $this->pdo->prepare("SELECT doctorate_verified, doctorate_mode FROM auto_sub_rank WHERE application_id = ?");
+            $stmt->execute([$this->application_id]);
+            return $stmt->fetch(\PDO::FETCH_ASSOC) ?: [];
+        } catch (\PDOException $e) {
+            if (in_array($e->getCode(), ['42S02', '42S22'], true)) return [];
+            throw $e;
+        }
+    }
+
     private function checkHistoricalUsage(): array|false
     {
         if (!$this->user_id) return false;
@@ -809,7 +820,8 @@ class AutoSubrank
             $weighted_score, $rank,
             $has_doctorate, $doctorate_details,
             $has_award, $award_details,
-            false // isPreEval
+            false,
+            isset($app['status']) && !in_array($app['status'], ['draft', 'rejected', 'needs_revision'], true)
         );
 
         // -- Preserve checker-verified award trigger ---------------------------

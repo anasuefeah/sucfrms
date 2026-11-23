@@ -147,7 +147,7 @@ $showAdditionalCriteria = static function (array $criteria, bool $nested = false
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <link rel="stylesheet" href="../assets/css/square-corners.css">
+    <link rel="stylesheet" href="../assets/css/square-corners.css?v=<?= filemtime(__DIR__ . '/../assets/css/square-corners.css') ?>">
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>SUCFRMS  -  Self-Assessment</title>
@@ -186,6 +186,7 @@ body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f3f8;min-height:100vh
 .sb-nav-link:hover{background:rgba(255,255,255,.06);color:rgba(255,255,255,.85);}
 .sb-nav-link.active{background:rgba(255,255,255,.1);color:#fff;border-left:2px solid rgba(255,255,255,.4);}
 .sb-nav-link i{font-size:.8rem;}
+.sb-portal-link{display:none;}
 
 /* Score block */
 .sb-heading{font-size:.54rem;font-weight:700;color:rgba(255,255,255,.3);text-transform:uppercase;letter-spacing:.14em;margin-bottom:.3rem;}
@@ -324,12 +325,28 @@ textarea.fi{resize:vertical;min-height:52px;}
 .btn-rm{border-color:#94a3b8;color:#1e293b;}
 .btn-rm:hover{background:#f8fafc;}
 
+/* Self-Assessment introduction */
+.sa-intro-card{min-width:0;max-height:calc(100vh - 2rem);max-height:calc(100dvh - 2rem);overflow-y:auto;}
+.sa-intro-layout{display:grid;grid-template-columns:220px minmax(0,1fr);}
+.sa-intro-greeting{background:#1a3a6b;padding:2rem 1.5rem;display:flex;flex-direction:column;justify-content:center;overflow-wrap:anywhere;}
+.sa-intro-content{padding:1.4rem 1.4rem 1.2rem;}
+.sa-intro-features{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.4rem;margin-bottom:.9rem;}
+.sa-intro-features span{overflow-wrap:anywhere;}
+.sa-intro-footer{border-top:1px solid #f3f4f6;padding-top:.75rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;}
+
 @media(max-width:900px){
     .panels{grid-template-columns:1fr;}
     .sidebar{width:100%;height:auto;position:static;border-right:none;border-bottom:1px solid rgba(255,255,255,.1);}
     .pg{flex-direction:column;}
+    .sb-portal-link{display:flex;align-self:flex-start;min-height:44px;color:#fff;}
+    .main > .back-link{display:none;}
 }
 @media(max-width:600px){
+    .sa-intro-layout{grid-template-columns:minmax(0,1fr);}
+    .sa-intro-greeting,.sa-intro-content{padding:1rem;}
+    .sa-intro-footer{flex-direction:column;align-items:stretch;gap:.65rem;}
+    #saIntroProceedBtn{min-height:44px;justify-content:center;}
+
     /* Navbar  -  show short name only */
     .pnav{padding:0 12px;gap:8px;}
     .pnav-title{font-size:.75rem;}
@@ -368,6 +385,7 @@ textarea.fi{resize:vertical;min-height:52px;}
         justify-content:flex-start;
     }
 }
+@media(max-width:380px){.sa-intro-features{grid-template-columns:minmax(0,1fr);}}
 </style>
 </head>
 <body>
@@ -397,6 +415,8 @@ textarea.fi{resize:vertical;min-height:52px;}
 
 <!-- -- Score sidebar -- -->
 <aside class="sidebar">
+
+    <a href="portal.php" class="sb-nav-link sb-portal-link"><i class="bi bi-arrow-left" aria-hidden="true"></i> Back to Portal</a>
 
     <!-- Nav links -->
     <div class="sb-box" style="display:flex;flex-direction:column;gap:2px;">
@@ -502,7 +522,7 @@ textarea.fi{resize:vertical;min-height:52px;}
 
         <!-- Header -->
         <div style="background:#1a3a6b;padding:0.85rem 1.1rem;display:flex;align-items:center;gap:0.6rem;">
-            <img src="../assets/images/logo.jpg" alt=""
+            <img class="modal-brand-logo" src="../assets/images/logo.jpg" alt=""
                  style="width:28px;height:28px;object-fit:cover;border-radius:50%;border:1.5px solid rgba(255,255,255,0.25);flex-shrink:0;">
             <div>
                 <div style="color:#fff;font-weight:700;font-size:0.78rem;line-height:1.2;">SUCFRMS</div>
@@ -856,7 +876,7 @@ document.getElementById('pe-logout-modal').addEventListener('click', function(e)
             <button class="btn-s" onclick="openDrawer()" style="font-size:.75rem;font-weight:600;">Evidence Guide</button>
             <a href="evidence_repository.php" class="btn-s" style="text-decoration:none;font-size:.75rem;font-weight:600;">Evidence Repository</a>
             <button class="btn-s" onclick="openPdfViewer('self_assessment_pdf.php','Summary')" style="font-size:.75rem;font-weight:600;">Summary</button>
-            <button class="btn-s" onclick="openPdfViewer('self_assessment_iss_pdf.php','ISS')" style="font-size:.75rem;font-weight:600;"><i class="bi bi-printer me-1" aria-hidden="true"></i>ISS</button>
+            <button class="btn-s" onclick="openPdfViewer('self_assessment_iss_pdf.php','ISS')" style="font-size:.75rem;font-weight:600;">ISS</button>
         </div>
     </div>
 
@@ -877,19 +897,19 @@ document.getElementById('pe-logout-modal').addEventListener('click', function(e)
     <?php endif; ?>
 
     <div id="saIntroModal" style="display:none;position:fixed;inset:0;z-index:99999;background:rgba(15,23,42,0.65);align-items:center;justify-content:center;padding:1rem;">
-        <div id="saIntroCard" style="background:#fff;width:100%;max-width:700px;border:1px solid #e5e7eb;overflow:hidden;opacity:0;transform:translateY(20px);transition:opacity 0.3s ease,transform 0.3s ease;">
-            <div style="display:grid;grid-template-columns:220px 1fr;">
+        <div id="saIntroCard" class="sa-intro-card" style="background:#fff;width:100%;max-width:700px;border:1px solid #e5e7eb;opacity:0;transform:translateY(20px);transition:opacity 0.3s ease,transform 0.3s ease;">
+            <div class="sa-intro-layout">
                 <!-- Left navy greeting -->
-                <div style="background:#1a3a6b;padding:2rem 1.5rem;display:flex;flex-direction:column;justify-content:center;">
+                <div class="sa-intro-greeting">
                     <div style="font-size:0.65rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:rgba(255,255,255,0.4);margin-bottom:0.5rem;">Self-Assessment</div>
                     <div style="font-size:1.3rem;font-weight:700;color:#fff;line-height:1.25;margin-bottom:0.5rem;">Hello,<br><?= htmlspecialchars($_SESSION['first_name'] ?? 'Faculty') ?>.</div>
                     <div style="width:28px;height:2px;background:rgba(255,255,255,0.25);margin-bottom:0.75rem;"></div>
                     <div style="font-size:0.72rem;color:rgba(255,255,255,0.5);line-height:1.6;">Estimate your scores and see your projected rank.</div>
                 </div>
                 <!-- Right content -->
-                <div style="padding:1.4rem 1.4rem 1.2rem;">
+                <div class="sa-intro-content">
                     <p style="font-size:0.8rem;color:#374151;line-height:1.6;margin:0 0 1rem;">Track your KRA entries and prepare evidence independently of your official reclassification application.</p>
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.4rem;margin-bottom:0.9rem;">
+                    <div class="sa-intro-features">
                         <div style="border:1px solid #e5e7eb;padding:0.55rem 0.65rem;">
                             <div style="display:flex;align-items:center;gap:0.4rem;margin-bottom:3px;"><i class="bi bi-pencil" style="color:#1a3a6b;font-size:0.78rem;"></i><span style="font-size:0.73rem;font-weight:700;color:#111827;">Enter KRA Scores</span></div>
                             <div style="font-size:0.68rem;color:#9ca3af;line-height:1.4;">Input scores for each of the 4 KRAs.</div>
@@ -907,7 +927,7 @@ document.getElementById('pe-logout-modal').addEventListener('click', function(e)
                             <div style="font-size:0.68rem;color:#9ca3af;line-height:1.4;">Store your supporting documents.</div>
                         </div>
                     </div>
-                    <div style="border-top:1px solid #f3f4f6;padding-top:0.75rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;">
+                    <div class="sa-intro-footer">
                         <span style="font-size:0.68rem;color:#9ca3af;"><i class="bi bi-info-circle" style="margin-right:3px;"></i>Scores are advisory only — evaluator makes the binding decision.</span>
                         <button id="saIntroProceedBtn" style="flex-shrink:0;padding:0.45rem 1.25rem;background:#1a3a6b;color:#fff;border:none;font-size:0.8rem;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:5px;" onmouseover="this.style.background='#152d54'" onmouseout="this.style.background='#1a3a6b'">
                             <i class="bi bi-arrow-right-circle" style="font-size:0.78rem;"></i> Proceed
@@ -988,8 +1008,8 @@ document.getElementById('pe-logout-modal').addEventListener('click', function(e)
         <div style="background:#eff6ff;border:1.5px solid #bfdbfe;border-radius:8px;padding:.75rem 1rem;margin-bottom:.85rem;display:flex;align-items:center;gap:.6rem;">
             <i class="bi bi-mortarboard-fill" style="color:#1e4d8c;font-size:1.1rem;flex-shrink:0;"></i>
             <div>
-                <div style="font-weight:700;color:#1e4d8c;font-size:.88rem;">Doctorate detected — pending score qualification</div>
-                <div style="font-size:.72rem;color:#64748b;margin-top:2px;">You need a weighted score ≥ 41 before the doctorate sub-rank applies. Current score: <strong><?= number_format((float)($_pe_result['weighted_score'] ?? 0), 2) ?></strong></div>
+                <div style="font-weight:700;color:#1e4d8c;font-size:.88rem;">Doctorate recorded</div>
+                <div style="font-size:.72rem;color:#64748b;margin-top:2px;">The evaluator confirms whether the doctorate earns points or an automatic sub-rank.</div>
             </div>
         </div>
         <?php else: ?>
@@ -1263,11 +1283,20 @@ document.getElementById('pe-logout-modal').addEventListener('click', function(e)
                                 <option data-criteria="kra1_c_panel_masters">Master's Thesis  -  Panel Member (4 pts)</option>
                                 <option data-criteria="kra1_c_panel_undergrad">Undergraduate Thesis  -  Panel Member (2 pts)</option>
                                 <option data-criteria="kra1_c_panel_special">Special Project / Capstone  -  Panel Member (1 pt)</option>
-                                <option data-criteria="kra1_c_mentor_competition">Mentor: Student/Team Competition Winner (Warning pts pending confirmation)</option>
+                                <option data-criteria="kra1_c_mentor_competition">Mentor: Student/Team Competition Winner</option>
                                 <?php $showAdditionalCriteria($instructionChildren['C'] ?? [], true); ?>
                             </select>
                         </div>
                         <div class="fg" id="thesisDetails"><label class="fl">Advisee / Student Name (optional)</label><input type="text" class="fi" id="advisee" placeholder="Name of advisee"></div>
+                        <div id="mentorFields" hidden>
+                            <div class="fg"><label class="fl" for="mentorName">Competition name</label><input class="fi" id="mentorName"></div>
+                            <div class="fg"><label class="fl" for="mentorLevel">Competition level</label><select class="fi" id="mentorLevel" onchange="previewScore()">
+                                <option value="">Select</option><option value="regional">Regional</option><option value="national">National</option><option value="international">International</option>
+                            </select></div>
+                            <div class="fg"><label class="fl" for="mentorPlacement">Placement</label><select class="fi" id="mentorPlacement" onchange="previewScore()">
+                                <option value="">Select</option><option value="1st">First</option><option value="2nd">Second</option><option value="3rd">Third</option>
+                            </select></div>
+                        </div>
                     </div>
                     <?php if ($otherInstructionChildren): ?>
                     <div class="fg" id="fOtherInstruction" hidden>
@@ -1336,7 +1365,7 @@ document.getElementById('pe-logout-modal').addEventListener('click', function(e)
                         <select class="fi" id="pdType" onchange="changeSelfAssessmentCriterion()">
                             <option data-criteria="kra4_a_org_membership" value="A-org">Active Professional Org Membership (5 pts)</option>
                             <option data-criteria="kra4_b_training_*" value="B-training">Training / Conference</option>
-                            <option data-criteria="kra4_b_postmaster_cert kra4_b_additional_masters" value="B-degree">Educational Qualification</option>
+                            <option data-criteria="kra4_b_postmaster_cert kra4_b_postdoc_cert kra4_b_additional_masters kra4_b_doctorate" value="B-degree">Educational Qualification</option>
                             <option data-criteria="kra4_b_paper_*" value="B-paper">Paper Presentation</option>
                             <option data-criteria="kra4_c_*" value="C-award">Award / Recognition</option>
                             <?php $showAdditionalCriteria($topLevelCriteria, true); ?>
@@ -1348,6 +1377,15 @@ document.getElementById('pe-logout-modal').addEventListener('click', function(e)
                         <label class="fl">Value / Sub-type</label>
                         <select class="fi" id="pdSubval" onchange="previewScore()"></select>
                     </div>
+                    <div class="fg" id="pdHoursWrap" hidden><label class="fl" for="pdHours">Hours</label><input class="fi" id="pdHours" type="number" min="0" step="any" oninput="previewScore()"></div>
+                    <div class="fg" id="pdFormatWrap" hidden>
+                        <label class="fl" for="pdFormat">Training format</label>
+                        <select class="fi" id="pdFormat" onchange="previewScore()">
+                            <option value="other">In person or abroad</option><option value="philippines">In person in the Philippines</option><option value="virtual">Virtual</option>
+                        </select>
+                    </div>
+                    <div class="fg" id="pdCountriesWrap" hidden><label class="fl" for="pdCountries">Countries represented</label><input class="fi" id="pdCountries" type="number" min="0" step="1" oninput="previewScore()"></div>
+                    <div class="fg" id="pdEventWrap" hidden><label class="fl" for="pdEvent">Award event and year</label><input class="fi" id="pdEvent"></div>
                     </div>
                     <?php endif; ?>
 
@@ -1616,6 +1654,10 @@ function editEntry(eid, btn){
         if (CAT === 'Professional Development' && ctype !== 'CUSTOM') {
             document.getElementById('pdDesc').value = parts[1] || '';
             document.getElementById('pdSubval').value = parts[2] || '';
+            document.getElementById('pdHours').value = ctype === 'B-training' ? parts[3] || '' : '';
+            document.getElementById('pdFormat').value = ctype === 'B-training' ? parts[4] || 'other' : 'other';
+            document.getElementById('pdCountries').value = (ctype === 'B-training' ? parts[5] : ctype === 'B-paper' ? parts[3] : '') || '';
+            document.getElementById('pdEvent').value = ctype === 'C-award' ? parts[3] || '' : '';
         }
     } else if (selector && ctype === 'CUSTOM') {
         const parent = CAT === 'Instruction' ? Object.keys(instructionFields).find(choice => {
@@ -1635,9 +1677,15 @@ function editEntry(eid, btn){
     // Set criterion type selector if present
     const critSel = document.getElementById('critType') || document.querySelector('[id^="critType"]');
     if (critSel && ctype !== 'CUSTOM') {
-        critSel.value = ctype;
-        const subtype = instructionSubtype(ctype);
-        if (subtype) subtype.value = ctype === 'A-set-sef' ? 'teaching' : parts[1];
+        critSel.value = ctype === 'C-mentor' ? 'C-thesis' : ctype;
+        const subtype = instructionSubtype(critSel.value);
+        if (subtype && ctype === 'C-mentor') {
+            const option = Array.from(subtype.options).find(item => item.dataset.criteria === 'kra1_c_mentor_competition');
+            if (option) subtype.value = option.value;
+            document.getElementById('mentorName').value = parts[1] || '';
+            document.getElementById('mentorLevel').value = parts[2] || '';
+            document.getElementById('mentorPlacement').value = parts[3] || '';
+        } else if (subtype) subtype.value = ctype === 'A-set-sef' ? 'teaching' : parts[1];
         changeSelfAssessmentCriterion();
     }
     // After a tick (to let dependent fields render), fill sub-fields
@@ -1671,10 +1719,20 @@ function resetForm(){
     }
     const n=document.getElementById('entryNotes'); if(n)n.value='';
     const pdDesc = document.getElementById('pdDesc'); if (pdDesc) pdDesc.value = '';
+    for (const id of ['pdHours', 'pdCountries', 'pdEvent', 'pdFormat']) {
+        const input = document.getElementById(id);
+        if (input) input.value = id === 'pdFormat' ? 'other' : '';
+    }
     const sp=document.getElementById('scorePreview'); if(sp)sp.textContent='0.00';
 }
 
 function changeSelfAssessmentCriterion(){
+    const mentorFields = document.getElementById('mentorFields');
+    if (mentorFields) {
+        const selected = document.getElementById('thesisType')?.selectedOptions[0];
+        mentorFields.hidden = selected?.dataset.criteria !== 'kra1_c_mentor_competition';
+        document.getElementById('thesisDetails').hidden = !mentorFields.hidden;
+    }
     const choice = document.querySelector('#critType, #resType, #extType, #pdType')?.value;
     document.getElementById('standardCriterionFields').hidden = !choice || choice.startsWith('custom:');
     if (choice && !choice.startsWith('custom:')) {
@@ -1781,15 +1839,19 @@ function switchInstrForm(){
 // -- ProfDev sub-options ----------------------------------------
 const PD_OPTS={
     'B-training':[['1','1 pt  -  Local','kra4_b_training_local'],['2','2 pts  -  International','kra4_b_training_intl']],
-    'B-degree':  [['10','10 pts  -  Post-Master\'s/Post-Doctoral Cert.','kra4_b_postmaster_cert'],['20','20 pts  -  Additional Master\'s','kra4_b_additional_masters']],
+    'B-degree':  [['10','10 pts  -  Post-Master\'s/Post-Doctoral Cert.','kra4_b_postmaster_cert'],['20','20 pts  -  Additional Master\'s','kra4_b_additional_masters'],['40','40 pts  -  Doctorate / Additional Doctorate','kra4_b_doctorate']],
     'B-paper':   [['3','3 pts  -  Local Presentation','kra4_b_paper_local'],['5','5 pts  -  International Presentation','kra4_b_paper_intl']],
-    'C-award':   [['2','2 pts  -  Institutional','kra4_c_award_institutional'],['3','3 pts  -  Local','kra4_c_award_local'],['4','4 pts  -  Regional','kra4_c_award_national'],['0','National/International (+1 sub-rank, 0 pts)','kra4_c_award_prestigious']],
+    'C-award':   [['2','2 pts  -  Institutional','kra4_c_award_institutional'],['3','3 pts  -  Local/Regional','kra4_c_award_local'],['4','4 pts  -  National','kra4_c_award_national'],['5','5 provisional pts  -  International','kra4_c_award_international'],['0','Prestigious award (+1 sub-rank, 0 pts)','kra4_c_award_prestigious']],
 };
 function updatePdOpts(){
     const t=document.getElementById('pdType')?.value;
     const w=document.getElementById('pdSubWrap');
     const s=document.getElementById('pdSubval');
     if(!t||!w||!s)return;
+    document.getElementById('pdHoursWrap').hidden = t !== 'B-training';
+    document.getElementById('pdFormatWrap').hidden = t !== 'B-training';
+    document.getElementById('pdCountriesWrap').hidden = !['B-training', 'B-paper'].includes(t);
+    document.getElementById('pdEventWrap').hidden = t !== 'C-award';
     if(t==='A-org'){w.style.display='none';return;}
     const opts=PD_OPTS[t]||[];
     s.replaceChildren(...opts.filter(([, , key])=>hasSelfAssessmentCriterion(key)).map(([v,l,key]) =>
@@ -1839,6 +1901,10 @@ function buildRemarks(){
             const c=document.getElementById('contribB')?.value||'100';
             return `B-material|||${l}|||${c}`;
         }else{
+            if (subtype?.selectedOptions[0]?.dataset.criteria === 'kra1_c_mentor_competition') {
+                return ['C-mentor', document.getElementById('mentorName').value,
+                    document.getElementById('mentorLevel').value, document.getElementById('mentorPlacement').value].join('|||');
+            }
             const l=selectedItem;
             return `C-thesis|||${l}`;
         }
@@ -1846,7 +1912,7 @@ function buildRemarks(){
         const t=document.getElementById('resType')?.value||'';
         const ti=document.getElementById('resTitle')?.value||'';
         const c=document.getElementById('resContrib')?.value||'100';
-        return `${t}|||${ti}||||||||||||${c}`;
+        return [t, ti, '', '', ti, c, ti].join('|||');
     }else if(CAT==='Extension'){
         const t=document.getElementById('extType')?.value||'';
         const title=document.getElementById('extTitle')?.value||'';
@@ -1858,6 +1924,12 @@ function buildRemarks(){
         const d=document.getElementById('pdDesc')?.value||'';
         const v=t==='A-org'?'1':(document.getElementById('pdSubval')?.value||'');
         if (!v) return '';
+        const countries = document.getElementById('pdCountries')?.value || '';
+        if (t === 'B-training') {
+            return [t, d, v, document.getElementById('pdHours')?.value || '', document.getElementById('pdFormat')?.value || '', countries].join('|||');
+        }
+        if (t === 'B-paper') return `${t}|||${d}|||${v}|||${countries}`;
+        if (t === 'C-award') return `${t}|||${d}|||${v}|||${document.getElementById('pdEvent')?.value || ''}`;
         return `${t}|||${d}|||${v}`;
     }
 }

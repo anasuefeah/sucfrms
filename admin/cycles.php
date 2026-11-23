@@ -358,6 +358,31 @@ if ($panel_cycle) {
 
 <?php showFlash(); ?>
 
+<style>
+.cycles-layout{display:grid;grid-template-columns:240px minmax(0,1fr);gap:.75rem;align-items:start;}
+.cycles-layout > *{min-width:0;}
+.cycle-detail-title{min-width:0;overflow-wrap:anywhere;}
+
+@media(max-width:991.98px){
+    .cycles-layout{grid-template-columns:minmax(0,1fr);}
+    .cycle-list-scroll{max-height:16rem !important;}
+    .cycle-detail-columns,.cycle-form-columns{grid-template-columns:minmax(0,1fr) !important;}
+    .cycle-detail-columns > :first-child{border-right:0 !important;border-bottom:1px solid #f1f5f9;}
+    .cycle-detail-columns > *,.cycle-form-columns > *{min-width:0;}
+    .cycle-actions form{flex-wrap:wrap;}
+    .cycle-delete-action{margin-left:0 !important;}
+    .cycle-actions button,.cycle-actions select,.cycle-criteria-header a{min-height:44px;}
+    .cycle-criteria-header{flex-wrap:wrap;gap:.65rem;padding:.75rem 1rem !important;}
+    .cycle-history table{min-width:34rem;}
+    #cycleReviewModal > div,#editCycleModal > div,#extendSubmissionModal > div,#deleteCycleModal > div{
+        min-width:0;
+        max-height:calc(100vh - 2rem);
+        max-height:calc(100dvh - 2rem);
+        overflow-y:auto !important;
+    }
+}
+</style>
+
 <!-- Page Header -->
 <div style="background:#fff;border:1px solid #e2e8f0;padding:0.85rem 1.25rem;margin-bottom:1.25rem;
             display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:1rem;">
@@ -433,7 +458,7 @@ if ($panel_cycle) {
                     <div style="background:#f9fafb;border-bottom:1px solid #e5e7eb;padding:0.3rem 0.75rem;">
                         <span style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#374151;">Cycle Period</span>
                     </div>
-                    <div style="padding:0.65rem 0.75rem;display:grid;grid-template-columns:1fr 1fr;gap:0.6rem;">
+                    <div class="cycle-form-columns" style="padding:0.65rem 0.75rem;display:grid;grid-template-columns:1fr 1fr;gap:0.6rem;">
                         <div>
                             <label style="<?= $lbl ?>">Start Date <span style="color:#dc2626;">*</span></label>
                             <input type="date" name="start_date" id="cc_start" required style="<?= $inp ?>"
@@ -452,7 +477,7 @@ if ($panel_cycle) {
                     <div style="background:#f9fafb;border-bottom:1px solid #e5e7eb;padding:0.3rem 0.75rem;">
                         <span style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#374151;">Faculty Submission Window</span>
                     </div>
-                    <div style="padding:0.65rem 0.75rem;display:grid;grid-template-columns:1fr 1fr;gap:0.6rem;">
+                    <div class="cycle-form-columns" style="padding:0.65rem 0.75rem;display:grid;grid-template-columns:1fr 1fr;gap:0.6rem;">
                         <div>
                             <label style="<?= $lbl ?>">Submission Start <span style="color:#dc2626;">*</span></label>
                             <input type="date" name="submission_start_date" id="cc_sub_start" required style="<?= $inp ?>"
@@ -472,7 +497,7 @@ if ($panel_cycle) {
                     <div style="background:#f9fafb;border-bottom:1px solid #e5e7eb;padding:0.3rem 0.75rem;">
                         <span style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#374151;">Deadlines</span>
                     </div>
-                    <div style="padding:0.65rem 0.75rem;display:grid;grid-template-columns:1fr 1fr;gap:0.6rem;">
+                    <div class="cycle-form-columns" style="padding:0.65rem 0.75rem;display:grid;grid-template-columns:1fr 1fr;gap:0.6rem;">
                         <div>
                             <label style="<?= $lbl ?>">Evaluation Deadline <span style="color:#dc2626;">*</span></label>
                             <input type="date" name="evaluation_deadline" id="cc_eval_deadline" required style="<?= $inp ?>"
@@ -514,7 +539,7 @@ if ($panel_cycle) {
     </div>
 </div>
 
-<div style="display:grid;grid-template-columns:240px 1fr;gap:0.75rem;align-items:start;">
+<div class="cycles-layout">
 
     <!-- LEFT: Cycle list -->
     <div>
@@ -525,7 +550,7 @@ if ($panel_cycle) {
                 </div>
             </div>
             <?php if ($cycles): ?>
-            <div style="overflow-y:auto;max-height:72vh;">
+            <div class="cycle-list-scroll" style="overflow-y:auto;max-height:72vh;">
             <?php foreach ($cycles as $c):
                 $is_sel = ($c['cycle_id'] === $active_cycle_id);
             ?>
@@ -542,7 +567,7 @@ if ($panel_cycle) {
                         </div>
                         <?php if (!empty($c['start_date']) && !empty($c['end_date'])): ?>
                         <div style="font-size:0.65rem;color:#94a3b8;margin-top:2px;">
-                            <?= date('Y', strtotime($c['start_date'])) ?> â€“ <?= date('Y', strtotime($c['end_date'])) ?>
+                            <?= date('Y', strtotime($c['start_date'])) ?> &ndash; <?= date('Y', strtotime($c['end_date'])) ?>
                         </div>
                         <?php endif; ?>
                         <div style="display:flex;gap:0.3rem;flex-wrap:wrap;margin-top:4px;">
@@ -580,7 +605,7 @@ if ($panel_cycle) {
         <div style="background:#fff;border:1px solid #e2e8f0;margin-bottom:1rem;overflow:hidden;">
             <!-- Cycle title bar -->
             <div style="padding:0.75rem 1.25rem;background:#1a3a6b;display:flex;align-items:center;justify-content:space-between;gap:0.75rem;flex-wrap:wrap;">
-                <div style="font-weight:700;color:#fff;font-size:0.95rem;"><?= sanitize($panel_cycle['cycle_name']) ?></div>
+                <div class="cycle-detail-title" style="font-weight:700;color:#fff;font-size:0.95rem;"><?= sanitize($panel_cycle['cycle_name']) ?></div>
                 <?php
                 $sc_colors2 = ['open'=>['#dcfce7','#16a34a'],'closed'=>['#f1f5f9','#64748b'],'archived'=>['#f8fafc','#94a3b8']];
                 [$scb2,$scc2] = $sc_colors2[$panel_cycle['status']] ?? ['#f1f5f9','#64748b'];
@@ -589,7 +614,7 @@ if ($panel_cycle) {
             </div>
 
             <!-- Stats + Dates two-column -->
-            <div style="display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid #f1f5f9;">
+            <div class="cycle-detail-columns" style="display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid #f1f5f9;">
                 <div style="padding:0.85rem 1.25rem;border-right:1px solid #f1f5f9;">
                     <div style="font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#94a3b8;margin-bottom:0.5rem;">Statistics</div>
                     <div style="font-size:0.82rem;color:#1e293b;display:flex;flex-direction:column;gap:3px;">
@@ -612,7 +637,7 @@ if ($panel_cycle) {
             </div>
 
             <!-- Action buttons -->
-            <div style="padding:0.65rem 1.25rem;display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;background:#f8fafc;border-bottom:1px solid #f1f5f9;">
+            <div class="cycle-actions" style="padding:0.65rem 1.25rem;display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;background:#f8fafc;border-bottom:1px solid #f1f5f9;">
                 <button type="button" onclick="openEditCycleModal()"
                         style="padding:0.35rem 0.85rem;border:1px solid #e2e8f0;background:#fff;font-size:0.75rem;font-weight:600;cursor:pointer;color:#475569;display:inline-flex;align-items:center;gap:4px;"
                         onmouseover="this.style.background='#1a3a6b';this.style.color='#fff';this.style.borderColor='#1a3a6b'"
@@ -639,8 +664,8 @@ if ($panel_cycle) {
                         <i class="bi bi-check-circle" style="font-size:0.7rem;"></i>Update Status
                     </button>
                 </form>
-                <!-- Delete Cycle button â€” opens verification modal -->
-                <div style="margin-left:auto;">
+                <!-- Delete Cycle button opens the verification modal -->
+                <div class="cycle-delete-action" style="margin-left:auto;">
                     <button type="button" id="deleteCycleBtn"
                             data-cycle-id="<?= (int)$panel_cycle['cycle_id'] ?>"
                             data-cycle-name="<?= htmlspecialchars($panel_cycle['cycle_name'], ENT_QUOTES) ?>"
@@ -656,7 +681,7 @@ if ($panel_cycle) {
             <?php if ($cycle_extensions): ?>
             <div style="padding:0.75rem 1.25rem;">
                 <div style="font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:#94a3b8;margin-bottom:0.5rem;">Extension History</div>
-                <div class="table-responsive">
+                <div class="table-responsive cycle-history" tabindex="0" role="region" aria-label="Extension History">
                     <table style="width:100%;border-collapse:collapse;font-size:0.78rem;">
                         <thead>
                         <tr style="background:#f8fafc;border-bottom:1px solid #e2e8f0;">
@@ -689,7 +714,7 @@ if ($panel_cycle) {
 
         <!-- Scoring Criteria link tile -->
         <div style="border:1px solid #e2e8f0;background:#fff;overflow:hidden;">
-            <div style="padding:0 1.25rem;border-bottom:1px solid #e2e8f0;background:#f8fafc;
+            <div class="cycle-criteria-header" style="padding:0 1.25rem;border-bottom:1px solid #e2e8f0;background:#f8fafc;
                         display:flex;align-items:center;justify-content:space-between;min-height:48px;">
                 <div style="display:flex;align-items:center;gap:0.6rem;">
                     <div style="width:28px;height:28px;background:#1a3a6b;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
@@ -796,7 +821,7 @@ if ($panel_cycle) {
                 </div>
 
                 <!-- 2-col date grid -->
-                <div style="display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid #f1f5f9;">
+                <div class="cycle-form-columns" style="display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid #f1f5f9;">
                     <div style="padding:0.65rem 1rem;border-right:1px solid #f1f5f9;">
                         <div style="font-size:0.62rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px;">Start Date</div>
                         <div id="rv_start" style="font-size:0.82rem;font-weight:600;color:#1e293b;"></div>
@@ -807,7 +832,7 @@ if ($panel_cycle) {
                     </div>
                 </div>
 
-                <div style="display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid #f1f5f9;">
+                <div class="cycle-form-columns" style="display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid #f1f5f9;">
                     <div style="padding:0.65rem 1rem;border-right:1px solid #f1f5f9;">
                         <div style="font-size:0.62rem;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:3px;">Submission Start</div>
                         <div id="rv_sub_start" style="font-size:0.82rem;font-weight:600;color:#1e293b;"></div>
@@ -1187,7 +1212,7 @@ function submitExtension() {
 }
 </script>
 
-<!-- â”€â”€ Delete Cycle Verification Modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ -->
+<!-- Delete Cycle Verification Modal -->
 <div id="deleteCycleModal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,0.6);
      z-index:99999;align-items:center;justify-content:center;padding:1rem;">
     <div style="background:#fff;width:100%;max-width:500px;border:1px solid #e2e8f0;box-shadow:0 20px 60px rgba(0,0,0,0.25);overflow:hidden;">
@@ -1303,7 +1328,7 @@ function submitExtension() {
 </div>
 
 <script>
-// â”€â”€ Cycle UI helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Cycle UI helpers
 
 function openDeleteCycleModalFromBtn(btn) {
     var cycleId     = btn.getAttribute('data-cycle-id');

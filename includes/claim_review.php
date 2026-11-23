@@ -214,6 +214,12 @@ final class ClaimReview
                 ->execute([$evaluatorId, $applicationId]);
         }
         if ($complete) {
+            $autoSubrank = $score['auto_subrank'] ?? [];
+            if (!empty($autoSubrank['qualified_auto_subrank_phd'])) {
+                $pdo->prepare("UPDATE auto_sub_rank SET doctorate_mode = 'triggered', doctorate_points = 0
+                    WHERE application_id = ? AND doctorate_verified = 'verified'")
+                    ->execute([$applicationId]);
+            }
             $pdo->prepare("UPDATE applications SET status='approved', reviewed_at=NOW(),
                 checker_remarks=?, duplicate_reviews=? WHERE application_id=?")
                 ->execute([

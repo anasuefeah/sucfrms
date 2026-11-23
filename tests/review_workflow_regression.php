@@ -50,3 +50,26 @@ workflowCheck(migrateSingleStageReview($pdo), 'Repeated migration failed');
 workflowCheck($pdo->query('SELECT * FROM applications ORDER BY application_id')->fetchAll() === $after, 'Repeated migration changed applications');
 workflowCheck($pdo->query('SELECT * FROM notifications ORDER BY notif_id')->fetchAll() === $notifs, 'Repeated migration changed notifications');
 echo "Single-stage review migration: {$checks} checks passed.\n";
+
+$pdo->exec("CREATE TEMPORARY TABLE help_articles (
+    article_id INT PRIMARY KEY, title VARCHAR(255), content TEXT, category VARCHAR(50),
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+)");
+$pdo->exec("INSERT INTO help_articles VALUES
+    (1,'Getting Started with SUCFRMS','Welcome. For further assistance contact the Subcommittee or the system administrator.','help','2020-01-01'),
+    (2,'Another Article','For further assistance contact the Subcommittee or the system administrator.','help','2020-01-01')");
+$pdo->exec("INSERT INTO notifications VALUES
+    (4,'under_review','Your application is now under review by the Subcommittee.',1,6)");
+$checks = 0;
+workflowCheck(migrateEvaluatorTerminology($pdo), 'Evaluator terminology migration did not complete');
+$renamedNotification = $pdo->query('SELECT * FROM notifications WHERE notif_id=4')->fetch();
+workflowCheck($renamedNotification['message'] === 'Your application is now under review by the evaluators.'
+    && (int)$renamedNotification['is_read'] === 1 && (int)$renamedNotification['application_id'] === 6, 'Notification text or metadata is incorrect');
+workflowCheck($pdo->query('SELECT * FROM notifications WHERE notif_id<4 ORDER BY notif_id')->fetchAll() === $notifs, 'Unrelated notifications changed');
+$articles = $pdo->query('SELECT * FROM help_articles ORDER BY article_id')->fetchAll();
+workflowCheck($articles[0]['content'] === 'Welcome. For further assistance, contact the evaluators or the system administrator.'
+    && $articles[0]['updated_at'] === '2020-01-01 00:00:00', 'Help text or timestamp is incorrect');
+workflowCheck($articles[1]['content'] === 'For further assistance contact the Subcommittee or the system administrator.', 'Unrelated help text changed');
+workflowCheck(migrateEvaluatorTerminology($pdo), 'Repeated evaluator terminology migration failed');
+workflowCheck($pdo->query('SELECT * FROM help_articles ORDER BY article_id')->fetchAll() === $articles, 'Repeated migration changed help articles');
+echo "Evaluator terminology migration: {$checks} checks passed.\n";

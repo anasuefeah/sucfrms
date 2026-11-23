@@ -140,6 +140,7 @@ CREATE TABLE IF NOT EXISTS applications (
     weighted_score     DECIMAL(7,2) DEFAULT 0,
     sub_rank_increment TINYINT DEFAULT 0,
     potential_rank     VARCHAR(100) DEFAULT NULL,
+    teaching_divisors  VARCHAR(20) DEFAULT NULL,
     checker_id         INT DEFAULT NULL,
     checker_remarks    TEXT,
     duplicate_reviews  LONGTEXT DEFAULT NULL,
@@ -540,7 +541,7 @@ INSERT INTO scoring_criteria (kra_category, criterion_key, criterion_label, max_
 ('Instruction','kra1_c_panel_undergrad','Criterion C - Panel Member: Undergraduate Thesis',1.00,100.00,'Copy of appointment/invitation as panel member. Copy of proof of participation.'),
 ('Instruction','kra1_c_panel_masters','Criterion C - Panel Member: Master\'s Thesis',4.00,100.00,'Copy of appointment/invitation as panel member. Copy of proof of participation.'),
 ('Instruction','kra1_c_panel_doctoral','Criterion C - Panel Member: Doctoral Dissertation',6.00,100.00,'Copy of appointment/invitation as panel member. Copy of proof of participation.'),
-('Instruction','kra1_c_mentor_competition','Criterion C - Mentor: Student/Team Competition Winner',0.00,100.00,'CONFIRMED SOURCE GAP: The Points column for Mentorship Services (JC01 s.2026, Section 15 item 2, p.78) is blank in the official circular. This is not an extraction error. Set max_points to a non-zero value only after confirming with CHED-RO or your adviser. Until set, all mentorship submissions raise PENDING_DOCUMENTATION and are not scored. Hard rules regardless of point value: (1) regional/national/international competitions only  -  local-only excluded; (2) Champion through 3rd place only  -  consolation prizes excluded. Required evidence: award certificate or photo of trophy/plaque/medal, competition mechanics document, award-giving organization profile with mandate/history/prior winners list. Suggested starting point for discussion: 1 pt (matching Panel Member Special/Capstone  -  lowest confirmed rate in Crit C). This is a disclosed design recommendation, not a sourced value.'),
+('Instruction','kra1_c_mentor_competition','Criterion C - Mentor: Student/Team Competition Winner',1.00,100.00,'Provisional rate based on panel service. Regional, national or international competition, champion through third place.'),
 
 -- -- KRA II: RESEARCH, INVENTION & CREATIVE WORK --------------
 ('Research','kra2_a_book_sole','Criterion A - Book, Sole Author',100.00,100.00,'Copy of published research output showing author name, date, and publication title.'),
@@ -554,7 +555,6 @@ INSERT INTO scoring_criteria (kra_category, criterion_key, criterion_label, max_
 ('Research','kra2_a_policy_lead','Criterion A - Research Output -> Project/Policy/Product, Lead',35.00,100.00,'Copy of executive summary or evidence that research was translated into project, policy, or product.'),
 ('Research','kra2_a_policy_contrib','Criterion A - Research Output -> Project/Policy/Product, Contributor',35.00,100.00,'Copy of executive summary or evidence that research was translated into project, policy, or product. Certification from all authors showing percentage contribution using prescribed template.'),
 ('Research','kra2_a_scholarly_other','Criterion A - Other Peer-Reviewed Scholarly Output',10.00,100.00,'Copy of published research output showing author name, date, and publication title.'),
-('Research','kra2_a_citation_local','Criterion A - Local Citation (per citation, max 40 pts)',5.00,100.00,'Copy of proof that publication has been cited by other authors via citation index database.'),
 ('Research','kra2_a_citation_intl','Criterion A - International Citation (per citation, max 60 pts)',10.00,100.00,'Copy of proof that publication has been cited by other authors via citation index database.'),
 ('Research','kra2_b_patent_acceptance','Criterion B - Invention Patent: Acceptance',10.00,100.00,'Copy of certification from IPOPHL for acceptance.'),
 ('Research','kra2_b_patent_publication','Criterion B - Invention Patent: Publication',20.00,100.00,'Copy of notice of publication from IPOPHL.'),
@@ -566,7 +566,7 @@ INSERT INTO scoring_criteria (kra_category, criterion_key, criterion_label, max_
 ('Research','kra2_b_software_new_sole','Criterion B - New Software Product, Sole Developer',10.00,100.00,'Copy of copyright registration certificate from IPOPHL for software products. Copy of certificate of utilization from end-users for software products.'),
 ('Research','kra2_b_software_new_co','Criterion B - New Software Product, Co-Developer',10.00,100.00,'Copy of copyright registration certificate from IPOPHL for software products. Copy of certificate of utilization from end-users for software products. Certification from all developers indicating percentage contribution.'),
 ('Research','kra2_b_software_updated_sole','Criterion B - Updated Software (New Functionality), Sole Developer',4.00,100.00,'Copy of copyright registration certificate from IPOPHL for software products. Copy of certificate of utilization from end-users for software products.'),
-('Research','kra2_b_software_updated_co','Criterion B - Updated Software (New Functionality), Co-Developer',2.00,100.00,'Copy of copyright registration certificate from IPOPHL for software products. Copy of certificate of utilization from end-users for software products. Certification from all developers indicating percentage contribution.'),
+('Research','kra2_b_software_updated_co','Criterion B - Updated Software (New Functionality), Co-Developer',4.00,100.00,'Copy of copyright registration certificate from IPOPHL for software products. Copy of certificate of utilization from end-users for software products. Certification from all developers indicating percentage contribution.'),
 ('Research','kra2_b_plant_variety_sole','Criterion B - New Plant Variety/Animal Breed/Microbial Strain, Sole',10.00,100.00,'Copy of registration of new variety, breed, or strain from authorized agency. Copy of certification from farm owners/breeders that new variety or breed has been propagated.'),
 ('Research','kra2_b_plant_variety_co','Criterion B - New Plant Variety/Animal Breed/Microbial Strain, Co-Developer',10.00,100.00,'Copy of registration of new variety, breed, or strain from authorized agency. Copy of certification from farm owners/breeders that new variety or breed has been propagated. Certification from all developers indicating percentage contribution.'),
 ('Research','kra2_c_performance_own','Criterion C - Performance of Own Creative Work',20.00,100.00,'Copy of copyright certificate of the creative performing art work. Copy of invitation letter from reputable organizer, program, and pictures of performance.'),
@@ -575,8 +575,8 @@ INSERT INTO scoring_criteria (kra_category, criterion_key, criterion_label, max_
 ('Research','kra2_c_juried_design','Criterion C - Juried or Peer-Reviewed Design',20.00,100.00,'Copy of evidence of being juried or peer-reviewed for designs.'),
 ('Research','kra2_c_novel','Criterion C - Literary Publication: Novel',20.00,100.00,'Copy of published literary work for literary publications.'),
 ('Research','kra2_c_short_story','Criterion C - Literary Publication: Short Story',10.00,100.00,'Copy of published literary work for literary publications.'),
-('Research','kra2_c_essay','Criterion C - Literary Publication: Essay',10.00,100.00,'Copy of published literary work for literary publications.'),
-('Research','kra2_c_poetry','Criterion C - Literary Publication: Poetry',10.00,100.00,'Copy of published literary work for literary publications.'),
+('Research','kra2_c_essay','Criterion C - Literary Publication: Essay',2.00,100.00,'Copy of published literary work for literary publications.'),
+('Research','kra2_c_poetry','Criterion C - Literary Publication: Poetry',2.00,100.00,'Copy of published literary work for literary publications.'),
 
 -- -- KRA III: EXTENSION SERVICES ------------------------------
 ('Extension','kra3_a_moa','Criterion A - MOA/Linkage Partnership',5.00,100.00,'Copy of MOA. Certification from the President that partnership was successfully initiated or implemented by the faculty.'),
@@ -632,7 +632,7 @@ INSERT INTO scoring_criteria (kra_category, criterion_key, criterion_label, max_
 ('Professional Development','kra4_c_award_institutional','Criterion C - Institutional Award',2.00,100.00,'Copy of certificate of recognition or award. Copy of picture of plaque, trophy, medal, or similar items.'),
 ('Professional Development','kra4_c_award_local','Criterion C - Local / Regional Award (City/Municipality/Province/Region)',3.00,100.00,'Copy of certificate of recognition or award. Copy of picture of plaque, trophy, medal, or similar items.'),
 ('Professional Development','kra4_c_award_national','Criterion C - National Award',4.00,100.00,'Copy of certificate of recognition or award. Copy of picture of plaque, trophy, medal, or similar items.'),
-('Professional Development','kra4_c_award_international','Criterion C - International Award (CONFIG GAP — set after confirming with CHED-RO)',0.00,100.00,'Copy of certificate of recognition or award. Copy of picture of plaque, trophy, medal, or similar items. CONFIG_INTERNATIONAL_AWARD_PTS: the Points value for the international tier is blank in JC01 s.2026. Set max_points to the confirmed value once known.'),
+('Professional Development','kra4_c_award_international','Criterion C - International Award',5.00,100.00,'Provisional rate based on the institutional, local and national award rates.'),
 ('Professional Development','kra4_c_award_prestigious','Criterion C - Prestigious Award (Auto Sub-Rank Trigger only, 0 KRA IV pts)',0.00,100.00,'Copy of certificate, picture of award. Award-giving body mandate/history. Prior winners list. Requires checker confirmation for sub-rank trigger — never auto-approved.'),
 ('Professional Development','kra4_d_academic_president','Criterion D (BONUS, New Faculty) - Academic Service as President',5.00,100.00,'Copy of service record, certificate of employment, notice of appointment or designation for academic experience.'),
 ('Professional Development','kra4_d_academic_vp_dean','Criterion D (BONUS, New Faculty) - Academic Service as VP/Dean/Director',4.00,100.00,'Copy of service record, certificate of employment, notice of appointment or designation for academic experience.'),
@@ -723,7 +723,7 @@ CREATE TABLE IF NOT EXISTS feedback_submissions (
 INSERT INTO help_articles (title, content, category, created_by) VALUES
 (
     'Getting Started with SUCFRMS',
-    'Welcome to the SUCFRMS Faculty Reclassification Management Information System.\n\n1. Log in with your institutional email and password.\n2. Navigate to "My Application" to start or continue a reclassification application.\n3. Fill in all four KRA sections (Instruction, Research, Extension, Professional Development).\n4. Upload supporting documents for each criterion.\n5. Submit your application before the cycle deadline.\n\nFor further assistance contact the Subcommittee or the system administrator.',
+    'Welcome to the SUCFRMS Faculty Reclassification Management Information System.\n\n1. Log in with your institutional email and password.\n2. Navigate to "My Application" to start or continue a reclassification application.\n3. Fill in all four KRA sections (Instruction, Research, Extension, Professional Development).\n4. Upload supporting documents for each criterion.\n5. Submit your application before the cycle deadline.\n\nFor further assistance, contact the evaluators or the system administrator.',
     'help',
     NULL
 ),
@@ -770,14 +770,6 @@ UPDATE scoring_criteria SET max_points = 4.00
 UPDATE scoring_criteria SET max_points = 6.00
     WHERE criterion_key = 'kra1_c_panel_doctoral'
       AND max_points = 2.00
-      AND cycle_id IS NULL;
-
--- Reset mentorship to 0.00 (CONFIG_MENTORSHIP_POINTS not yet confirmed from JC01 p.78)
--- Admin must explicitly set this to a non-zero value after confirming with CHED-RO.
-UPDATE scoring_criteria
-    SET max_points  = 0.00,
-        description = 'CONFIRMED SOURCE GAP: The Points column for Mentorship Services (JC01 s.2026, Section 15 item 2, p.78) is blank in the official circular  -  verified directly against the scanned page. Set max_points to a non-zero value only after confirming with CHED-RO or your adviser. Until set (max_points = 0), all mentorship submissions raise PENDING_DOCUMENTATION and are not scored. Hard rules: (1) regional/national/international only  -  local-only excluded; (2) Champion through 3rd place only  -  consolation prizes excluded. Required evidence: award certificate/photo, competition mechanics, org profile with prior winners list. Suggested discussion starting point: 1 pt (matching lowest confirmed Crit C rate  -  design recommendation, NOT sourced).'
-    WHERE criterion_key = 'kra1_c_mentor_competition'
       AND cycle_id IS NULL;
 
 -- ============================================================

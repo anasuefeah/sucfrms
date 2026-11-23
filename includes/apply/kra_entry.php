@@ -39,7 +39,7 @@ catch (\Exception $e) {
 try { $pdo->query("SELECT faculty_original_score FROM kra_submissions LIMIT 1"); }
 catch (\Exception $e) {
     $pdo->exec("ALTER TABLE kra_submissions ADD COLUMN faculty_original_score DECIMAL(6,2) DEFAULT NULL AFTER computed_points");
-    $pdo->exec("UPDATE kra_submissions SET faculty_original_score = computed_points WHERE faculty_original_score IS NULL");
+    $pdo->exec("UPDATE kra_submissions SET faculty_original_score = computed_points WHERE faculty_original_score IS NULL AND verified = 1");
 }
 
 // ..."......"... Runtime migration: create auto_sub_rank table if missing ..."......"...
@@ -77,85 +77,13 @@ catch (\Exception $e) {
     )");
 }
 
-function kraApplyEffectiveComputedPoints(array $submission): float {
-    $points = (float)($submission['computed_points'] ?? 0);
-    $parts = array_map('trim', explode('|||', (string)($submission['remarks'] ?? '')));
-    if (($parts[0] ?? '') === 'CUSTOM') {
-        return max($points, max(0.0, (float)($parts[4] ?? 0)));
-    }
-    return $points;
-}
-
 function step2OfficialKraTotals(PDO $pdo, int $application_id): array {
-    $scoring_dir = __DIR__ . '/../scoring/';
-    foreach (['kra1_scorer.php','kra2_scorer.php','kra3_scorer.php','kra4_scorer.php'] as $f) {
-        if (file_exists($scoring_dir . $f)) require_once $scoring_dir . $f;
-    }
-    if (class_exists('\Scoring\KRA1Scorer')) {
-        $ctx = $pdo->prepare("
-            SELECT a.cycle_id, a.status, COALESCE(NULLIF(a.position_title, ''), u.`rank`) AS position_rank
-            FROM applications a
-            JOIN users u ON u.user_id = a.user_id
-            WHERE a.application_id = ?
-            LIMIT 1
-        ");
-        $ctx->execute([$application_id]);
-        $ctx_row = $ctx->fetch(PDO::FETCH_ASSOC) ?: [];
-        \Scoring\KRA1Scorer::setPdo($pdo);
-        \Scoring\KRA1Scorer::setCriteriaContext((int)($ctx_row['cycle_id'] ?? 0), $ctx_row['position_rank'] ?? null);
-        if (class_exists('\Scoring\KRA2Scorer')) {
-            \Scoring\KRA2Scorer::setPdo($pdo);
-            \Scoring\KRA2Scorer::setCriteriaContext((int)($ctx_row['cycle_id'] ?? 0), $ctx_row['position_rank'] ?? null);
-        }
-        if (class_exists('\Scoring\KRA3Scorer')) {
-            \Scoring\KRA3Scorer::setPdo($pdo);
-            \Scoring\KRA3Scorer::setCriteriaContext((int)($ctx_row['cycle_id'] ?? 0), $ctx_row['position_rank'] ?? null);
-        }
-        if (class_exists('\Scoring\KRA4Scorer')) {
-            \Scoring\KRA4Scorer::setPdo($pdo);
-            \Scoring\KRA4Scorer::setCriteriaContext((int)($ctx_row['cycle_id'] ?? 0), $ctx_row['position_rank'] ?? null);
-        }
-    }
-
-    $stmt = $pdo->prepare("
-        SELECT ks.*,
-               GROUP_CONCAT(kef.original_filename ORDER BY kef.evidence_id SEPARATOR '|||') AS evidence_names
-        FROM kra_submissions ks
-        LEFT JOIN kra_evidence_files kef ON kef.submission_id = ks.submission_id
-        WHERE ks.application_id = ?
-        GROUP BY ks.submission_id
-        ORDER BY ks.submitted_at ASC
-    ");
-    $stmt->execute([$application_id]);
-
-    $by_cat = [];
-    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-        $by_cat[$row['kra_category']][] = $row;
-    }
-    if (!in_array($ctx_row['status'] ?? '', ['approved','reclassified','admin_rejected'], true)) {
-        foreach ($by_cat as $category => $entries) {
-            $by_cat[$category] = kraCurrentCriterionEntries($entries, CriteriaSnapshots::rows($pdo, (int)($ctx_row['cycle_id'] ?? 0), $ctx_row['position_rank'] ?? null, $category));
-        }
-    }
-
-    $fallback = fn($cat) => min(100, array_sum(array_map(
-        fn($s) => kraApplyEffectiveComputedPoints($s),
-        $by_cat[$cat] ?? []
-    )));
-
+    $score = getApplicationScoreSummary($pdo, $application_id);
     return [
-        'Instruction' => class_exists('\Scoring\KRA1Scorer')
-            ? (float)(\Scoring\KRA1Scorer::score($by_cat['Instruction'] ?? [])['subtotal'] ?? 0)
-            : $fallback('Instruction'),
-        'Research' => class_exists('\Scoring\KRA2Scorer')
-            ? (float)(\Scoring\KRA2Scorer::score($by_cat['Research'] ?? [])['subtotal'] ?? 0)
-            : $fallback('Research'),
-        'Extension' => class_exists('\Scoring\KRA3Scorer')
-            ? (float)(\Scoring\KRA3Scorer::score($by_cat['Extension'] ?? [])['subtotal'] ?? 0)
-            : $fallback('Extension'),
-        'Professional Development' => class_exists('\Scoring\KRA4Scorer')
-            ? (float)(\Scoring\KRA4Scorer::score($by_cat['Professional Development'] ?? [])['subtotal'] ?? 0)
-            : $fallback('Professional Development'),
+        'Instruction' => $score['kra1'],
+        'Research' => $score['kra2'],
+        'Extension' => $score['kra3'],
+        'Professional Development' => $score['kra4'],
     ];
 }
 
@@ -167,12 +95,13 @@ if (isset($_GET['ajax_entries'])) {
     $cat = $_GET['cat'] ?? '';
     $valid_cats = ['Instruction','Research','Extension','Professional Development'];
     if (in_array($cat, $valid_cats)) {
-        $rows = $pdo->prepare("SELECT submission_id, computed_points, remarks, document_path, verified, revision_status FROM kra_submissions WHERE application_id=? AND kra_category=? ORDER BY submitted_at ASC");
+        $rows = $pdo->prepare("SELECT submission_id, computed_points, faculty_original_score, remarks, document_path, verified, revision_status FROM kra_submissions WHERE application_id=? AND kra_category=? ORDER BY submitted_at ASC");
         $rows->execute([$app_id, $cat]);
         $entries = $rows->fetchAll(PDO::FETCH_ASSOC);
         foreach ($entries as &$entry) {
             $entry['editable'] = KraRevisionWorkflow::canEdit($app['status'], $entry);
-            $entry['computed_points'] = kraApplyEffectiveComputedPoints($entry);
+            $entry['computed_points'] = kraEffectiveComputedPoints($entry);
+            unset($entry['faculty_original_score']);
             $ef = $pdo->prepare("SELECT evidence_id, file_path, original_filename, file_size_bytes FROM kra_evidence_files WHERE submission_id=? ORDER BY uploaded_at ASC");
             $ef->execute([$entry['submission_id']]);
             $entry['evidence_files'] = $ef->fetchAll(PDO::FETCH_ASSOC);
@@ -472,47 +401,62 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $can_edit) {
     }
 
     if ($kra_action === 'save_position_requirements') {
-        // Handle file uploads for position requirements
         $files = ['cav_file' => 'cav_transcript', 'article_file' => 'international_article', 'cert_file' => 'certification_form'];
-        $uploaded_files = [];
-        
-        foreach ($files as $file_field => $status_field) {
-            if (!empty($_FILES[$file_field]['name']) && $_FILES[$file_field]['error'] === UPLOAD_ERR_OK) {
-                $ext = strtolower(pathinfo($_FILES[$file_field]['name'], PATHINFO_EXTENSION));
-                $allowed_exts = ['pdf'];
-                if (in_array($ext, $allowed_exts)) {
-                    $folder = __DIR__ . '/../../uploads/pos_req/';
-                    if (!is_dir($folder)) mkdir($folder, 0755, true);
-                    $fname = uniqid($file_field . '_') . '.' . $ext;
-                    if (move_uploaded_file($_FILES[$file_field]['tmp_name'], $folder . $fname)) {
-                        $uploaded_files[$file_field] = 'uploads/pos_req/' . $fname;
-                        $uploaded_files[$status_field] = 'Uploaded';
-                    }
+        $folder = __DIR__ . '/../../uploads/pos_req/';
+        $movedFiles = [];
+        $requirements = [];
+
+        try {
+            foreach ($files as $fileField => $statusField) {
+                $upload = $_FILES[$fileField] ?? [];
+                if (($upload['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) continue;
+                if (!is_dir($folder) && !@mkdir($folder, 0755, true) && !is_dir($folder)) {
+                    throw new RuntimeException('Could not create the position requirements upload folder.');
                 }
+                $filename = $fileField . '_' . bin2hex(random_bytes(12)) . '.pdf';
+                $path = $folder . $filename;
+                if (!@move_uploaded_file($upload['tmp_name'], $path)) {
+                    throw new RuntimeException('Could not move the position requirements PDF.');
+                }
+                $movedFiles[] = $path;
+                $requirements[$fileField] = 'uploads/pos_req/' . $filename;
+                $requirements[$statusField] = 'Uploaded';
             }
-        }
-        
-        // Build update query
-        $updates = [];
-        $params = [];
-        foreach ($files as $file_field => $status_field) {
-            if (isset($uploaded_files[$file_field])) {
-                $updates[] = "$file_field = ?";
-                $params[] = $uploaded_files[$file_field];
-                $updates[] = "$status_field = ?"; 
-                $params[] = 'Uploaded';
+
+            if (!$requirements) {
+                flashMessage('warning', 'Select a PDF before saving your position requirements.');
+            } else {
+                $pdo->beginTransaction();
+                // Lock the parent so concurrent uploads cannot create two checklists.
+                $lock = $pdo->prepare('SELECT application_id FROM applications WHERE application_id = ? FOR UPDATE');
+                $lock->execute([$app_id]);
+                if (!$lock->fetchColumn()) throw new RuntimeException('Application no longer exists.');
+
+                $existing = $pdo->prepare('SELECT pos_req_id FROM position_requirements WHERE application_id = ? ORDER BY pos_req_id DESC LIMIT 1');
+                $existing->execute([$app_id]);
+                $checklistId = $existing->fetchColumn();
+                $columns = array_keys($requirements);
+                $values = array_values($requirements);
+
+                if ($checklistId) {
+                    $assignments = implode(', ', array_map(static fn(string $column): string => "$column = ?", $columns));
+                    $save = $pdo->prepare("UPDATE position_requirements SET $assignments WHERE pos_req_id = ?");
+                    $save->execute([...$values, $checklistId]);
+                } else {
+                    $placeholders = implode(', ', array_fill(0, count($columns) + 1, '?'));
+                    $columnList = implode(', ', $columns);
+                    $save = $pdo->prepare("INSERT INTO position_requirements (application_id, $columnList) VALUES ($placeholders)");
+                    $save->execute([$app_id, ...$values]);
+                }
+                $pdo->commit();
+                flashMessage('success', 'Position requirements updated.');
             }
+        } catch (Throwable $error) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            foreach ($movedFiles as $path) @unlink($path);
+            error_log('SUCFRMS position requirements upload: ' . $error->getMessage());
+            flashMessage('danger', 'Could not save the position requirements. Please try again.');
         }
-        
-        if (!empty($updates)) {
-            $params[] = $app_id;
-            $stmt = $pdo->prepare("INSERT INTO position_requirements (application_id, " . implode(', ', array_keys($uploaded_files)) . ") 
-                                  VALUES ($app_id, " . str_repeat('?,', count($uploaded_files)-1) . "?) 
-                                  ON DUPLICATE KEY UPDATE " . implode(', ', $updates));
-            $stmt->execute($params);
-        }
-        
-        flashMessage('success', 'Position requirements updated.');
         echo "<script>window.location.href='index.php?page=apply&tab=posreq';</script>"; exit;
     }
 
@@ -555,7 +499,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $can_edit) {
             echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}{$criterion_query}';</script>"; exit;
         }
         logAudit($pdo, $uid, 'Application Submitted', "Application {$app_id} submitted. Status: {$new_status}");
-        // Notify all active Subcommittee reviewers
+        // Notify all active evaluators
         $campus_checkers = $pdo->query("SELECT user_id FROM users WHERE role = 'evaluator' AND status='active'")->fetchAll(PDO::FETCH_COLUMN);
         $faculty_name = $_SESSION['full_name'] ?? "Faculty #{$uid}";
         foreach ($campus_checkers as $cid) {
@@ -708,7 +652,14 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
       <h5 style="color:#fff;font-weight:700;font-size:0.97rem;margin:0;line-height:1.3;display:flex;align-items:center;gap:0.5rem;">
         <i class="bi bi-file-earmark-arrow-up" style="font-size:1.1rem;opacity:0.9;"></i>
         KRA Entries &amp; Evidence
-        <?= helpBtn('KRA Entry Guide', 'For each KRA tab: 1) Open the entry table for the criterion you need. 2) Select the criterion type and fill in the details ... the score calculates automatically. 3) Click the upload button on each row to attach your evidence file. 4) Click Done. Once all entries are saved, click Submit Application.') ?>
+        <?= helpBtn('KRA Entry Guide', implode("\n", [
+            '1. Click Add Entry for the criterion.',
+            '2. Fill in the details to calculate points.',
+            '3. Upload evidence for each entry.',
+            '4. Click Done to save.',
+            '',
+            'When all entries are ready, click Submit Application.',
+        ])) ?>
       </h5>
       <?php if (!empty($_effective_deadline)): ?>
       <?php $dl_ts = strtotime($_effective_deadline . ' 23:59:59'); ?>
@@ -873,21 +824,16 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
             }
         } elseif ($slug === 'posreq') {
             // Get Position Requirements status  
-            $pos_req = $pdo->prepare("SELECT * FROM position_requirements WHERE application_id = ?");
+            $pos_req = $pdo->prepare("SELECT * FROM position_requirements WHERE application_id = ? ORDER BY pos_req_id DESC LIMIT 1");
             $pos_req->execute([$app_id]);
             $pos_data = $pos_req->fetch();
             $faculty_rank = $faculty['rank'] ?? '';
             
-            if (strpos($faculty_rank, 'Professor') !== false && strpos($faculty_rank, 'Assistant') === false && strpos($faculty_rank, 'Associate') === false) {
+            if (strpos($faculty_rank, 'University Professor') !== false) {
+                $status_text = ($pos_data['certification_form'] ?? '') === 'Uploaded' ? 'Complete' : 'Incomplete';
+            } elseif (strpos($faculty_rank, 'Professor') !== false && strpos($faculty_rank, 'Assistant') === false && strpos($faculty_rank, 'Associate') === false) {
                 // Professor rank - needs CAV transcript and international article
                 if ($pos_data && $pos_data['cav_transcript'] === 'Uploaded' && $pos_data['international_article'] === 'Uploaded') {
-                    $status_text = 'Complete';
-                } else {
-                    $status_text = 'Incomplete';
-                }
-            } elseif (strpos($faculty_rank, 'University Professor') !== false) {
-                // University Professor - needs certification form
-                if ($pos_data && $pos_data['certification_form'] === 'Uploaded') {
                     $status_text = 'Complete';
                 } else {
                     $status_text = 'Incomplete';
@@ -904,6 +850,11 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
                   ? 'background:#1e4d8c;color:#fff;border-color:#1e4d8c;'
                   : 'background:#fff;color:#64748b;border-color:#e2e8f0;' ?>">
       <?= $t['label'] ?>
+      <?php if ($slug === 'posreq' && $status_text !== 'N/A'): ?>
+      <span style="margin-left:0.35rem;padding:0.05rem 0.3rem;border-radius:4px;font-size:0.66rem;background:<?= $status_text === 'Complete' ? '#dcfce7;color:#166534' : '#fee2e2;color:#991b1b' ?>;">
+        <?= $status_text ?>
+      </span>
+      <?php endif; ?>
     </a>
     <?php endforeach; ?>
   </div>
@@ -999,9 +950,9 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
             <div style="font-size:0.72rem;color:#94a3b8;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.3rem;">Why This Decision</div>
             <div style="font-size:0.82rem;color:#475569;line-height:1.5;"><?= htmlspecialchars($asr_result['doctorate_reason']) ?></div>
           </div>
-          <?php if ($d_mode === 'points_only' || $d_mode === 'blocked_historical'): ?>
+          <?php if (!empty($asr_result['doctorate_points'])): ?>
           <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:0.5rem 0.75rem;font-size:0.75rem;color:#1e4d8c;width:100%;">
-            <i class="bi bi-info-circle me-1"></i>Doctorate contributes <strong><?= (int)\Scoring\AutoSubRankCalculator::DOCTORATE_POINTS ?> points</strong> to your KRA IV score.
+            <i class="bi bi-info-circle me-1"></i>Doctorate contributes <strong><?= (int)$asr_result['doctorate_points'] ?> points</strong> to your KRA IV score.
           </div>
           <?php endif; ?>
           <?php if (!empty($asr_row['doctorate_verification_notes']) && $d_verified !== 'pending'): ?>
@@ -1114,7 +1065,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
     <?php elseif ($cur_cat === 'Position Requirements'): ?>
     <!-- POSITION REQUIREMENTS TAB CONTENT -->
     <?php
-    $pos_req = $pdo->prepare("SELECT * FROM position_requirements WHERE application_id = ?");
+    $pos_req = $pdo->prepare("SELECT * FROM position_requirements WHERE application_id = ? ORDER BY pos_req_id DESC LIMIT 1");
     $pos_req->execute([$app_id]);
     $pos_data = $pos_req->fetch();
     
@@ -1519,7 +1470,6 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
         'kra4_c_award_institutional' => 2.00,
         'kra4_c_award_local' => 3.00,
         'kra4_c_award_national' => 4.00,
-        'kra4_c_award_international' => 0.00,
         'kra4_c_award_prestigious' => 0.00,
     ];
     $legacy_key_to_pd = $key_to_pd;
@@ -1594,7 +1544,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
     $group_score = 0;
     $has_uncounted_entries = false;
     foreach ($group_entries as $s) {
-        $group_score += kraApplyEffectiveComputedPoints($s);
+        $group_score += kraEffectiveComputedPoints($s);
         $has_uncounted_entries = $has_uncounted_entries || !isset($score_summary['scoring_claims'][$s['submission_id']]);
     }
     if ($cur_cat === 'Instruction' && $letter === 'A') {
@@ -1644,8 +1594,8 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
         }
         $avg_set = $set_ratings ? array_sum($set_ratings) / count($set_ratings) : 0;
         $avg_sef = $sef_ratings ? array_sum($sef_ratings) / count($sef_ratings) : 0;
-        $ci_scores['set'] = round(($avg_set / 100) * $kra1_a_caps['set'], 2);
-        $ci_scores['sef'] = round(($avg_sef / 100) * $kra1_a_caps['sef'], 2);
+            $ci_scores['set'] = $score_summary['kra_results']['kra1']['criterion_a_set'] ?? round(($avg_set / 100) * $kra1_a_caps['set'], 2);
+            $ci_scores['sef'] = $score_summary['kra_results']['kra1']['criterion_a_sef'] ?? round(($avg_sef / 100) * $kra1_a_caps['sef'], 2);
     }
     ?>
     <div <?= $group_count > 1 ? 'class="criterion-step" data-step="' . $gi . '" style="display:' . ($gi === $initial_criterion_index ? 'block' : 'none') . ';"' : '' ?>
@@ -1674,7 +1624,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
           if ($ci_abbreviation !== '' && stripos($ci_item_label, '(' . $ci_abbreviation . ')') === false) {
               $ci_item_label .= ' (' . $ci_abbreviation . ')';
           }
-          $ci_number     = $ci_numbering ? '' : $ci_idx . '.';
+          $ci_number     = ($ci_numbering || kraIsAdditionalCriterionKey((string)$ci_key)) ? '' : $ci_idx . '.';
           $ci_entry_type = '';   // 'set', 'sef', or '' (non-A criteria)
           if ($cur_cat === 'Instruction' && $letter === 'A') {
               $ci_entry_type = ['kra1_a_set'=>'set', 'kra1_a_sef'=>'sef'][$ci_key] ?? '';
@@ -1706,7 +1656,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
 
                   if ($_match) {
                       $ci_entries[] = $_se;
-                      $row_score += kraApplyEffectiveComputedPoints($_se);
+                      $row_score += kraEffectiveComputedPoints($_se);
                   }
               }
           }
@@ -1770,7 +1720,11 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
           <div style="color:#64748b;font-size:0.72rem;margin-top:0.2rem;line-height:1.4;"><?= htmlspecialchars($desc_clean) ?></div>
           <?php endif; ?>
           <?php if (!empty($ci_entries)): ?>
-          <!-- Existing entries list under the label -->
+            <details style="margin-top:0.45rem;"
+                     <?= $edit_sid > 0 && in_array($edit_sid, array_map('intval', array_column($ci_entries, 'submission_id')), true) ? 'open' : '' ?>>
+              <summary style="width:fit-content;padding:0.25rem 0.5rem;border:1px solid #cbd5e1;border-radius:4px;background:#f1f5f9;color:#1e3a5f;font-size:0.72rem;font-weight:600;cursor:pointer;">
+                Saved entries (<?= count($ci_entries) ?>)
+              </summary>
             <div style="margin-top:0.45rem;display:flex;flex-direction:column;gap:0.25rem;">
             <?php foreach ($ci_entries as $_ce):
                 $_ce_parts = explode('|||', $_ce['remarks'] ?? '');
@@ -1791,7 +1745,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
                     'file_path'         => $f['file_path'],
                     'original_filename' => $f['original_filename'],
                 ], $_ce['_ev_files'] ?? []);
-                $_ce_points = kraApplyEffectiveComputedPoints($_ce);
+                $_ce_points = kraEffectiveComputedPoints($_ce);
                 $_entry_json = htmlspecialchars(json_encode([
                     'submission_id'   => $_ce['submission_id'],
                     'computed_points' => $_ce_points,
@@ -1857,6 +1811,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
             <?php endforeach; ?>
             <?php endforeach; ?>
           </div>
+            </details>
           <?php endif; ?>
         </div>
 
@@ -2326,7 +2281,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
 
     <!-- Header -->
     <div style="background:#1e4d8c;padding:1.1rem 1.5rem;display:flex;align-items:center;gap:0.875rem;">
-      <img src="assets/images/logo.jpg" alt="SUCFRMS Logo"
+      <img class="modal-brand-logo" src="assets/images/logo.jpg" alt="SUCFRMS Logo"
            style="width:36px;height:36px;border-radius:50%;object-fit:cover;border:2px solid rgba(255,255,255,0.3);flex-shrink:0;">
       <div>
         <div style="color:#fff;font-weight:700;font-size:0.9rem;line-height:1.2;">Submit Application</div>
@@ -2893,13 +2848,14 @@ const EDIT_SID    = <?= $edit_sid ?>;
 const CYCLE_START_YEAR = <?= !empty($cycle['start_date']) ? (int)date('Y', strtotime($cycle['start_date'])) : date('Y') ?>;
 const CYCLE_ROW_LIMIT  = 3;
 const KRA1_A_SET_CAP   = <?= json_encode((float)$kra1_a_caps['set']) ?>;
+const KRA1_DIVISORS = <?= json_encode(array_map('intval', explode(',', $app['teaching_divisors'] ?? '6,6'))) ?>;
 const KRA1_A_SEF_CAP   = <?= json_encode((float)$kra1_a_caps['sef']) ?>;
 <?php
 $cjs = [];
 foreach ($criteria_list as $c) {
     // Custom rows use the key-based editor opened from their own Data Entry action.
     if (kraIsAdditionalCriterionKey($c['criterion_key'])) continue;
-    $cjs[] = ['label'=>$c['criterion_label'], 'pts'=>(float)$c['max_points'], 'parent'=>$c['parent_code'] ?? null];
+    $cjs[] = ['key'=>$c['criterion_key'], 'label'=>$c['criterion_label'], 'pts'=>(float)$c['max_points'], 'parent'=>$c['parent_code'] ?? null];
 }
 echo 'const CRIT = ' . json_encode($cjs, JSON_HEX_TAG) . ';';
 ?>
@@ -3581,6 +3537,13 @@ function buildRow(e, num) {
                <div style="font-size:0.78rem;color:#1e293b;font-weight:600;padding:0.1rem 0 0.3rem;line-height:1.3;">${esc(_resLockedLabel)}</div>`
             : `<select class="rtype" onchange="calcRow(this)" data-sid="${sid}"><option value="" disabled selected>- Select -</option>${opts}</select>`;
 
+        const researchLabel = String(_resLockedOpt?.label || parts[0] || '');
+        const citation = /citation/i.test(researchLabel);
+        const patentStage = /patent.*(?:acceptance|publication|grant)/i.test(researchLabel);
+        const referenceFields = `<div data-research-reference ${citation || patentStage ? '' : 'hidden'}>
+            <input class="rreference" value="${esc(parts[6] || '')}" placeholder="${citation ? 'Cited article DOI or title' : 'Patent application number or invention title'}">
+            <label data-self-citation ${citation ? '' : 'hidden'}><input type="checkbox" class="rselfcite" onchange="calcRow(this)" ${parts[7] === 'self-citation' ? 'checked' : ''}> Self-citation</label>
+        </div>`;
         cells += `
         <td class="kra-research-main">
             ${resSelectHtml}
@@ -3590,6 +3553,7 @@ function buildRow(e, num) {
                 <input class="rarea" value="${esc(parts[3]||'')}" placeholder="Area">
             </div>
             <textarea class="rspec" rows="2" placeholder="Specific contribution">${esc(parts[4]||'')}</textarea>
+            ${referenceFields}
         </td>
         <td class="kra-research-contrib"><input type="text" inputmode="decimal" class="rcontrib" value="${esc(parts[5]||'100')}" placeholder="e.g. 100" oninput="calcRow(this)"></td>`;
     } else if (KRA_CAT === 'Extension') {
@@ -3688,7 +3652,7 @@ function buildRow(e, num) {
         // Sub-value options  -  when locked and sub is pre-set, render hidden input + label
         let subField = '';
         if (priorService) {
-            subField = `<input type="number" class="rpd-sub" min="1" step="any" required
+            subField = `<input type="number" class="rpd-sub" min="0" step="any" required
                                value="${esc(critType ? (parts[2] ?? '') : '')}" placeholder="Years served" aria-label="Years served">`;
         } else if (effectivePdType === 'B-degree') {
             const degOpts = [['0','None (0 pts)'],['10','Post-Master\'s / Post-Doctoral (10 pts)'],['20','Additional Master\'s Degree (20 pts)'],['40','Doctorate / Additional Doctorate (40 pts)']]
@@ -3721,12 +3685,12 @@ function buildRow(e, num) {
                 subField = `<select class="rpd-sub" onchange="calcRow(this)">${pOpts}</select>`;
             }
         } else if (effectivePdType === 'C-award') {
-            const aOpts = [['2','Institutional (2 pts)'],['3','Local/Regional (3 pts)'],['4','National (4 pts)'],['5','International (pts pending — CONFIG GAP)'],['0','Prestigious Award — Sub-rank trigger only (0 pts)']]
+            const aOpts = [['2','Institutional (2 pts)'],['3','Local/Regional (3 pts)'],['4','National (4 pts)'],['5','International (5 provisional pts)'],['0','Prestigious Award — Sub-rank trigger only (0 pts)']]
                 .map(([v,l]) => `<option value="${v}" ${effectivePdSub===v?'selected':''}>${l}</option>`).join('');
             if (_pdPending && effectivePdSub !== '') {
-                const aLabels = {'2':'Institutional (2 pts)','3':'Local/Regional (3 pts)','4':'National (4 pts)','5':'International (CONFIG GAP)','0':'Prestigious Award — Sub-rank trigger'};
+                const aLabels = {'2':'Institutional (2 pts)','3':'Local/Regional (3 pts)','4':'National (4 pts)','5':'International (5 provisional pts)','0':'Prestigious Award — Sub-rank trigger'};
                 subField = `<input type="hidden" class="rpd-sub" value="${esc(effectivePdSub)}">
-                            <span style="font-size:0.75rem;color:#475569;">${aLabels[effectivePdSub] || effectivePdSub}</span>`;
+                            <span style="display:block;font-size:0.75rem;color:#475569;line-height:1.35;">${aLabels[effectivePdSub] || effectivePdSub}</span>`;
             } else {
                 subField = `<select class="rpd-sub" onchange="calcRow(this)">${aOpts}</select>`;
             }
@@ -3734,6 +3698,8 @@ function buildRow(e, num) {
             // A-org: fixed 5 pts per org
             subField = `<input type="hidden" class="rpd-sub" value="1"><span class="text-muted small">5 pts</span>`;
         }
+
+        subField += professionalDevelopmentFields(effectivePdType, parts);
 
         cells += `
         <td style="padding:0.4rem;">${pdSelectHtml}</td>
@@ -3770,7 +3736,7 @@ function buildRow(e, num) {
             ['C|2|Panel Member: Undergraduate Thesis',             'C - Panel Member: Undergraduate Thesis (2 pts)'],
             ['C|4|Panel Member: Master\'s Thesis',                 "C - Panel Member: Master's Thesis (4 pts)"],
             ['C|6|Panel Member: Doctoral Dissertation',            'C - Panel Member: Doctoral Dissertation (6 pts)'],
-            ['C|0|Mentor: Student/Team Competition Winner',        'C - Mentor: Student/Team Competition Winner (Pending confirmation, not counted)'],
+            ['C|1|Mentor: Student/Team Competition Winner',        'C - Mentor: Student/Team Competition Winner'],
         ];
         // Determine currently selected option from stored critType/d1 combo
         // Legacy stored as 'B-material' or 'C-thesis' with d1 being the label
@@ -3860,6 +3826,13 @@ function buildRow(e, num) {
             detailFields = `
             <input type="text" inputmode="decimal" class="ri-d1" value="${esc(d1)}" placeholder="Student Evaluation of Teaching avg % (e.g. 92.5)" oninput="calcRow(this)" style="margin-bottom:3px;">
             <input type="text" inputmode="decimal" class="ri-d2" value="${esc(d2)}" placeholder="Supervisor Evaluation Form avg % (e.g. 88.0)" oninput="calcRow(this)">`;
+        } else if (effectiveFlatCrit.includes('Mentor: Student/Team Competition Winner') || critType === 'C-mentor') {
+            detailFields = `<input class="ri-mentor-name" placeholder="Competition name" value="${esc(critType === 'C-mentor' ? d1 : parts[4] || '')}">
+                <select class="ri-mentor-level" aria-label="Competition level" onchange="calcRow(this)">
+                    <option value="">Competition level</option>
+                    ${['regional', 'national', 'international'].map(level => `<option value="${level}" ${d2 === level ? 'selected' : ''}>${level}</option>`).join('')}
+                </select>
+                <input class="ri-mentor-placement" placeholder="Placement (e.g. 1st)" oninput="calcRow(this)" value="${esc(notes)}">`;
         } else if (isBco) {
             detailFields = `<input type="text" inputmode="decimal" class="ri-d2" value="${esc(contribVal || '100')}" placeholder="Contrib % (co-author)" oninput="calcRow(this)">`;
         } else {
@@ -3970,9 +3943,9 @@ function extScoreForSubtype(subtype, val1, val2) {
         const lead = !String(val2 || '').toLowerCase().includes('co');
         let tier = 0;
         if (income > 12000000) tier = 18;
-        else if (income >= 6000001) tier = 12;
-        else if (income >= 500001) tier = 6;
-        else if (income >= 100001) tier = 4;
+        else if (income > 6000000) tier = 12;
+        else if (income > 500000) tier = 6;
+        else if (income > 100000) tier = 4;
         else if (income > 0) tier = 2;
         return lead ? tier : tier / 2;
     }
@@ -3987,7 +3960,7 @@ function extScoreForSubtype(subtype, val1, val2) {
     if (s === 'media-tv-radio-host') return 10.0;
     if (s === 'media-guest') return 1.0;
     if (s === 'resource-speaker-local' || s === 'resource-speaker-intl') {
-        const hours = Math.max(1, parseFloat(val1) || 1);
+        const hours = Math.max(0, parseFloat(val1) || 0);
         return (s === 'resource-speaker-intl' ? 3.0 : 2.0) * hours;
     }
     if (s === 'outreach-isr-lead') return 5.0;
@@ -4005,10 +3978,48 @@ function extScoreForSubtype(subtype, val1, val2) {
         'project head inst': 4, 'committee chair inst': 3, 'committee member inst': 2,
     };
     if (s in D_RATES) {
-        const years = Math.max(1, parseFloat(val1) || 1);
+        const years = parseFloat(val1) || 0;
+        if (years < 1) return 0;
         return D_RATES[s] * years;
     }
     return 0;
+}
+
+function researchEntryPreview(tr) {
+    const select = tr.querySelector('.rtype');
+    const label = select?.selectedOptions[0]?.text || '';
+    if (/citation/i.test(label) && tr.querySelector('.rselfcite')?.checked) return 0;
+    const base = parseFloat(select?.value) || 0;
+    const contribution = Math.min(100, Math.max(1, parseFloat(tr.querySelector('.rcontrib')?.value) || 100));
+    return /co[- ]?(author|inventor|developer|arranger|producer|choreographer|composer)|, co|project\/policy\/product/i.test(label)
+        ? base * contribution / 100 : base;
+}
+
+function developmentEntryPreview(tr) {
+    const type = tr.querySelector('.rpd-crit')?.value || '';
+    const value = parseFloat(tr.querySelector('.rpd-sub')?.value) || 0;
+    const countries = parseInt(tr.querySelector('.rpd-countries')?.value, 10) || 0;
+    if (['D-prior-academic', 'D-prior-industry'].includes(type)) {
+        const key = tr.querySelector('.entry-criterion-key')?.value;
+        const rate = CRIT.find(criterion => criterion.key === key)?.pts || 0;
+        return value * rate;
+    }
+    if (type === 'A-org') return 5;
+    if (type === 'B-training') {
+        const hours = parseFloat(tr.querySelector('.rpd-hours')?.value) || 0;
+        const format = tr.querySelector('.rpd-format')?.value;
+        if (hours < (format === 'virtual' ? 8 : 6)) return 0;
+        return value >= 2 && (format !== 'philippines' || countries >= 3) ? 2 : 1;
+    }
+    return type === 'B-paper' && value === 5 && countries < 3 ? 3 : value;
+}
+
+function mentorshipEntryPreview(tr) {
+    const level = tr.querySelector('.ri-mentor-level')?.value;
+    const placement = tr.querySelector('.ri-mentor-placement')?.value.trim() || '';
+    if (!['regional', 'national', 'international'].includes(level)
+        || !/^(champion|[123]|1st|2nd|3rd|first|second|third)( place)?$/i.test(placement)) return 0;
+    return CRIT.find(criterion => criterion.key === 'kra1_c_mentor_competition')?.pts || 0;
 }
 
 // -- Calc score ------------------------------------------------
@@ -4018,8 +4029,14 @@ function calcRow(el) {
     if (tr.querySelector('.custom-key')) {
         score = parseFloat(tr.querySelector('.custom-max')?.value) || 0;
     } else if (KRA_CAT === 'Research') {
-        const base = parseFloat(tr.querySelector('.rtype')?.value) || 0;
-        const cont = parseFloat(tr.querySelector('.rcontrib')?.value) || 0;
+        const fields = tr.querySelector('[data-research-reference]');
+        if (fields) {
+            const label = researchRemarksLabel(tr.querySelector('.rtype'));
+            const citation = /citation/i.test(label);
+            fields.hidden = !(citation || /patent.*(?:acceptance|publication|grant)/i.test(label));
+            fields.querySelector('[data-self-citation]').hidden = !citation;
+            fields.querySelector('.rreference').placeholder = citation ? 'Cited article DOI or title' : 'Patent application number or invention title';
+        }
         // Warn if contribution > 100
         const contEl = tr.querySelector('.rcontrib');
         if (contEl) {
@@ -4034,27 +4051,14 @@ function calcRow(el) {
             }
             w.style.display = v > 100 ? 'block' : 'none';
         }
-        score = base * (cont / 100);
+        score = researchEntryPreview(tr);
     } else if (KRA_CAT === 'Extension') {
         const subtype = tr.querySelector('.re-crit')?.value || '';
         const val1    = tr.querySelector('.re-val1')?.value || '';
         const val2    = tr.querySelector('.re-val2')?.value || '';
         score = extScoreForSubtype(subtype, val1, val2);
     } else if (KRA_CAT === 'Professional Development') {
-        const critType = tr.querySelector('.rpd-crit')?.value || '';
-        const subVal   = parseFloat(tr.querySelector('.rpd-sub')?.value) || 0;
-        if (critType === 'B-degree') {
-            score = subVal; // 10/20/40 pts
-        } else if (critType === 'B-training') {
-            score = subVal; // 1 or 2 pts per activity
-        } else if (critType === 'B-paper') {
-            score = subVal; // 3 or 5 pts per presentation
-        } else if (critType === 'C-award') {
-            // subVal: 2=Institutional, 3=Local/Regional, 4=National, 5=Intl (CONFIG GAP→0 live), 0=Prestigious(0)
-            score = (subVal === 5) ? 0 : subVal; // International shows 0 until admin configures the value
-        } else if (critType === 'A-org') {
-            score = 5; // 5 pts per qualifying org
-        }
+        score = developmentEntryPreview(tr);
     } else {
         // KRA I - Instruction
         const critType = tr.querySelector('.ri-crit')?.value || '';
@@ -4084,12 +4088,13 @@ function calcRow(el) {
             } else {
                 score = parseFloat(pts) || 0;
             }
+        } else if (critType === 'C-mentor' || critType.includes('Mentor: Student/Team Competition Winner')) {
+            score = mentorshipEntryPreview(tr);
         } else if (critType === 'C-thesis' || critType.startsWith('C|')) {
             // Flat C: value like 'C|5|Adviser  -  Undergraduate Thesis'
             const parts = critType.split('|');
             const pts = parseFloat(parts[1] ?? '0');
             const isPendingSourceGap = parts[1] === '0' && (
-                critType.includes('Mentor') ||
                 critType.includes('Textbook Chapter') ||
                 critType.includes('Validated Testing Materials')
             );
@@ -4173,8 +4178,8 @@ function updateCriteriaASummary() {
         });
     });
     const avg = ratings.length ? ratings.reduce((a,b) => a + b, 0) / ratings.length : 0;
-    const avgSet = setVals.length ? setVals.reduce((a,b) => a + b, 0) / setVals.length : 0;
-    const avgSef = sefVals.length ? sefVals.reduce((a,b) => a + b, 0) / sefVals.length : 0;
+    const avgSet = setVals.reduce((a,b) => a + b, 0) / Math.max(KRA1_DIVISORS[0] || 6, setVals.length);
+    const avgSef = sefVals.reduce((a,b) => a + b, 0) / Math.max(KRA1_DIVISORS[1] || 6, sefVals.length);
     const facultyScore = (avgSet / 100) * KRA1_A_SET_CAP + (avgSef / 100) * KRA1_A_SEF_CAP;
     const setSubtotal = (avgSet / 100) * KRA1_A_SET_CAP;
     const sefSubtotal = (avgSef / 100) * KRA1_A_SEF_CAP;
@@ -4350,6 +4355,28 @@ function deleteCriteriaARow(btn) {
     }, 'Remove', 'bi-trash');
 }
 
+function professionalDevelopmentFields(type, parts = []) {
+    if (type === 'B-training') {
+        return `<label>Hours <input type="number" class="rpd-hours" oninput="calcRow(this)" min="0" step="any" value="${esc(parts[3] || '')}"></label>
+            <label>Format <select class="rpd-format" onchange="calcRow(this)">
+                <option value="other">In person or abroad</option>
+                <option value="philippines" ${parts[4] === 'philippines' ? 'selected' : ''}>In person in the Philippines</option>
+                <option value="virtual" ${parts[4] === 'virtual' ? 'selected' : ''}>Virtual</option>
+            </select></label>
+            <label>Countries represented <input type="number" class="rpd-countries" oninput="calcRow(this)" min="0" step="1" value="${esc(parts[5] || '')}"></label>`;
+    }
+    if (type === 'B-paper') {
+        return `<label>Countries represented <input type="number" class="rpd-countries" oninput="calcRow(this)" min="0" step="1" value="${esc(parts[3] || '')}"></label>`;
+    }
+    if (type === 'C-award') {
+        return `<label style="display:grid;gap:0.25rem;margin-top:0.55rem;font-size:0.7rem;font-weight:600;line-height:1.35;color:#475569;">
+            <span>Event name and year</span>
+            <input class="rpd-event" value="${esc(parts[3] || '')}">
+        </label>`;
+    }
+    return '';
+}
+
 // Rebuild the sub-field cell when ProfDev criterion changes
 function updatePdSubField(sel) {
     const tr      = sel.closest('tr');
@@ -4362,6 +4389,7 @@ function updatePdSubField(sel) {
             <option value="0">None (0 pts)</option>
             <option value="10">Post-Master's / Post-Doctoral (10 pts)</option>
             <option value="20">Additional Master's Degree (20 pts)</option>
+            <option value="40">Doctorate / Additional Doctorate (40 pts)</option>
         </select>`;
     } else if (critType === 'B-training') {
         html = `<select class="rpd-sub" onchange="calcRow(this)">
@@ -4378,13 +4406,13 @@ function updatePdSubField(sel) {
             <option value="2">Institutional (2 pts)</option>
             <option value="3">Local/Regional (3 pts)</option>
             <option value="4">National (4 pts)</option>
-            <option value="5">International (pts pending — CONFIG GAP)</option>
+            <option value="5">International (5 provisional pts)</option>
             <option value="0">Prestigious Award — Sub-rank trigger only (0 pts)</option>
         </select>`;
     } else {
         html = `<input type="hidden" class="rpd-sub" value="1"><span class="text-muted small">5 pts</span>`;
     }
-    subCell.innerHTML = html;
+    subCell.innerHTML = html + professionalDevelopmentFields(critType);
     calcRow(sel);
 }
 
@@ -5342,20 +5370,14 @@ function _computeScoreFromRow(tr) {
     if (tr.querySelector('.custom-key')) {
         score = parseFloat(tr.querySelector('.custom-max')?.value) || 0;
     } else if (KRA_CAT === 'Research') {
-        const typeEl  = tr.querySelector('.rtype');
-        const label   = typeEl?.options[typeEl?.selectedIndex]?.text || '';
-        const contrib = parseFloat(tr.querySelector('.rcontrib')?.value) || 100;
-        const m = label.match(/\((\d+(?:\.\d+)?)\s*pts?\)/i);
-        score = m ? parseFloat(m[1]) * (contrib / 100) : 0;
+        score = researchEntryPreview(tr);
     } else if (KRA_CAT === 'Extension') {
         const subtype = tr.querySelector('.re-crit')?.value || '';
         const val1    = tr.querySelector('.re-val1')?.value || '';
         const val2    = tr.querySelector('.re-val2')?.value || '';
         score = extScoreForSubtype(subtype, val1, val2);
     } else if (KRA_CAT === 'Professional Development') {
-        const ct = tr.querySelector('.rpd-crit')?.value || '';
-        const sv = parseFloat(tr.querySelector('.rpd-sub')?.value) || 0;
-        score = (ct === 'A-org') ? 5.0 : sv;
+        score = developmentEntryPreview(tr);
     } else {
         const critType = tr.querySelector('.ri-crit')?.value || '';
         if (critType === 'A-set-sef') {
@@ -5367,6 +5389,8 @@ function _computeScoreFromRow(tr) {
             const pts = parts[1] || '';
             const contrib = parseFloat(tr.querySelector('.ri-d2')?.value) || 100;
             score = pts.endsWith('co') ? parseFloat(pts.replace('co','')) * (contrib / 100) : (parseFloat(pts) || 0);
+        } else if (critType === 'C-mentor' || critType.includes('Mentor: Student/Team Competition Winner')) {
+            score = mentorshipEntryPreview(tr);
         } else if (critType === 'C-thesis' || critType.startsWith('C|')) {
             score = parseFloat(critType.split('|')[1] ?? '0') || 0;
         }
@@ -5398,7 +5422,7 @@ function kraRemarksLookMeaningful(remarks) {
     if (KRA_CAT === 'Professional Development') {
         if (['D-prior-academic', 'D-prior-industry'].includes(type)) {
             const years = Number(parts[2]);
-            return !!parts[1] && Number.isFinite(years) && years >= 1;
+            return !!parts[1] && Number.isFinite(years) && years > 0;
         }
         return ['A-org', 'B-training', 'B-paper', 'B-degree', 'C-award'].includes(type);
     }
@@ -5442,7 +5466,11 @@ function _buildRawRemarksFromRow(tr) {
         const area   = tr.querySelector('.rarea')?.value || '';
         const spec   = tr.querySelector('.rspec')?.value || '';
         const contrib = tr.querySelector('.rcontrib')?.value || '100';
-        return `${label}|||${dev}|||${aff}|||${area}|||${spec}|||${contrib}`;
+        const hasCitation = /citation/i.test(label);
+        const hasPatentStage = /patent.*(?:acceptance|publication|grant)/i.test(label);
+        const reference = hasCitation || hasPatentStage ? tr.querySelector('.rreference')?.value || '' : '';
+        const citation = hasCitation && tr.querySelector('.rselfcite')?.checked ? 'self-citation' : '';
+        return [label, dev, aff, area, spec, contrib, reference, citation].join('|||');
     }
     if (KRA_CAT === 'Extension') {
         const subtype = tr.querySelector('.re-crit')?.value || '';
@@ -5455,10 +5483,23 @@ function _buildRawRemarksFromRow(tr) {
         const ct  = tr.querySelector('.rpd-crit')?.value || '';
         const dsc = tr.querySelector('.rpd-desc')?.value || '';
         const sv  = tr.querySelector('.rpd-sub')?.value  || '0';
+        if (ct === 'B-training') {
+            return [ct, dsc, sv, tr.querySelector('.rpd-hours')?.value || '', tr.querySelector('.rpd-format')?.value || '',
+                tr.querySelector('.rpd-countries')?.value || ''].join('|||');
+        }
+        if (ct === 'B-paper') return `${ct}|||${dsc}|||${sv}|||${tr.querySelector('.rpd-countries')?.value || ''}`;
+        if (ct === 'C-award') return `${ct}|||${dsc}|||${sv}|||${tr.querySelector('.rpd-event')?.value || ''}`;
         return `${ct}|||${dsc}|||${sv}`;
     }
     // KRA I ... Instruction
     const critType = tr.querySelector('.ri-crit')?.value || '';
+    if (critType.includes('Mentor: Student/Team Competition Winner') || critType === 'C-mentor') {
+        const name = tr.querySelector('.ri-mentor-name')?.value || '';
+        const level = tr.querySelector('.ri-mentor-level')?.value || '';
+        const placement = tr.querySelector('.ri-mentor-placement')?.value || '';
+        return critType === 'C-mentor' ? `${critType}|||${name}|||${level}|||${placement}`
+            : `${critType}|||Mentor: Student/Team Competition Winner|||${level}|||${placement}|||${name}`;
+    }
     if (critType === 'A-set-sef') {
         return `${critType}|||${tr.querySelector('.ri-d1')?.value||''}|||${tr.querySelector('.ri-d2')?.value||''}|||`;
     }

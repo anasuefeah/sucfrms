@@ -14,6 +14,7 @@
 namespace Scoring;
 
 require_once __DIR__ . '/../criteria_hierarchy.php';
+require_once __DIR__ . '/entry_metadata.php';
 
 class KRA2Scorer
 {
@@ -102,6 +103,9 @@ class KRA2Scorer
         // Track caps within Criterion A sub-items
         $policy_count   = 0;  // max 2 instances for policy output
         $citation_count = 0;  // max 6 citations
+        $citedArticles = [];
+        $patents = [];
+        $commercialized = ['local' => 0.0, 'intl' => 0.0];
 
         foreach ($submissions as $s) {
             $parts    = array_map('trim', explode('|||', $s['remarks'] ?? ''));
@@ -112,7 +116,7 @@ class KRA2Scorer
 
             if ($label === 'CUSTOM') {
                 $letter = strtoupper($parts[1] ?? '');
-                $pts = max(0.0, (float)($parts[4] ?? 0));
+                $pts = EntryMetadata::reviewedPoints($s, max(0.0, (float)($parts[4] ?? 0)));
                 if (!in_array($letter, ['A', 'B', 'C'], true) && \collectAdditionalParentScore($additionalGroups, $parts, $pts)) continue;
                 if ($letter === 'B') $crit_b_raw += $pts;
                 elseif ($letter === 'C') $crit_c_raw += $pts;
@@ -121,11 +125,12 @@ class KRA2Scorer
             }
 
             // -- Criterion A: Research Outputs ------------------------
-            if (self::isResearchOutput($label)) {
-                $base = self::resolveResearchBase($label, $config_i);
+            $criterion = self::criterion($parts);
+            if ($criterion === 'A') {
+                $base = self::configuredClaimBase($parts) ?? self::resolveResearchBase($label, $config_i);
                 if ($base !== null) {
-                    $isCo = self::isCoAuthor($label);
-                    $pts  = round($isCo ? $base * ($contrib / 100) : (float)$base, 2);
+                    $isCo = self::isCoAuthor($label) || self::isPolicyOutput($label);
+                    $pts = EntryMetadata::reviewedPoints($s, round($isCo ? $base * ($contrib / 100) : $base, 2));
 
                     // Policy/product output cap: max 2 instances
                     if (self::isPolicyOutput($label)) {
@@ -137,8 +142,11 @@ class KRA2Scorer
                     }
                     // Citation cap: max 6 citations (60 pts)  -  self-citations excluded
                     if (self::isCitation($label)) {
-                        $citation_count++;
-                        if ($citation_count > 6) {
+                        if (!self::isCreditableCitation($parts)) continue;
+                        $article = self::claimReference($parts);
+                        if ($article !== '' && isset($citedArticles[$article])) continue;
+                        if ($article !== '') $citedArticles[$article] = true;
+                        if (++$citation_count > 6) {
                             $config_i[] = "KRA II Crit A: Citation cap reached (max 6 citations). '{$developers}' excluded.";
                             $pts = 0.0;
                         }
@@ -158,11 +166,11 @@ class KRA2Scorer
                 $crit_a_raw += $pts;
             }
             // -- Criterion B: Inventions ------------------------------
-            elseif (self::isInvention($label)) {
-                $base = self::resolveInventionBase($label, $config_i);
+            elseif ($criterion === 'B') {
+                $base = self::configuredClaimBase($parts) ?? self::resolveInventionBase($label, $config_i);
                 if ($base !== null) {
                     $isCo = self::isCoInventor($label);
-                    $pts  = round($isCo ? $base * ($contrib / 100) : (float)$base, 2);
+                    $pts = EntryMetadata::reviewedPoints($s, round($isCo ? $base * ($contrib / 100) : $base, 2));
                     if ($isCo && empty($parts[5])) {
                         $pending[] = "KRA II Crit B: '{$developers}'  -  co-inventor missing Annex F/G/H (Certificate of Contribution Form_IP).";
                     }
@@ -170,14 +178,29 @@ class KRA2Scorer
                         $pending[] = "KRA II Crit B: '{$developers}'  -  missing IPOPHL certification / patent certificate.";
                     }
                 }
+                $kind = strtolower($label);
+                if (str_contains($kind, 'commerciali')) {
+                    $tier = str_contains($kind, 'international') || str_contains($kind, 'intl') ? 'intl' : 'local';
+                    $commercialized[$tier] += $pts;
+                    continue;
+                }
+                $identity = self::claimReference($parts);
+                if ($identity !== '' && str_contains($kind, 'patent')) {
+                    $stage = str_contains($kind, 'grant') ? 3 : (str_contains($kind, 'publication') ? 2 : 1);
+                    $previous = $patents[$identity] ?? ['stage' => 0, 'points' => 0.0];
+                    if ($stage > $previous['stage'] || ($stage === $previous['stage'] && $pts > $previous['points'])) {
+                        $patents[$identity] = ['stage' => $stage, 'points' => $pts];
+                    }
+                    continue;
+                }
                 $crit_b_raw += $pts;
             }
             // -- Criterion C: Creative Works --------------------------
-            elseif (self::isCreativeWork($label)) {
-                $base = self::resolveCreativeBase($label, $config_i);
+            elseif ($criterion === 'C') {
+                $base = self::configuredClaimBase($parts) ?? self::resolveCreativeBase($label, $config_i);
                 if ($base !== null) {
                     $isCo = self::isCoAuthor($label) || self::isCoCreator($label);
-                    $pts  = round($isCo ? $base * ($contrib / 100) : (float)$base, 2);
+                    $pts = EntryMetadata::reviewedPoints($s, round($isCo ? $base * ($contrib / 100) : $base, 2));
                     if ($isCo && empty($parts[5])) {
                         $pending[] = "KRA II Crit C: '{$developers}'  -  co-creator missing Annex I (Certificate of Contribution Form_Creative Works).";
                     }
@@ -191,7 +214,7 @@ class KRA2Scorer
             else {
                 if (preg_match('/\((\d+(?:\.\d+)?)\s*pts?\)/i', $label, $m)) {
                     $base = (float)$m[1];
-                    $pts  = round($base * ($contrib / 100), 2);
+                    $pts = EntryMetadata::reviewedPoints($s, round($base * ($contrib / 100), 2));
                     $crit_a_raw += $pts;
                 } else {
                     $config_i[] = "KRA II: Unrecognised entry '{$label}'  -  CONFIG_INCOMPLETE.";
@@ -200,6 +223,8 @@ class KRA2Scorer
         }
 
         // Sum THEN cap (not individually)
+        $crit_b_raw += array_sum(array_column($patents, 'points'))
+            + min(20, $commercialized['local']) + min(30, $commercialized['intl']);
         $additionalParents = \additionalParentTotals($additionalGroups);
         $sum_before_cap = $crit_a_raw + $crit_b_raw + $crit_c_raw + array_sum($additionalParents);
         $subtotal       = min(self::CAP, $sum_before_cap);
@@ -218,6 +243,30 @@ class KRA2Scorer
     }
 
     // -- Category detectors -------------------------------------------
+    private static function criterion(array $parts): string
+    {
+        $label = $parts[0] ?? '';
+        if (preg_match('/^kra2_([abc])_/', EntryMetadata::criterionKey($parts), $match)
+            || preg_match('/^Criterion\s+([ABC])\b/i', $label, $match)) {
+            return strtoupper($match[1]);
+        }
+        if (self::isInvention($label)) return 'B';
+        if (self::isCreativeWork($label) || preg_match('/juried|peer-reviewed design/i', $label)) return 'C';
+        return self::isResearchOutput($label) ? 'A' : '';
+    }
+
+    private static function claimReference(array $parts): string
+    {
+        $reference = trim(($parts[6] ?? '') ?: ($parts[4] ?? ''));
+        return strtolower(preg_replace('~^(?:https?://(?:dx\.)?doi\.org/|doi:\s*)~i', '', $reference));
+    }
+
+    private static function isCreditableCitation(array $parts): bool
+    {
+        if (($parts[7] ?? '') === 'self-citation') return false;
+        $isLocal = preg_match('/\blocal\s+citation/i', $parts[0] ?? '');
+        return !$isLocal || isset(self::criteriaLabelPoints()['key:kra2_a_citation_local']);
+    }
     private static function isResearchOutput(string $label): bool
     {
         $l = strtolower($label);
@@ -378,13 +427,16 @@ class KRA2Scorer
         if ($label === 'CUSTOM') {
             return max(0.0, (float)($parts[4] ?? 0));
         }
+        if (self::isCitation($label) && !self::isCreditableCitation($parts)) return 0.0;
 
-        if (self::isInvention($label)) {
-            $base = self::resolveInventionBase($label, $dummy);
-        } elseif (self::isCreativeWork($label)) {
-            $base = self::resolveCreativeBase($label, $dummy);
+        $criterion = self::criterion($parts);
+        $configuredBase = self::configuredClaimBase($parts);
+        if ($criterion === 'B') {
+            $base = $configuredBase ?? self::resolveInventionBase($label, $dummy);
+        } elseif ($criterion === 'C') {
+            $base = $configuredBase ?? self::resolveCreativeBase($label, $dummy);
         } else {
-            $base = self::resolveResearchBase($label, $dummy);
+            $base = $configuredBase ?? self::resolveResearchBase($label, $dummy);
         }
 
         if ($base === null) {
@@ -392,8 +444,15 @@ class KRA2Scorer
             if (preg_match('/\((\d+(?:\.\d+)?)\s*pts?\)/i', $label, $m)) $base = (float)$m[1];
             else return 0.0;
         }
-        $isCo = self::isCoAuthor($label) || self::isCoInventor($label) || self::isCoCreator($label);
+        $isCo = self::isCoAuthor($label) || self::isCoInventor($label) || self::isCoCreator($label)
+            || ($criterion === 'A' && self::isPolicyOutput($label));
         return round($isCo ? $base * ($contrib / 100) : $base, 2);
+    }
+
+    private static function configuredClaimBase(array $parts): ?float
+    {
+        $key = EntryMetadata::criterionKey($parts);
+        return $key === '' ? null : (self::criteriaLabelPoints()['key:' . $key] ?? null);
     }
 
     private static function configuredPointsForLabel(string $label): ?float
@@ -411,13 +470,18 @@ class KRA2Scorer
         if (self::$pdo_ref === null) return self::$criteria_label_points;
 
         try {
-            $stmt = self::$pdo_ref->prepare("SELECT criterion_label, max_points, cycle_id, position_rank FROM scoring_criteria WHERE kra_category='Research' AND is_active=1");
+            $stmt = self::$pdo_ref->prepare("SELECT criterion_key, criterion_label, max_points, cycle_id, position_rank FROM scoring_criteria WHERE kra_category='Research' AND is_active=1");
             $stmt->execute();
             $best = [];
             foreach ($stmt->fetchAll(\PDO::FETCH_ASSOC) as $row) {
                 $key = self::normaliseCriterionLabel((string)$row['criterion_label']);
                 $score = self::criteriaScopeScore($row);
                 if ($score <= 0) continue;
+                $criterionKey = 'key:' . $row['criterion_key'];
+                if (!isset($best[$criterionKey]) || $score > $best[$criterionKey]) {
+                    self::$criteria_label_points[$criterionKey] = (float)$row['max_points'];
+                    $best[$criterionKey] = $score;
+                }
                 if ($key !== '' && (!isset($best[$key]) || $score > $best[$key])) {
                     self::$criteria_label_points[$key] = (float)$row['max_points'];
                     $best[$key] = $score;

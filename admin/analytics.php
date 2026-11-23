@@ -45,33 +45,7 @@ if ($cycle && $comparisonChoice === 'previous') {
         </div>
     </header>
 
-    <?php if ($cycle): ?>
-    <section class="cycle-analysis-scope" aria-label="Cycle selection and dates">
-        <form class="cycle-analysis-controls" method="get" action="index.php">
-            <input type="hidden" name="page" value="analytics">
-            <label>Cycle
-                <select name="cycle_id">
-                    <?php foreach ($cycles as $option): ?>
-                    <option value="<?= (int)$option['cycle_id'] ?>" <?= $option['cycle_id'] === $cycle['cycle_id'] ? 'selected' : '' ?>>
-                        <?= sanitize($option['cycle_name']) ?> · <?= ucfirst($option['status']) ?>
-                    </option>
-                    <?php endforeach; ?>
-                </select>
-            </label>
-            <label>Compare with
-                <select name="compare_cycle_id">
-                    <option value="previous" <?= $comparisonChoice === 'previous' ? 'selected' : '' ?>>Previous completed cycle</option>
-                    <option value="0" <?= $comparisonChoice === '0' ? 'selected' : '' ?>>No comparison</option>
-                    <?php foreach ($cycles as $option): ?>
-                    <option value="<?= (int)$option['cycle_id'] ?>" <?= $comparisonChoice === (string)$option['cycle_id'] ? 'selected' : '' ?>>
-                        <?= sanitize($option['cycle_name']) ?>
-                    </option>
-                    <?php endforeach; ?>
-                </select>
-            </label>
-            <button class="cycle-analysis-primary" type="submit">View report</button>
-        </form>
-    <?php else: ?>
+    <?php if (!$cycle): ?>
     <section class="cycle-analysis-panel cycle-analysis-empty" aria-labelledby="cycle-analysis-empty-title">
         <span class="cycle-analysis-empty-icon" aria-hidden="true"><i class="bi bi-calendar3"></i></span>
         <div>
@@ -177,22 +151,47 @@ $metrics = [
     'score_median' => ['Median completed weighted score', 'points'],
 ];
 ?>
-    <div class="cycle-analysis-context">
-        <div>
-            <span class="cycle-analysis-status"><?= ucfirst($cycle['status']) ?></span>
-            <h2><?= sanitize($cycle['cycle_name']) ?></h2>
+    <section class="cycle-analysis-scope" aria-label="Cycle details and filters">
+        <div class="cycle-analysis-context">
+            <div class="cycle-analysis-cycle-name">
+                <h2><?= sanitize($cycle['cycle_name']) ?></h2>
+                <span class="cycle-analysis-status<?= $isOpen ? ' cycle-analysis-status-open' : '' ?>"><?= ucfirst($cycle['status']) ?></span>
+            </div>
+            <dl>
+                <div><dt>Submission window</dt><dd><?= $formatDate($cycle['submission_start_date'] ?: $cycle['start_date']) ?> &ndash; <?= $formatDate($cycle['submission_deadline'] ?: $cycle['end_date']) ?></dd></div>
+                <div><dt>Evaluation deadline</dt><dd><?= $formatDate($evaluationDeadline) ?></dd></div>
+            </dl>
         </div>
-        <dl>
-            <div><dt>Standard submission window</dt><dd><?= $formatDate($cycle['submission_start_date'] ?: $cycle['start_date']) ?> – <?= $formatDate($cycle['submission_deadline'] ?: $cycle['end_date']) ?></dd></div>
-            <div><dt>Evaluation deadline</dt><dd><?= $formatDate($evaluationDeadline) ?></dd></div>
-        </dl>
-    </div>
+        <form class="cycle-analysis-controls" method="get" action="index.php">
+            <input type="hidden" name="page" value="analytics">
+            <label>Cycle
+                <select name="cycle_id">
+                    <?php foreach ($cycles as $option): ?>
+                    <option value="<?= (int)$option['cycle_id'] ?>" <?= $option['cycle_id'] === $cycle['cycle_id'] ? 'selected' : '' ?>>
+                        <?= sanitize($option['cycle_name']) ?> · <?= ucfirst($option['status']) ?>
+                    </option>
+                    <?php endforeach; ?>
+                </select>
+            </label>
+            <label>Compare with
+                <select name="compare_cycle_id">
+                    <option value="previous" <?= $comparisonChoice === 'previous' ? 'selected' : '' ?>>Previous completed cycle</option>
+                    <option value="0" <?= $comparisonChoice === '0' ? 'selected' : '' ?>>No comparison</option>
+                    <?php foreach ($cycles as $option): ?>
+                    <option value="<?= (int)$option['cycle_id'] ?>" <?= $comparisonChoice === (string)$option['cycle_id'] ? 'selected' : '' ?>>
+                        <?= sanitize($option['cycle_name']) ?>
+                    </option>
+                    <?php endforeach; ?>
+                </select>
+            </label>
+            <button class="cycle-analysis-primary" type="submit"><i class="bi bi-funnel" aria-hidden="true"></i> Apply filters</button>
+        </form>
     </section>
 
     <?php if (!$summary['submitted']): ?>
     <div class="cycle-analysis-note" role="status">
-        <strong>No submitted applications in this cycle.</strong>
-        <?php if ($isOpen): ?>Use evaluator coverage below to check readiness before submissions arrive.<?php endif; ?>
+        <i class="bi bi-info-circle" aria-hidden="true"></i>
+        <span>No applications have been submitted for this cycle.</span>
     </div>
     <?php endif; ?>
 
@@ -298,23 +297,23 @@ $metrics = [
     </section>
     <?php endif; ?>
 
-    <section class="cycle-analysis-panel">
+    <section class="cycle-analysis-panel cycle-analysis-coverage">
         <div class="cycle-analysis-panel-heading">
             <div>
                 <h2>Evaluator coverage by KRA</h2>
-                <p>Current assignments and evidence awaiting verification in the selected cycle's review queue.</p>
+                <p>Active assignments and evidence awaiting verification.</p>
             </div>
-            <a href="index.php?page=kra_assignments&amp;cycle_id=<?= $cycleId ?>">View KRA assignments <i class="bi bi-arrow-right" aria-hidden="true"></i></a>
+            <a class="cycle-analysis-assignment-link" href="index.php?page=kra_assignments&amp;cycle_id=<?= $cycleId ?>">KRA assignments <i class="bi bi-arrow-right" aria-hidden="true"></i></a>
         </div>
         <div class="table-responsive" tabindex="0" role="region" aria-label="Evaluator coverage by KRA">
             <table class="cycle-analysis-table">
-                <thead><tr><th scope="col">KRA</th><th scope="col">Active evaluators</th><th scope="col">Unverified / queued entries</th><th scope="col">Applications affected</th></tr></thead>
+                <thead><tr><th scope="col">KRA</th><th scope="col">Active evaluators</th><th scope="col">Unverified / queued</th><th scope="col">Applications affected</th></tr></thead>
                 <tbody>
                     <?php foreach ($coverage as $category => $kra): ?>
                     <tr>
-                        <th scope="row"><small><?= $kra['label'] ?></small> <?= sanitize($category) ?></th>
+                        <th scope="row"><small class="cycle-analysis-kra-code"><?= $kra['label'] ?></small> <?= sanitize($category) ?></th>
                         <td class="<?= !$kra['evaluators'] ? 'cycle-analysis-missing' : '' ?>"><?= $kra['evaluators'] ? number_format($kra['evaluators']) : 'None assigned' ?></td>
-                        <td><?= number_format($kra['pending']) ?> / <?= number_format($kra['queue_entries']) ?></td>
+                        <td><strong><?= number_format($kra['pending']) ?></strong><span class="cycle-analysis-coverage-muted"> / <?= number_format($kra['queue_entries']) ?></span></td>
                         <td><?= number_format($kra['affected']) ?></td>
                     </tr>
                     <?php endforeach; ?>

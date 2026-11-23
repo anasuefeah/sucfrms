@@ -123,7 +123,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             echo "<script>window.location.href='index.php?page=dashboard';</script>"; exit;
         }
         logAudit($pdo, $uid, 'Application Submitted', "Application #{$app_id} submitted for {$cycle['cycle_name']}.");
-        // Notify all active Subcommittee reviewers of new submission
+        // Notify all active evaluators of the new submission
         $campus_checkers = $pdo->query("SELECT user_id FROM users WHERE role = 'evaluator' AND status='active'")->fetchAll(PDO::FETCH_COLUMN);
         foreach ($campus_checkers as $cid) {
             createNotif($pdo, (int)$cid, 'new_submission',

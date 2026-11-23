@@ -96,9 +96,22 @@ try {
         if (session_status() === PHP_SESSION_ACTIVE) $_SESSION['_criteria_hierarchy_ready'] = true;
     }
     require_once __DIR__ . '/../includes/review_workflow_migration.php';
+    if (empty($_SESSION['_scoring_defaults_2026_v3'])) {
+        CriteriaSnapshots::updateScoringDefaults($pdo);
+        if (session_status() === PHP_SESSION_ACTIVE) $_SESSION['_scoring_defaults_2026_v3'] = true;
+    }
+    if (empty($_SESSION['_teaching_divisors_ready'])) {
+        ensureTeachingDivisors($pdo);
+        if (session_status() === PHP_SESSION_ACTIVE) $_SESSION['_teaching_divisors_ready'] = true;
+    }
     if (empty($_SESSION['_single_stage_review_migrated'])) {
         if (migrateSingleStageReview($pdo) && session_status() === PHP_SESSION_ACTIVE) {
             $_SESSION['_single_stage_review_migrated'] = true;
+        }
+    }
+    if (empty($_SESSION['_evaluator_terminology_migrated'])) {
+        if (migrateEvaluatorTerminology($pdo) && session_status() === PHP_SESSION_ACTIVE) {
+            $_SESSION['_evaluator_terminology_migrated'] = true;
         }
     }
 } catch (PDOException $e) {

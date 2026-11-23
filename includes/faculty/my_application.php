@@ -85,6 +85,7 @@ $faculty_rank_row->execute([$uid]);
 $faculty_rank_row = $faculty_rank_row->fetch();
 $faculty_current_rank = $faculty_rank_row['rank'] ?? '';
 $score_summary_faculty = getApplicationScoreSummary($pdo, (int)$app_id);
+$auto_sub_rank_bonus = (int)($score_summary_faculty['award_bonus'] ?? 0);
 $raw_kra_faculty       = array_map(fn($d) => $d['pts'], $score_summary_faculty['kra_map']);
 $potential_data_faculty = [
     'potential_rank'   => $score_summary_faculty['potential_rank'] ?: ' - ',
@@ -129,10 +130,20 @@ $kra_tabs = [
 </div>
 
 <!-- Recommended Rank -->
+<?php
+$rankHelp = implode("\n", [
+    'Weighted score → sub-ranks',
+    "41–50.99 → +1\u{2003}51–60.99 → +2",
+    "61–70.99 → +3\u{2003}71–80.99 → +4",
+    "81–90.99 → +5\u{2003}91–100 → +6",
+    '',
+    'An eligible doctorate can add one automatic sub-rank.',
+]);
+?>
 <div class="neon-card p-0 mb-3" style="overflow:hidden;border-radius:0;box-shadow:none;">
     <div style="padding:0.7rem 1.25rem;border-bottom:1px solid #e2e8f0;background:#f8fafc;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;">
         <div>
-            <div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#94a3b8;">Recommended Rank / Sub-rank <?= helpBtn('Recommended Rank', 'Based on your weighted score, this shows the recommended rank for committee review. A score of 41-50 = +1 sub-rank, 51-60 = +2, 61-70 = +3, 71-80 = +4, 81-90 = +5, 91-100 = +6. An automatic +1 extra is given for earning a doctorate during the cycle.') ?></div>
+            <div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#94a3b8;">Recommended Rank / Sub-rank <?= helpBtn('Recommended Rank', $rankHelp) ?></div>
         </div>
         <span style="font-size:0.62rem;font-weight:600;color:#64748b;background:#f1f5f9;border:1px solid #e2e8f0;padding:2px 8px;">System-computed</span>
     </div>
@@ -153,6 +164,11 @@ $kra_tabs = [
                 <span style="font-size:0.58rem;font-weight:700;color:#92400e;background:#fffbeb;border:1px solid #fde68a;padding:1px 5px;margin-left:4px;">Category crossed</span>
                 <?php endif; ?>
             </div>
+            <?php if ($auto_sub_rank_bonus > 0): ?>
+            <span style="display:inline-block;margin-top:0.35rem;padding:0.1rem 0.4rem;border:1px solid #bbf7d0;background:#f0fdf4;color:#166534;font-size:0.65rem;font-weight:600;">
+                Auto Sub-Rank +<?= $auto_sub_rank_bonus ?>
+            </span>
+            <?php endif; ?>
             <?php endif; ?>
         </div>
         <?php if (!empty($raw_kra_faculty) && $potential_data_faculty['recomputed_score'] !== null): ?>
@@ -664,7 +680,6 @@ if ($show_comparison):
                 display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;">
         <div>
             <div style="font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#94a3b8;">Score Evaluation Comparison</div>
-            <div style="font-size:0.7rem;color:#64748b;margin-top:1px;">Your submitted scores alongside evaluator evaluations</div>
         </div>
         <?php if (!$is_live): ?>
         <span style="font-size:0.62rem;font-weight:600;color:#64748b;background:#f1f5f9;border:1px solid #e2e8f0;padding:2px 8px;">Evaluation Complete</span>
@@ -683,17 +698,22 @@ if ($show_comparison):
 </div>
 
 <style>
-@keyframes livePulse {
-    0%,100% { opacity:1; transform:scale(1); }
-    50%      { opacity:.45; transform:scale(1.35); }
+#cmpCard .cmp-overview {
+    display:flex;flex-wrap:wrap;align-items:baseline;gap:.35rem 1.25rem;
+    padding:.75rem 1rem;border-bottom:1px solid #e2e8f0;color:#334155;font-size:.8rem;
 }
-.cmp-your-badge { background:#f1f5f9;color:#1a3a6b;padding:.18rem .55rem;font-weight:700;font-size:.8rem;border:1px solid #e2e8f0; }
-.cmp-s1-badge   { background:#1a3a6b;color:#fff;padding:.18rem .55rem;font-weight:700;font-size:.8rem; }
-.cmp-nochange   { color:#94a3b8;font-size:.75rem; }
-.cmp-pending    { color:#cbd5e1;font-size:.75rem; }
-.cmp-rev-note   { padding:.3rem .55rem;background:#f8fafc;border-left:2px solid #475569;font-size:.7rem;margin-bottom:3px; }
-.cmp-ws-your    { background:#f1f5f9;color:#1a3a6b;padding:.28rem .7rem;font-weight:700;font-size:.88rem;border:1px solid #e2e8f0; }
-.cmp-ws-s1      { background:#1a3a6b;color:#fff;padding:.28rem .7rem;font-weight:700;font-size:.88rem; }
+#cmpCard .cmp-overview strong { color:#1a3a6b;font-variant-numeric:tabular-nums; }
+#cmpCard .cmp-group + .cmp-group { border-top:1px solid #e2e8f0; }
+#cmpCard .cmp-group summary { padding:.65rem 1rem;cursor:pointer;color:#1a3a6b;font-size:.84rem;font-weight:600; }
+#cmpCard .cmp-count { margin-left:.4rem;color:#64748b;font-size:.72rem;font-weight:400; }
+#cmpCard .cmp-table { width:100%;border-collapse:collapse;font-size:.8rem; }
+#cmpCard .cmp-table th, #cmpCard .cmp-table td { padding:.5rem .75rem;border-top:1px solid #edf2f7;vertical-align:top; }
+#cmpCard .cmp-table th { background:#f8fafc;color:#475569;font-size:.72rem;font-weight:600; }
+#cmpCard .cmp-entry { color:#1e293b;overflow-wrap:anywhere; }
+#cmpCard .cmp-detail { font-size:.73rem;color:#64748b;overflow-wrap:anywhere; }
+#cmpCard .cmp-score { width:7rem;text-align:right;font-variant-numeric:tabular-nums; }
+#cmpCard .cmp-notes { margin-top:.3rem;padding-left:.45rem;border-left:2px solid #cbd5e1;font-size:.73rem;color:#475569; }
+#cmpCard .cmp-empty { padding:1rem;color:#64748b;font-size:.8rem; }
 </style>
 
 <script>
@@ -703,6 +723,8 @@ if ($show_comparison):
     const AJAX_URL = 'includes/faculty/comparison_ajax.php?app_id=' + APP_ID;
     const KRA_ORDER = ['Instruction','Research','Extension','Professional Development'];
     let pollTimer = null;
+    let polling = false;
+    let lastSnapshot = null;
 
     function fmt(n) { return parseFloat(n).toFixed(2); }
     function esc(s) {
@@ -711,154 +733,88 @@ if ($show_comparison):
             .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     }
 
-    function buildTable(data) {
-        const subs   = data.submissions || [];
-        const hasS1  = data.has_stage1;
-
-        const groups = {};
-        KRA_ORDER.forEach(k => { groups[k] = []; });
-        subs.forEach(s => { if (groups[s.kra_category]) groups[s.kra_category].push(s); });
-
-        let html = '<table style="width:100%;border-collapse:collapse;font-size:.81rem;margin:0;">';
-
-        // -- thead
-        html += `<thead><tr style="border-bottom:2px solid #e2e8f0;background:#f8fafc;">
-            <th style="padding:.55rem 1rem;color:#94a3b8;font-size:.62rem;text-transform:uppercase;letter-spacing:.07em;font-weight:700;width:130px;">KRA</th>
-            <th style="padding:.55rem .75rem;font-size:.62rem;text-transform:uppercase;letter-spacing:.07em;font-weight:700;text-align:center;color:#94a3b8;width:100px;">Your Score</th>`;
-
-        if (hasS1) {
-            html += `<th style="padding:.55rem .75rem;font-size:.62rem;text-transform:uppercase;letter-spacing:.07em;font-weight:700;text-align:center;color:#94a3b8;width:100px;">Evaluator Score<div style="font-size:.6rem;font-weight:400;color:#cbd5e1;text-transform:none;letter-spacing:0;">Evaluation</div></th>`;
-        } else {
-            html += `<th style="padding:.55rem .75rem;font-size:.62rem;text-transform:uppercase;letter-spacing:.07em;font-weight:700;text-align:center;color:#cbd5e1;width:100px;">Evaluator Score<div style="font-size:.6rem;font-weight:400;text-transform:none;letter-spacing:0;">Pending</div></th>`;
+    function buildComparison(data, openGroups) {
+        const groups = Object.fromEntries(KRA_ORDER.map(kra => [kra, []]));
+        for (const entry of data.submissions || []) {
+            groups[entry.kra_category]?.push(entry);
         }
 
+        const difference = Math.round((data.ws_stage1 - data.ws_faculty) * 100) / 100;
+        const evaluatorTotal = data.has_stage1
+            ? `<strong>${fmt(data.ws_stage1)}</strong>${difference ? ` <span>(${difference > 0 ? '+' : ''}${fmt(difference)})</span>` : ''}`
+            : 'Pending';
+        let html = `<div class="cmp-overview">
+            <strong>Weighted score</strong>
+            <span>Your score <strong>${fmt(data.ws_faculty)}</strong></span>
+            <span>Evaluator ${evaluatorTotal}</span>
+        </div>`;
 
-        html += `<th style="padding:.55rem .75rem;font-size:.62rem;text-transform:uppercase;letter-spacing:.07em;font-weight:700;color:#94a3b8;">Remarks</th>
-        </tr></thead><tbody>`;
-
-        // -- tbody
-        KRA_ORDER.forEach(kra => {
-            const rows = groups[kra] || [];
+        const numbers = ['I', 'II', 'III', 'IV'];
+        KRA_ORDER.forEach((kra, index) => {
+            const rows = groups[kra];
             if (!rows.length) return;
+            html += `<details class="cmp-group" data-kra="${index}"${openGroups.has(String(index)) ? ' open' : ''}>
+                <summary>KRA ${numbers[index]} · ${esc(kra)} <span class="cmp-count">${rows.length} ${rows.length === 1 ? 'entry' : 'entries'}</span></summary>
+                <table class="cmp-table" aria-label="${esc(kra)} score comparison">
+                    <thead><tr><th scope="col">Entry</th><th scope="col" class="cmp-score">Your score</th>
+                        <th scope="col" class="cmp-score">Evaluator score</th></tr></thead><tbody>`;
 
-            // KRA group header row
-            html += `<tr style="background:#f8fafc;border-top:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;">
-                <td colspan="4" style="padding:.4rem 1rem;font-size:.62rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.07em;">${esc(kra)}</td>
-            </tr>`;
-
-            rows.forEach((s) => {
-                const s1Adj = s.checker_adjusted && s.adjusted_stage === 'stage1';
-                const hasRev = s.revision_status === 'needs_revision';
-
-                html += `<tr style="border-bottom:1px solid #f4f6f9;${hasRev ? 'background:#fffbf0;' : ''}">`;
-
-                // Your score
-                html += `<td style="padding:.55rem 1rem;text-align:center;vertical-align:middle;">
-                    <span class="cmp-your-badge">${fmt(s.faculty_score)}</span>
-                </td>`;
-
-                // Stage 1
-                html += `<td style="padding:.55rem .75rem;text-align:center;vertical-align:middle;">`;
-                if (s1Adj) {
-                    html += `<span class="cmp-s1-badge">${fmt(s.current_score)}</span>`;
-                    if (s.adjusted_by) html += `<div style="font-size:.6rem;color:#64748b;margin-top:2px;">${esc(s.adjusted_by)}</div>`;
-                } else if (hasS1) {
-                    html += `<span class="cmp-nochange">No change</span>`;
-                } else {
-                    html += `<span class="cmp-pending">—</span>`;
-                }
-                html += `</td>`;
-
-                // Remarks
-                html += `<td style="padding:.55rem .75rem;vertical-align:middle;font-size:.75rem;color:#475569;">`;
-                let hasRem = false;
-                if (s.checker_note) {
-                    html += `<div class="cmp-rev-note"><strong style="color:#334155;">Note:</strong> ${esc(s.checker_note)}</div>`;
-                    hasRem = true;
-                }
-                if (s.revision_note) {
-                    html += `<div class="cmp-rev-note" style="margin-top:2px;">${esc(s.revision_note)}</div>`;
-                    hasRem = true;
-                }
-                if (!hasRem) html += `<span style="color:#cbd5e1;font-size:.72rem;">No evaluator notes</span>`;
-                html += `</td></tr>`;
-            });
+            for (const entry of rows) {
+                const adjusted = entry.checker_adjusted && entry.adjusted_stage === 'stage1';
+                const evaluatorScore = adjusted ? `<strong>${fmt(entry.current_score)}</strong>`
+                    : data.has_stage1 || entry.verified ? 'No change' : 'Pending';
+                const notes = [
+                    entry.revision_status === 'needs_revision' ? 'Revision requested' : '',
+                    entry.checker_note, entry.revision_note
+                ].filter(Boolean);
+                html += `<tr>
+                    <td class="cmp-entry">
+                        <strong>${esc(entry.entry_title || `Entry #${entry.submission_id}`)}</strong>
+                        ${entry.entry_detail ? `<div class="cmp-detail">${esc(entry.entry_detail)}</div>` : ''}
+                        ${notes.length ? `<div class="cmp-notes">${notes.map(note => `<div>${esc(note)}</div>`).join('')}</div>` : ''}
+                    </td>
+                    <td class="cmp-score">${fmt(entry.faculty_score)}</td>
+                    <td class="cmp-score">${evaluatorScore}
+                        ${adjusted && entry.adjusted_by ? `<div class="cmp-detail">${esc(entry.adjusted_by)}</div>` : ''}
+                    </td>
+                </tr>`;
+            }
+            html += '</tbody></table></details>';
         });
-        html += `</tbody>`;
 
-        // -- tfoot
-        const wsY  = parseFloat(data.ws_faculty ?? 0);
-        const wsS1 = parseFloat(data.ws_stage1  ?? 0);
-        const d1   = Math.round((wsS1 - wsY) * 100) / 100;
-
-        const diffHtml = (d) => {
-            if (d === null) return '';
-            if (d === 0) return `<div style="font-size:.62rem;margin-top:2px;color:#94a3b8;">No net change</div>`;
-            const sign = d > 0 ? '+' : '';
-            const col  = d > 0 ? '#1a3a6b' : '#475569';
-            return `<div style="font-size:.62rem;margin-top:2px;color:${col};">${sign}${fmt(d)} vs your score</div>`;
-        };
-
-        html += `<tfoot><tr style="background:#f8fafc;border-top:2px solid #e2e8f0;">
-            <td style="padding:.65rem 1rem;font-size:.7rem;font-weight:700;color:#1e293b;">Weighted Score</td>
-            <td style="padding:.65rem .75rem;text-align:center;"><span class="cmp-ws-your">${fmt(wsY)}</span></td>
-            <td style="padding:.65rem .75rem;text-align:center;">`;
-        if (hasS1) {
-            html += `<span class="cmp-ws-s1">${fmt(wsS1)}</span>${diffHtml(d1)}`;
-        } else {
-            html += `<span class="cmp-pending">—</span>`;
-        }
-        html += `</td>`;
-
-
-        html += `<td style="padding:.65rem .75rem;font-size:.7rem;color:#94a3b8;vertical-align:middle;">
-                Evaluator score after all adjustments. Not a final decision.
-            </td>
-        </tr></tfoot></table>`;
+        if (!(data.submissions || []).length) html += '<div class="cmp-empty">No entries to compare.</div>';
         return html;
     }
 
     function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
 
     function poll() {
+        if (polling) return;
+        const wrap = document.getElementById('cmpTableWrap');
+        if (!wrap) return;
+
+        polling = true;
         fetch(AJAX_URL)
-            .then(r => {
-                if (!r.ok) throw new Error('HTTP ' + r.status);
-                return r.json();
+            .then(response => {
+                if (!response.ok) throw new Error('HTTP ' + response.status);
+                return response.json();
             })
             .then(data => {
-                const wrap = document.getElementById('cmpTableWrap');
-                if (!data.ok) {
-                    if (wrap) wrap.innerHTML = `<div style="padding:2rem;text-align:center;color:#94a3b8;font-size:.85rem;">
-                        <i class="bi bi-exclamation-circle d-block mb-2" style="font-size:1.4rem;"></i>
-                        Could not load comparison data. <button onclick="poll()" style="font-size:.78rem;background:none;border:1px solid #cbd5e1;border-radius:6px;padding:2px 10px;cursor:pointer;color:#475569;margin-left:6px;">Retry</button>
-                    </div>`;
-                    return;
+                if (!data.ok) throw new Error(data.error || 'Comparison unavailable');
+                const snapshot = JSON.stringify([data.submissions, data.has_stage1, data.ws_faculty, data.ws_stage1]);
+                if (snapshot !== lastSnapshot) {
+                    const openGroups = new Set(Array.from(wrap.querySelectorAll('.cmp-group[open]'), group => group.dataset.kra));
+                    wrap.innerHTML = buildComparison(data, openGroups);
+                    lastSnapshot = snapshot;
                 }
-                if (wrap) wrap.innerHTML = buildTable(data);
-
-                const ts = document.getElementById('cmpLastUpdated');
-                if (ts) ts.textContent = 'Updated ' + data.updated_at;
-
-                // Stop polling once terminal
-                if (['approved','reclassified','admin_rejected','rejected'].includes(data.status)) {
-                    stopPolling();
-                    const dot = document.getElementById('cmpLiveDot');
-                    if (dot) dot.remove();
-                    const upd = document.getElementById('cmpLastUpdated');
-                    if (upd) upd.remove();
-                }
+                if (['approved','reclassified','admin_rejected','rejected'].includes(data.status)) stopPolling();
             })
-            .catch(err => {
-                console.error('Comparison poll failed:', err);
-                const wrap = document.getElementById('cmpTableWrap');
-                if (wrap && wrap.querySelector('.spinner-border')) {
-                    wrap.innerHTML = `<div style="padding:2rem;text-align:center;color:#94a3b8;font-size:.85rem;">
-                        <i class="bi bi-wifi-off d-block mb-2" style="font-size:1.4rem;"></i>
-                        Could not load comparison data. <button onclick="poll()" style="font-size:.78rem;background:none;border:1px solid #cbd5e1;border-radius:6px;padding:2px 10px;cursor:pointer;color:#475569;margin-left:6px;">Retry</button>
-                    </div>`;
-                }
-            });
+            .catch(() => {
+                if (lastSnapshot !== null) return;
+                wrap.innerHTML = '<div class="cmp-empty">Could not load scores. <button type="button" class="btn btn-sm btn-outline-secondary">Retry</button></div>';
+                wrap.querySelector('button').addEventListener('click', poll, { once: true });
+            })
+            .finally(() => { polling = false; });
     }
 
     poll();

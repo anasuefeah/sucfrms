@@ -150,6 +150,36 @@ try {
 
 $stage1_reviews = array_values(array_filter($reviews, fn($r) => $r['role'] === 'evaluator'));
 
+function comparisonEntryLabel(string $category, string $remarks): array {
+    $parts = array_map('trim', explode('|||', $remarks));
+    [$type, $name, $value] = array_pad($parts, 3, '');
+    if ($type === 'CUSTOM') return [$parts[3] ?? '', $parts[5] ?? ''];
+
+    switch ($category) {
+        case 'Instruction':
+            $teaching = [
+                'A-set-sem' => 'Student Evaluation of Teaching',
+                'A-sef-sem' => 'Supervisor Evaluation Form',
+                'A-set-sef-sem' => 'Teaching and Supervisor Evaluations',
+            ];
+            if (isset($teaching[$type])) {
+                $period = implode(' · ', array_filter([$name, $value === '' ? '' : 'Semester ' . $value]));
+                return [$teaching[$type], $period];
+            }
+            if ($type === 'C-mentor') return ['Competition Mentorship', $name];
+            if ($type === 'A-set-sef' || is_numeric($type)) return ['Teaching Effectiveness', ''];
+            return [kraInstructionDisplayTitle($type, $name), $parts[4] ?? ''];
+        case 'Research':
+            return [kraCleanEntryDisplayTitle($type), ($parts[4] ?? '') ?: $name];
+        case 'Extension':
+            return [kraExtensionSubtypeDisplayTitle($type), $name];
+        case 'Professional Development':
+            return [str_replace(' (CONFIG GAP)', '', kraProfessionalDevelopmentDisplayTitle($type, $value)), $name];
+        default:
+            return ['', ''];
+    }
+}
+
 // Build the evaluator comparison for each submission.
 // Use verified_by role to classify the adjustment stage
 $submissions = [];
@@ -158,10 +188,13 @@ foreach ($subs as $s) {
     $vby_info = $vby_id ? ($checker_names[$vby_id] ?? null) : null;
 
     $checker_adjusted  = ($vby_id !== null) && ((float)$s['computed_points'] !== (float)$s['faculty_original_score']);
+    [$entryTitle, $entryDetail] = comparisonEntryLabel($s['kra_category'], $s['remarks'] ?? '');
 
     $submissions[] = [
         'submission_id'          => (int)$s['submission_id'],
         'kra_category'           => $s['kra_category'],
+        'entry_title'            => $entryTitle ?: 'Entry #' . (int)$s['submission_id'],
+        'entry_detail'           => $entryDetail,
         'faculty_score'          => (float)$s['faculty_original_score'],
         'current_score'          => (float)$s['computed_points'],
         'checker_adjusted'       => $checker_adjusted,

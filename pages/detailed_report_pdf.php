@@ -173,7 +173,7 @@ class DetailedPDF extends FPDF {
 // -- Build PDF --------------------------------------------------
 $pdf = new DetailedPDF('P','mm','A4');
 $pdf->AliasNbPages();
-$pdf->cyc_name   = $selected_cycle['cycle_name'] ?? 'N/A';
+$pdf->cyc_name   = kraPdfText($selected_cycle['cycle_name'] ?? 'N/A');
 $pdf->printed_at = $printed_at;
 $pdf->admin_name = $admin_name;
 $pdf->SetMargins(12, 46, 12);
@@ -212,7 +212,7 @@ foreach ($applications as $idx => $a) {
                   'Employee ID',  $a['employee_id'] ?? 'N/A');
     $pdf->InfoRow('Campus',       $a['campus_name'],
                   'Current Rank', $rank ?: 'N/A');
-    $pdf->InfoRow('Cycle',        $selected_cycle['cycle_name'] ?? 'N/A',
+    $pdf->InfoRow('Cycle',        $pdf->cyc_name,
                   'Status',       ucwords(str_replace('_',' ',$a['status'])));
     $pdf->InfoRow('Reviewed By',  !empty($a['checker_uid']) ? checkerDisplayLabel(['checker_label'=>$a['checker_name'],'user_id'=>$a['checker_uid']]) : 'N/A', '', '');
     if (!empty($a['checker_remarks'])) {

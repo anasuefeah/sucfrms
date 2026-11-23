@@ -482,7 +482,8 @@ function kraEffectiveComputedPoints(array $submission): float {
     $points = (float)($submission['computed_points'] ?? 0);
     $parts = array_map('trim', explode('|||', (string)($submission['remarks'] ?? '')));
     if (($parts[0] ?? '') === 'CUSTOM') {
-        return max($points, max(0.0, (float)($parts[4] ?? 0)));
+        require_once __DIR__ . '/scoring/entry_metadata.php';
+        return \Scoring\EntryMetadata::reviewedPoints($submission, max($points, (float)($parts[4] ?? 0)));
     }
     return $points;
 }
@@ -1133,7 +1134,7 @@ function renderConfirmModal(): void { ?>
 
     <!-- Header -->
     <div style="background:#1a3a6b;padding:0.9rem 1.25rem;display:flex;align-items:center;gap:0.65rem;">
-      <img src="<?= defined('BASE_URL') ? BASE_URL . 'assets/images/logo.jpg' : (str_contains($_SERVER['PHP_SELF'] ?? '', '/pages/') ? '../assets/images/logo.jpg' : 'assets/images/logo.jpg') ?>" alt=""
+      <img class="modal-brand-logo" src="<?= defined('BASE_URL') ? BASE_URL . 'assets/images/logo.jpg' : (str_contains($_SERVER['PHP_SELF'] ?? '', '/pages/') ? '../assets/images/logo.jpg' : 'assets/images/logo.jpg') ?>" alt=""
            style="width:30px;height:30px;border-radius:50%;object-fit:cover;border:1.5px solid rgba(255,255,255,0.25);flex-shrink:0;">
       <div>
         <div style="color:#fff;font-weight:700;font-size:0.8rem;line-height:1.2;">SUCFRMS</div>

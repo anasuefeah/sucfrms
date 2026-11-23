@@ -12,7 +12,7 @@
 
             <!-- Header -->
             <div style="background:#1a3a6b;padding:0.85rem 1.1rem;display:flex;align-items:center;gap:0.6rem;">
-                <img src="assets/images/logo.jpg" alt="" style="width:28px;height:28px;object-fit:cover;border-radius:50%;border:1.5px solid rgba(255,255,255,0.25);flex-shrink:0;">
+                <img class="modal-brand-logo" src="assets/images/logo.jpg" alt="" style="width:28px;height:28px;object-fit:cover;border-radius:50%;border:1.5px solid rgba(255,255,255,0.25);flex-shrink:0;">
                 <div>
                     <div style="color:#fff;font-weight:700;font-size:0.78rem;line-height:1.2;">SUCFRMS</div>
                     <div style="color:#93c5fd;font-size:0.62rem;">SUC Faculty Reclassification Management System</div>
@@ -206,6 +206,7 @@
         padding-bottom: 5px;
         border-bottom: 1px solid #f0f4fb;
     }
+    #helpPopoverBody { white-space: pre-line; }
     .help-btn { outline: none; }
     </style>
     <!-- Help popover singleton (fixed position, escapes overflow) -->
