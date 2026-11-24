@@ -1,9 +1,9 @@
 <?php
 
-$host = getenv('DB_HOST') ?: 'localhost';
-$db   = getenv('DB_NAME') ?: 'SUCFRMS';
-$user = getenv('DB_USER') ?: 'root';
-$pass = getenv('DB_PASS') ?: '';
+$host = getenv('DB_HOST') ?: 'sql107.infinityfree.com';
+$db   = getenv('DB_NAME') ?: 'if0_39940623_SUCFRMS';
+$user = getenv('DB_USER') ?: 'if0_39940623';
+$pass = getenv('DB_PASS') ?: 'Czarevan28';
 
 
 function renderDatabaseSetupError(string $title, string $message, array $steps, ?string $detail = null): void
@@ -138,6 +138,18 @@ try {
             '<strong>MySQL is running</strong> on your hosting account or server.',
             'The credentials in <code>config/db.php</code> match your MySQL setup.',
             'The database <code>' . htmlspecialchars($db) . '</code> exists and <code>database.sql</code> has been imported.',
+        ],
+        $e->getMessage()
+    );
+} catch (Throwable $e) {
+    error_log('SUCFRMS database startup: ' . $e->getMessage());
+    renderDatabaseSetupError(
+        'Application startup failed',
+        'The database startup code could not finish loading.',
+        [
+            'Upload the current <code>config/db.php</code> and <code>includes</code> folder together.',
+            'Check that all uploaded PHP files are complete.',
+            'Reload this page after the upload finishes.',
         ],
         $e->getMessage()
     );

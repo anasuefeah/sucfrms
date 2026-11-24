@@ -199,7 +199,7 @@ final class ClaimReview
             if (!isset($score['weighted_score'])) throw new RuntimeException('The scoring engine did not return a score.');
             $weighted = (float)$score['weighted_score'];
             if ($weighted < 41) {
-                throw new DomainException("The weighted score ({$weighted}) is below the minimum of 41. Return the application for revision.");
+                throw new DomainException("The weighted score ({$weighted}) is below the minimum of 41. Request revision on the entries that need correction.");
             }
         }
 

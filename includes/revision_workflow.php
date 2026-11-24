@@ -34,6 +34,7 @@ class KraRevisionWorkflow
     public static function canEdit(string $status, ?array $entry): bool
     {
         if (in_array($status, ['approved', 'reclassified', 'admin_rejected'], true)) return false;
+        if ($status === 'rejected') return true;
         if ($status === 'needs_revision') {
             return $entry !== null && ($entry['revision_status'] ?? '') === 'needs_revision';
         }
@@ -63,6 +64,11 @@ class KraRevisionWorkflow
     public static function markSaved(PDO $pdo, int $applicationId, int $submissionId): void
     {
         self::ensureSchema($pdo);
+        $pdo->prepare("DELETE v FROM kra_checker_verifications v
+            JOIN kra_submissions s ON s.submission_id=v.submission_id
+            WHERE s.application_id=? AND s.submission_id=?")->execute([$applicationId, $submissionId]);
+        $pdo->prepare("UPDATE kra_submissions SET verified=0, verified_by=NULL, verified_at=NULL
+            WHERE application_id=? AND submission_id=?")->execute([$applicationId, $submissionId]);
         $pdo->prepare("UPDATE kra_submissions SET revision_saved_at=NOW(6)
             WHERE application_id=? AND submission_id=? AND revision_status='needs_revision'")
             ->execute([$applicationId, $submissionId]);

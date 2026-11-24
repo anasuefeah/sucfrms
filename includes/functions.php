@@ -409,6 +409,19 @@ function submitApplicationForReview(PDO $pdo, array $application): string {
             WHERE application_id=? AND status=?");
         $update->execute([$status, $applicationId, $application['status']]);
         if (!$update->rowCount()) throw new RuntimeException('Application status changed during submission.');
+        if ($application['status'] === 'rejected') {
+            $reviews = $pdo->prepare("SELECT checker_id, decision, remarks, decided_at
+                FROM application_checker_reviews WHERE application_id=? AND decision IN ('approved','rejected') FOR UPDATE");
+            $reviews->execute([$applicationId]);
+            foreach ($reviews->fetchAll(PDO::FETCH_ASSOC) as $review) {
+                logAudit($pdo, (int)$application['user_id'], 'Evaluation Reopened',
+                    "Application #{$applicationId}, evaluator #{$review['checker_id']}: prior decision {$review['decision']}"
+                    . " at {$review['decided_at']}. Remarks: " . ($review['remarks'] ?? ''));
+            }
+            // Keep prior remarks on the review slot and archive the decision in the audit log.
+            $pdo->prepare("UPDATE application_checker_reviews SET decision='pending', decided_at=NULL
+                WHERE application_id=?")->execute([$applicationId]);
+        }
         $pdo->prepare("UPDATE kra_submissions SET faculty_original_score=computed_points
             WHERE application_id=? AND faculty_original_score IS NULL")->execute([$applicationId]);
         require_once __DIR__ . '/scoring/orchestrator.php';

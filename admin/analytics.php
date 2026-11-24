@@ -58,6 +58,39 @@ if ($cycle && $comparisonChoice === 'previous') {
     <?php return; endif; ?>
 
 <?php
+$isOpen = $cycle['status'] === 'open';
+$evaluationDeadline = $cycle['evaluation_deadline'] ?: $cycle['end_date'];
+$formatDate = static fn(?string $value): string => $value ? date('M j, Y', strtotime($value)) : '—';
+?>
+    <section class="cycle-analysis-scope" aria-label="Cycle details and filters">
+        <div class="cycle-analysis-context">
+            <div class="cycle-analysis-cycle-name">
+                <h2><?= sanitize($cycle['cycle_name']) ?></h2>
+                <span class="cycle-analysis-status<?= $isOpen ? ' cycle-analysis-status-open' : '' ?>"><?= ucfirst($cycle['status']) ?></span>
+            </div>
+            <dl>
+                <div><dt>Submission window</dt><dd><?= $formatDate($cycle['submission_start_date'] ?: $cycle['start_date']) ?> &ndash; <?= $formatDate($cycle['submission_deadline'] ?: $cycle['end_date']) ?></dd></div>
+                <div><dt>Evaluation deadline</dt><dd><?= $formatDate($evaluationDeadline) ?></dd></div>
+            </dl>
+        </div>
+        <form class="cycle-analysis-controls" method="get" action="index.php">
+            <input type="hidden" name="page" value="analytics">
+            <label>Cycle
+                <select name="cycle_id" onchange="this.form.requestSubmit()">
+                    <?php foreach ($cycles as $option): ?>
+                    <option value="<?= (int)$option['cycle_id'] ?>" <?= $option['cycle_id'] === $cycle['cycle_id'] ? 'selected' : '' ?>>
+                        <?= sanitize($option['cycle_name']) ?> · <?= ucfirst($option['status']) ?>
+                    </option>
+                    <?php endforeach; ?>
+                </select>
+            </label>
+            <noscript>
+                <button class="cycle-analysis-primary" type="submit">Load cycle</button>
+            </noscript>
+        </form>
+    </section>
+
+<?php
 $stages = [
     'submitted' => ['Awaiting review', '#1d4e89'],
     'under_review' => ['Under review', '#4779a8'],
@@ -70,13 +103,28 @@ $stages = [
 ];
 $cycleId = (int)$cycle['cycle_id'];
 $comparisonId = (int)($comparison['cycle_id'] ?? 0);
-$applicationsByCycle = loadCycleAnalyticsApplications($pdo, $cycleId, $comparisonId);
+try {
+    $applicationsByCycle = loadCycleAnalyticsApplications($pdo, $cycleId, $comparisonId);
+    $coverage = loadCycleAnalyticsCoverage($pdo, $cycleId);
+} catch (Throwable $error) {
+    error_log("SUCFRMS Analytics could not load cycle {$cycleId}: " . $error->getMessage());
+    ?>
+    <div class="alert alert-danger" role="alert">Could not load application and evaluator data for this cycle.</div>
+    </div>
+    <?php
+    return;
+}
 $applications = $applicationsByCycle[$cycleId] ?? [];
 $summary = cycleAnalyticsSummary($applications, $stages);
 $previous = $comparison ? cycleAnalyticsSummary($applicationsByCycle[$comparisonId] ?? [], $stages) : null;
-$coverage = loadCycleAnalyticsCoverage($pdo, $cycleId);
-$scoreBreakdown = loadCycleAnalyticsScoreBreakdown($pdo, $cycleId);
-$isOpen = $cycle['status'] === 'open';
+$scoreBreakdown = null;
+if ($summary['complete'] > 0) {
+    try {
+        $scoreBreakdown = loadCycleAnalyticsScoreBreakdown($pdo, $cycleId);
+    } catch (Throwable $error) {
+        error_log("SUCFRMS Analytics could not load score breakdown for cycle {$cycleId}: " . $error->getMessage());
+    }
+}
 $ageThreshold = 7;
 $reviewQueue = array_values(array_filter($applications, static fn(array $row): bool =>
     in_array($row['stage'], ['submitted', 'under_review'], true)));
@@ -96,7 +144,6 @@ usort($campusResults, static fn(array $a, array $b): int =>
 $largestQueueCampus = $campusResults[0] ?? null;
 
 $today = new DateTimeImmutable('today');
-$evaluationDeadline = $cycle['evaluation_deadline'] ?: $cycle['end_date'];
 $daysUntilDeadline = (int)$today->diff(new DateTimeImmutable($evaluationDeadline))->format('%r%a');
 $missingCoverage = array_keys(array_filter($coverage, static fn(array $kra): bool => $kra['evaluators'] === 0));
 $blockedCategories = array_filter($coverage, static fn(array $kra): bool => $kra['evaluators'] === 0 && $kra['pending'] > 0);
@@ -134,7 +181,6 @@ if (!$findings && $summary['submitted']) {
         : ['Review queue is clear', 'Review applications needing revision, edit requests, and returned cases in the application flow below.', ''];
 }
 
-$formatDate = static fn(?string $value): string => $value ? date('M j, Y', strtotime($value)) : '—';
 $formatMetric = static function (int|float|null $value, string $unit): string {
     if ($value === null) return '—';
     return match ($unit) {
@@ -151,34 +197,6 @@ $metrics = [
     'score_median' => ['Median completed weighted score', 'points'],
 ];
 ?>
-    <section class="cycle-analysis-scope" aria-label="Cycle details and filters">
-        <div class="cycle-analysis-context">
-            <div class="cycle-analysis-cycle-name">
-                <h2><?= sanitize($cycle['cycle_name']) ?></h2>
-                <span class="cycle-analysis-status<?= $isOpen ? ' cycle-analysis-status-open' : '' ?>"><?= ucfirst($cycle['status']) ?></span>
-            </div>
-            <dl>
-                <div><dt>Submission window</dt><dd><?= $formatDate($cycle['submission_start_date'] ?: $cycle['start_date']) ?> &ndash; <?= $formatDate($cycle['submission_deadline'] ?: $cycle['end_date']) ?></dd></div>
-                <div><dt>Evaluation deadline</dt><dd><?= $formatDate($evaluationDeadline) ?></dd></div>
-            </dl>
-        </div>
-        <form class="cycle-analysis-controls" method="get" action="index.php">
-            <input type="hidden" name="page" value="analytics">
-            <label>Cycle
-                <select name="cycle_id" onchange="this.form.requestSubmit()">
-                    <?php foreach ($cycles as $option): ?>
-                    <option value="<?= (int)$option['cycle_id'] ?>" <?= $option['cycle_id'] === $cycle['cycle_id'] ? 'selected' : '' ?>>
-                        <?= sanitize($option['cycle_name']) ?> · <?= ucfirst($option['status']) ?>
-                    </option>
-                    <?php endforeach; ?>
-                </select>
-            </label>
-            <noscript>
-                <button class="cycle-analysis-primary" type="submit">Load cycle</button>
-            </noscript>
-        </form>
-    </section>
-
     <?php if (!$summary['submitted']): ?>
     <div class="cycle-analysis-note" role="status">
         <i class="bi bi-info-circle" aria-hidden="true"></i>
@@ -264,8 +282,10 @@ $metrics = [
 
     <section class="cycle-analysis-panel" aria-labelledby="cycle-score-breakdown">
         <h2 id="cycle-score-breakdown">Where applicants scored higher or lower</h2>
-        <?php if (!$scoreBreakdown['completed']): ?>
+        <?php if (!$summary['complete']): ?>
         <p>The score breakdown will appear when this cycle has a completed evaluation.</p>
+        <?php elseif ($scoreBreakdown === null): ?>
+        <p role="status">Could not load the score breakdown for this cycle.</p>
         <?php elseif (!$scoreBreakdown['matched']): ?>
         <p>A score breakdown could not be matched to the saved totals for this cycle.</p>
         <?php else: ?>
@@ -330,7 +350,7 @@ $metrics = [
         <?php endif; ?>
     </section>
 
-    <?php if ($scoreBreakdown['profiles']):
+    <?php if (!empty($scoreBreakdown['profiles'])):
         $profileCategories = array_keys($scoreBreakdown['categories']);
         $profileCount = count($scoreBreakdown['profiles']);
         $scoreRanges = array_fill_keys($profileCategories, [0, 0, 0]);

@@ -477,7 +477,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $can_edit) {
             echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}{$criterion_query}';</script>"; exit;
         }
         // Block if deadline has passed
-        if ($_deadline_passed) {
+        if ($_deadline_passed && $app['status'] !== 'rejected') {
             flashMessage('danger', 'The submission deadline has passed. You can no longer submit for this cycle.');
             echo "<script>window.location.href='index.php?page=apply&tab={$active_tab}{$criterion_query}';</script>"; exit;
         }
@@ -686,7 +686,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
         $faculty_rank_btn = $faculty['rank'] ?? '';
         $score_btn = getApplicationScoreSummary($pdo, (int)$app_id);
         $can_submit_step2 = $score_btn['weighted_score'] >= 41;
-        $deadline_passed_step2 = $_deadline_passed;
+        $deadline_passed_step2 = $_deadline_passed && $app['status'] !== 'rejected';
       ?>
       <?php if ($deadline_passed_step2): ?>
       <button type="button" disabled
@@ -1738,7 +1738,7 @@ $cur_entries = $subs_by_cat[$cur_cat] ?? [];
                 }
                 $_ce_needs_rev = (($_ce['revision_status'] ?? '') === 'needs_revision');
                 $_ce_rev_ok    = ($app['status'] !== 'needs_revision') || $_ce_needs_rev;
-                $_ce_verified  = (!empty($_ce['verified']) && !$_ce_needs_rev);
+                $_ce_verified  = (!empty($_ce['verified']) && !$_ce_needs_rev && $app['status'] !== 'rejected');
                 $_ce_can_edit  = $can_edit && $_ce_rev_ok && !$_ce_verified;
                 $_ev_files_btn = array_map(fn($f) => [
                     'evidence_id'       => $f['evidence_id'],
@@ -3293,7 +3293,7 @@ function restoreCriteriaADraft(draft) {
 function criteriaASemesterLocked(entry) {
     return !!(entry && (entry.editable === false
         || (KRA_REVISION_MODE && entry.revision_status !== 'needs_revision')
-        || (entry.verified && entry.revision_status !== 'needs_revision')));
+        || (entry.editable !== true && entry.verified && entry.revision_status !== 'needs_revision')));
 }
 
 function criteriaAUploadButton(entry, sem) {

@@ -146,21 +146,6 @@ function ensureCheckerSlot($pdo, int $app_id, int $checker_id): void {
         ->execute([$app_id, $checker_id]);
 }
 
-// -- Helper: count rejected checkers --------------------------
-function countRejectedCheckers($pdo, int $app_id): int {
-    $stmt = $pdo->prepare("SELECT COUNT(*) FROM application_checker_reviews
-        WHERE application_id = ? AND decision = 'rejected'");
-    $stmt->execute([$app_id]);
-    return (int)$stmt->fetchColumn();
-}
-
-// -- Helper: total active checkers in the system ---------------
-function countActiveCheckers($pdo, int $cycle_id = 0): int {
-    if ($cycle_id) return countAssignedCheckersForCycle($pdo, $cycle_id);
-    $stmt = $pdo->query("SELECT COUNT(*) FROM users WHERE role = 'evaluator' AND status = 'active'");
-    return max(1, (int)$stmt->fetchColumn());
-}
-
 // -- POST handlers ---------------------------------------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action     = $_POST['action'] ?? '';
@@ -415,57 +400,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($pdo->inTransaction()) $pdo->rollBack();
             error_log('SUCFRMS evaluation completion: ' . $error->getMessage());
             flashMessage('danger', 'The evaluation could not be completed. Please try again.');
-        }
-        echo "<script>window.location.href='index.php?page={$return_page}&id={$app_id}';</script>"; exit;
-    }
-
-    // -- Checker rejects ---------------------------------------
-    if ($action === 'checker_reject' && in_array($app['status'], ['submitted','under_review'])) {
-        if (isEvaluator() && !$assigned_kras) {
-            flashMessage('danger', 'You do not have any KRA assignments for this cycle.');
-            echo "<script>window.location.href='index.php?page={$return_page}&id={$app_id}';</script>"; exit;
-        }
-        if (empty($remarks)) {
-            flashMessage('danger', 'A reason is required when returning an application for revision.');
-            echo "<script>window.location.href='index.php?page={$return_page}&id={$app_id}';</script>"; exit;
-        }
-
-        // Auto-move to under_review if still submitted
-        $pdo->prepare("UPDATE applications SET status='under_review', checker_id=?
-            WHERE application_id=? AND status='submitted'")
-            ->execute([$checker_id, $app_id]);
-
-        // Upsert this checker's decision
-        $pdo->prepare("INSERT INTO application_checker_reviews
-            (application_id, checker_id, decision, remarks, decided_at)
-            VALUES (?, ?, 'rejected', ?, NOW())
-            ON DUPLICATE KEY UPDATE decision='rejected', remarks=VALUES(remarks), decided_at=NOW()")
-            ->execute([$app_id, $checker_id, $remarks]);
-
-        $total_checkers = countActiveCheckers($pdo, (int)$app['cycle_id']);
-        $rejected_count = countRejectedCheckers($pdo, $app_id);
-        logAudit($pdo, $checker_id, 'Returned for Revision', "You returned {$app['full_name']}'s application for revision. Reason: {$remarks}");
-
-        if ($rejected_count >= $total_checkers) {
-            $all_remarks_stmt = $pdo->prepare("SELECT u.user_id, u.checker_label, r.remarks
-                FROM application_checker_reviews r
-                JOIN users u ON r.checker_id = u.user_id
-                WHERE r.application_id = ? AND r.decision = 'rejected'");
-            $all_remarks_stmt->execute([$app_id]);
-            $combined = implode(' | ', array_map(
-                fn($row) => checkerDisplayLabel($row) . ': ' . $row['remarks'],
-                $all_remarks_stmt->fetchAll()
-            ));
-            $pdo->prepare("UPDATE applications SET status='rejected', reviewed_at=NOW(),
-                checker_remarks=? WHERE application_id=?")
-                ->execute(["Returned for revision by all {$total_checkers} evaluator(s). {$combined}", $app_id]);
-            logAudit($pdo, $checker_id, 'Application Returned for Revision', "You returned {$app['full_name']}'s application for revision.");
-            createNotif($pdo, $app['user_id'], 'rejected',
-                "Your application has been returned for revision. Please review the remarks and make corrections.",
-                $app_id);
-            flashMessage('warning', "Return for revision recorded. The application has been returned to the faculty.");
-        } else {
-            flashMessage('warning', "Return for revision recorded ({$rejected_count}/{$total_checkers} evaluator notes so far). The application stays <strong>Under Evaluation</strong> until all evaluators have finished.");
         }
         echo "<script>window.location.href='index.php?page={$return_page}&id={$app_id}';</script>"; exit;
     }
@@ -1886,15 +1820,15 @@ document.addEventListener('keydown', function(e) {
         <i class="bi bi-info-circle me-1"></i>
         <strong>Complete Evaluation</strong> once you have marked the credited evidence in your assigned KRAs acceptable.
         The application stays under evaluation until all assigned evaluators complete their reviews.<br>
-        <strong>Return for Revision</strong> when the faculty needs to correct the submission.
+        Use <strong>Request Revision</strong> on individual KRA entries that the faculty needs to correct.
         The result is a recommendation for further committee review and is not a final decision.
     </div>
     <form method="POST" action="index.php?page=<?= $return_page ?>&id=<?= $app_id ?>" id="checkerDecisionForm">
-        <input type="hidden" name="action" id="checkerDecisionAction" value="">
+        <input type="hidden" name="action" value="checker_approve">
         <div class="mb-3">
             <label class="form-label fw-semibold">
                 Remarks
-                <small class="text-muted">(optional for completion, <span class="text-danger">required when returning for revision</span>)</small>
+                <small class="text-muted">(optional)</small>
             </label>
             <textarea name="checker_remarks" id="checkerRemarksField" class="form-control" rows="2"
                       placeholder="Enter your remarks..."></textarea>
@@ -1908,14 +1842,10 @@ document.addEventListener('keydown', function(e) {
             </button>
             <?php else: ?>
             <button type="button" class="btn btn-success"
-                    onclick="submitCheckerDecision('checker_approve','Mark this evaluation complete?','Complete Evaluation','bi-check-circle')">
+                    onclick="submitCheckerDecision()">
                 <i class="bi bi-check-circle me-2"></i>Complete Evaluation
             </button>
             <?php endif; ?>
-            <button type="button" class="btn btn-danger"
-                    onclick="submitCheckerDecision('checker_reject','Return this application for revision?','Return for Revision','bi-arrow-counterclockwise')">
-                <i class="bi bi-arrow-counterclockwise me-2"></i>Return for Revision
-            </button>
         </div>
         <?php if ($below_minimum_for_final_completion): ?>
         <p class="small mt-2 mb-0">The weighted score of <?= number_format($score_result['weighted_score'], 2) ?> is below the required 41.00.</p>
@@ -1927,17 +1857,8 @@ document.addEventListener('keydown', function(e) {
     </form>
 </div>
 <script>
-function submitCheckerDecision(action, msg, btnLabel, btnIcon) {
-    const remarks = document.getElementById('checkerRemarksField').value.trim();
-    if (action === 'checker_reject' && !remarks) {
-        document.getElementById('checkerRemarksField').style.borderColor = '#334155';
-        document.getElementById('checkerRemarksField').focus();
-        showToast('A reason is required when returning for revision.', 'warning');
-        return;
-    }
-    document.getElementById('checkerRemarksField').style.borderColor = '';
-    document.getElementById('checkerDecisionAction').value = action;
-    confirmDelete(msg, 'checkerDecisionForm', btnLabel, btnIcon);
+function submitCheckerDecision() {
+    confirmDelete('Mark this evaluation complete?', 'checkerDecisionForm', 'Complete Evaluation', 'bi-check-circle');
 }
 </script>
 

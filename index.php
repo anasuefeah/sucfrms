@@ -592,6 +592,11 @@ if ($faculty_profile_incomplete && $page !== 'profile_entry') {
     exit;
 }
 
+if ($page === 'score_comparison') {
+    header('Location: index.php?page=my_application#score-comparison');
+    exit;
+}
+
 // Return evaluator AJAX responses before rendering any page HTML.
 if ($_SERVER['REQUEST_METHOD'] === 'POST'
     && in_array($_POST['action'] ?? '', ['alter_score', 'verify_asr_evidence'], true)

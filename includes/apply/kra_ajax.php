@@ -520,7 +520,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($existing) {
                 $entry_flagged = ($existing['revision_status'] ?? '') === 'needs_revision';
                 // Reject edits to an already-verified entry unless it is flagged for revision
-                if (!empty($existing['verified']) && !$entry_flagged) {
+                if (!empty($existing['verified']) && !$entry_flagged && $app_status !== 'rejected') {
                     echo json_encode(['ok' => false, 'error' => 'This entry has already been marked acceptable by an evaluator and can no longer be edited.']);
                     exit;
                 }
@@ -534,6 +534,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $pdo->prepare("UPDATE kra_submissions SET computed_points=?, remarks=?, verified=0, submitted_at=NOW() WHERE submission_id=?")
                         ->execute([$points, $remarks, $edit_id]);
                 }
+                KraRevisionWorkflow::markSaved($pdo, $app_id, $edit_id);
                 if (!empty($files_to_insert)) {
                     // Check remaining cap before bulk insert
                     $file_count = $pdo->prepare("SELECT COUNT(*) FROM kra_evidence_files WHERE submission_id=?");
@@ -559,7 +560,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $existing = $existing->fetch();
             if ($existing) {
                 $entry_flagged = ($existing['revision_status'] ?? '') === 'needs_revision';
-                if (!empty($existing['verified']) && !$entry_flagged) {
+                if (!empty($existing['verified']) && !$entry_flagged && $app_status !== 'rejected') {
                     echo json_encode(['ok' => false, 'error' => 'This entry has already been marked acceptable by an evaluator and can no longer be edited.']);
                     exit;
                 }
@@ -572,6 +573,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $pdo->prepare("UPDATE kra_submissions SET computed_points=?, remarks=?, verified=0, submitted_at=NOW() WHERE submission_id=?")
                         ->execute([$points, $remarks, $existing['submission_id']]);
                 }
+                KraRevisionWorkflow::markSaved($pdo, $app_id, (int)$existing['submission_id']);
                 if (!empty($files_to_insert)) {
                     $file_count = $pdo->prepare("SELECT COUNT(*) FROM kra_evidence_files WHERE submission_id=?");
                     $file_count->execute([$existing['submission_id']]);
