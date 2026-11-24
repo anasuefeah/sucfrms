@@ -97,3 +97,102 @@ function loadCycleAnalyticsCoverage(PDO $pdo, int $cycleId): array
     }
     return $coverage;
 }
+
+function loadCycleAnalyticsScoreBreakdown(PDO $pdo, int $cycleId): array
+{
+    require_once __DIR__ . '/scoring/orchestrator.php';
+
+    $kraKeys = [
+        'Instruction' => 'kra1',
+        'Research' => 'kra2',
+        'Extension' => 'kra3',
+        'Professional Development' => 'kra4',
+    ];
+    $profiles = [];
+    $criteria = [];
+    $criteriaByPosition = [];
+    $completed = 0;
+    $matched = 0;
+
+    // Completed applications do not store their KRA or criterion subtotals.
+    $pdo->exec('SET TRANSACTION READ ONLY');
+    $pdo->beginTransaction();
+    try {
+        $query = $pdo->prepare("SELECT a.application_id, a.user_id, a.total_score,
+                COALESCE(NULLIF(a.position_title, ''), u.`rank`) AS position, c.start_date, c.end_date
+            FROM applications a
+            JOIN users u ON u.user_id = a.user_id
+            JOIN cycles c ON c.cycle_id = a.cycle_id
+            WHERE a.cycle_id = ? AND a.status IN ('approved', 'reclassified')");
+        $query->execute([$cycleId]);
+        $applications = $query->fetchAll(PDO::FETCH_ASSOC);
+        $completed = count($applications);
+
+        foreach ($applications as $application) {
+            try {
+                $result = \Scoring\Orchestrator::run($pdo, (int)$application['application_id']);
+                $kras = $result['kra_results'] ?? [];
+                if (array_diff_key(array_flip($kraKeys), $kras)
+                    || $application['total_score'] === null
+                    || round(array_sum(array_column($kras, 'subtotal')), 2) !== (float)$application['total_score']) {
+                    continue;
+                }
+
+                $position = $application['position'] ?: null;
+                if (!isset($criteriaByPosition[$position ?? ''])) {
+                    $activeParents = array_column(CriteriaSnapshots::rows($pdo, $cycleId, $position), 'parent_id', 'parent_id');
+                    $criteriaByPosition[$position ?? ''] = array_filter(
+                        CriteriaSnapshots::parents($pdo, $cycleId, $position),
+                        static fn(array $parent): bool => isset($activeParents[$parent['criteria_id']]) && (float)$parent['max_points'] > 0
+                    );
+                }
+                $newlyAppointed = \Scoring\KRA4Scorer::isNewlyAppointed(
+                    $pdo, (int)$application['user_id'], $application['start_date'], $application['end_date']
+                );
+            } catch (Throwable $error) {
+                error_log('SUCFRMS Analytics score breakdown for application ' . $application['application_id'] . ': ' . $error->getMessage());
+                continue;
+            }
+
+            $matched++;
+            $profile = [];
+            foreach ($kraKeys as $category => $key) {
+                $kra = $kras[$key];
+                if ($kra['cap'] > 0) {
+                    $profile[$category] = 100 * $kra['subtotal'] / $kra['cap'];
+                }
+            }
+            if ($profile) $profiles[] = $profile;
+
+            foreach ($criteriaByPosition[$position ?? ''] as $parent) {
+                $category = $parent['kra_category'];
+                $code = criteriaParentCode($parent);
+                if ($category === 'Professional Development' && $code === 'D' && !$newlyAppointed) {
+                    continue;
+                }
+                $scores = $kras[$kraKeys[$category]]['parent_scores'];
+                $points = $scores[$code] ?? 0;
+                $criterion = $parent['criterion_key'];
+                $criteria[$category][$criterion] ??= ['label' => $parent['criterion_label'], 'earned' => 0, 'zero' => 0];
+                $bucket = round($points, 2) > 0 ? 'earned' : 'zero';
+                $criteria[$category][$criterion][$bucket]++;
+            }
+        }
+    } finally {
+        $pdo->rollBack();
+    }
+
+    $categories = [];
+    foreach ($kraKeys as $category => $key) {
+        $values = array_column($profiles, $category);
+        $rows = $criteria[$category] ?? [];
+        foreach ($rows as &$row) {
+            $row['rate'] = 100 * $row['earned'] / ($row['earned'] + $row['zero']);
+        }
+        unset($row);
+        usort($rows, static fn(array $a, array $b): int =>
+            $b['rate'] <=> $a['rate'] ?: strcasecmp($a['label'], $b['label']));
+        $categories[$category] = ['median' => cycleAnalyticsMedian($values), 'count' => count($values), 'criteria' => $rows];
+    }
+    return ['completed' => $completed, 'matched' => $matched, 'categories' => $categories, 'profiles' => $profiles];
+}

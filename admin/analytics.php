@@ -17,7 +17,7 @@ foreach ($cycles as $candidate) {
 
 $requestedCycleId = filter_var($_GET['cycle_id'] ?? null, FILTER_VALIDATE_INT) ?: 0;
 $cycle = $cyclesById[$requestedCycleId] ?? $defaultCycle;
-$comparisonChoice = $_GET['compare_cycle_id'] ?? 'previous';
+$comparisonChoice = $_GET['compare_cycle_id'] ?? '0';
 $comparison = null;
 if ($cycle && $comparisonChoice === 'previous') {
     $selectedPassed = false;
@@ -64,7 +64,7 @@ $stages = [
     'revision' => ['Needs revision', '#a65316'],
     'edit_requested' => ['Edit requested', '#6760a2'],
     'returned' => ['Returned', '#a14444'],
-    'complete' => ['Evaluation complete', '#24726b'],
+    'complete' => ['Approved', '#24726b'],
     'reclassified' => ['Reclassified', '#1b554f'],
     'other' => ['Other recorded status', '#64748b'],
 ];
@@ -75,6 +75,7 @@ $applications = $applicationsByCycle[$cycleId] ?? [];
 $summary = cycleAnalyticsSummary($applications, $stages);
 $previous = $comparison ? cycleAnalyticsSummary($applicationsByCycle[$comparisonId] ?? [], $stages) : null;
 $coverage = loadCycleAnalyticsCoverage($pdo, $cycleId);
+$scoreBreakdown = loadCycleAnalyticsScoreBreakdown($pdo, $cycleId);
 $isOpen = $cycle['status'] === 'open';
 $ageThreshold = 7;
 $reviewQueue = array_values(array_filter($applications, static fn(array $row): bool =>
@@ -146,7 +147,6 @@ $formatMetric = static function (int|float|null $value, string $unit): string {
 $metrics = [
     'submitted' => ['Submitted applications', 'count'],
     'completion_rate' => ['Evaluation completion rate', 'rate'],
-    'reclassified' => ['Reclassified applications', 'count'],
     'review_median' => ['Median time to evaluation completion', 'days'],
     'score_median' => ['Median completed weighted score', 'points'],
 ];
@@ -165,7 +165,7 @@ $metrics = [
         <form class="cycle-analysis-controls" method="get" action="index.php">
             <input type="hidden" name="page" value="analytics">
             <label>Cycle
-                <select name="cycle_id">
+                <select name="cycle_id" onchange="this.form.requestSubmit()">
                     <?php foreach ($cycles as $option): ?>
                     <option value="<?= (int)$option['cycle_id'] ?>" <?= $option['cycle_id'] === $cycle['cycle_id'] ? 'selected' : '' ?>>
                         <?= sanitize($option['cycle_name']) ?> · <?= ucfirst($option['status']) ?>
@@ -173,18 +173,9 @@ $metrics = [
                     <?php endforeach; ?>
                 </select>
             </label>
-            <label>Compare with
-                <select name="compare_cycle_id">
-                    <option value="previous" <?= $comparisonChoice === 'previous' ? 'selected' : '' ?>>Previous completed cycle</option>
-                    <option value="0" <?= $comparisonChoice === '0' ? 'selected' : '' ?>>No comparison</option>
-                    <?php foreach ($cycles as $option): ?>
-                    <option value="<?= (int)$option['cycle_id'] ?>" <?= $comparisonChoice === (string)$option['cycle_id'] ? 'selected' : '' ?>>
-                        <?= sanitize($option['cycle_name']) ?>
-                    </option>
-                    <?php endforeach; ?>
-                </select>
-            </label>
-            <button class="cycle-analysis-primary" type="submit"><i class="bi bi-funnel" aria-hidden="true"></i> Apply filters</button>
+            <noscript>
+                <button class="cycle-analysis-primary" type="submit">Load cycle</button>
+            </noscript>
         </form>
     </section>
 
@@ -200,7 +191,7 @@ $metrics = [
         <?php if ($summary['submitted']): ?>
         <section class="cycle-analysis-panel">
             <h2>Application flow</h2>
-            <p><?= number_format($summary['submitted']) ?> submitted. <?= $formatMetric($summary['completion_rate'], 'rate') ?> have completed evaluation, including reclassified applications.</p>
+            <p><?= number_format($summary['submitted']) ?> submitted. <?= $formatMetric($summary['completion_rate'], 'rate') ?> have completed evaluation.</p>
             <ul class="cycle-analysis-flow">
                 <?php foreach ($stages as $key => [$label, $color]):
                     $count = $summary['counts'][$key];
@@ -253,17 +244,12 @@ $metrics = [
                         $current = $summary[$key];
                         $reference = $previous[$key] ?? null;
                         $delta = $current !== null && $reference !== null ? round($current - $reference, $unit === 'count' ? 0 : 1) : null;
-                        $sampleKey = match ($key) {
-                            'review_median' => 'review_count',
-                            'score_median' => 'score_count',
-                            default => null,
-                        };
                     ?>
                     <tr>
                         <th scope="row"><?= $label ?></th>
-                        <td><strong><?= $formatMetric($current, $unit) ?></strong><?php if ($sampleKey && $current !== null): ?> <small>n=<?= $summary[$sampleKey] ?></small><?php endif; ?></td>
+                        <td><strong><?= $formatMetric($current, $unit) ?></strong></td>
                         <?php if ($comparison): ?>
-                        <td><?= $formatMetric($reference, $unit) ?><?php if ($sampleKey && $reference !== null): ?> <small>n=<?= $previous[$sampleKey] ?></small><?php endif; ?></td>
+                        <td><?= $formatMetric($reference, $unit) ?></td>
                         <td><?= $delta === null ? '—' : ($delta > 0 ? '+' : '') . ($unit === 'rate' ? number_format($delta, 1) . ' pp' : $formatMetric($delta, $unit)) ?></td>
                         <?php endif; ?>
                     </tr>
@@ -271,8 +257,156 @@ $metrics = [
                 </tbody>
             </table>
         </div>
+        <p>Approved means the SUCFRMS evaluation is complete. Further review and final reclassification happen outside SUCFRMS.</p>
         <p class="cycle-analysis-method">Completion rate uses submitted applications as the denominator and excludes drafts and expired drafts. Median review time uses recorded submission and review timestamps for completed evaluations.</p>
     </section>
+    <?php endif; ?>
+
+    <section class="cycle-analysis-panel" aria-labelledby="cycle-score-breakdown">
+        <h2 id="cycle-score-breakdown">Where applicants scored higher or lower</h2>
+        <?php if (!$scoreBreakdown['completed']): ?>
+        <p>The score breakdown will appear when this cycle has a completed evaluation.</p>
+        <?php elseif (!$scoreBreakdown['matched']): ?>
+        <p>A score breakdown could not be matched to the saved totals for this cycle.</p>
+        <?php else: ?>
+        <?php
+        $displayScores = [];
+        foreach ($scoreBreakdown['categories'] as $category => $scores) {
+            if ($scores['median'] !== null) {
+                $displayScores[$category] = round($scores['median'], 1);
+            }
+        }
+        ?>
+        <?php if (count($displayScores) > 1 && max($displayScores) !== min($displayScores)): ?>
+        <dl class="cycle-analysis-score-highlights">
+            <?php foreach (['Highest typical score' => max($displayScores), 'Lowest typical score' => min($displayScores)] as $label => $score): ?>
+            <div>
+                <dt><?= $label ?></dt>
+                <dd><strong><?= $formatMetric($score, 'rate') ?></strong> <?= sanitize(implode(', ', array_keys($displayScores, $score, true))) ?></dd>
+            </div>
+            <?php endforeach; ?>
+        </dl>
+        <?php endif; ?>
+        <p>The typical score is the middle result across completed evaluations, shown as a percentage of available points. Select an area to see where applicants earned points.</p>
+        <?php if ($scoreBreakdown['matched'] < $scoreBreakdown['completed']): ?>
+        <p>Breakdowns could be matched to saved scores for <?= number_format($scoreBreakdown['matched']) ?> of <?= number_format($scoreBreakdown['completed']) ?> completed evaluations.</p>
+        <?php endif; ?>
+        <div class="cycle-analysis-score-list">
+            <?php foreach ($scoreBreakdown['categories'] as $category => $scores): ?>
+            <details class="cycle-analysis-score-detail">
+                <summary>
+                    <span><?= sanitize($category) ?></span>
+                    <strong><?= $scores['median'] === null ? 'No scores' : $formatMetric($scores['median'], 'rate') ?></strong>
+                    <small><?= number_format($scores['count']) ?> <?= $scores['count'] === 1 ? 'evaluation' : 'evaluations' ?></small>
+                </summary>
+                <?php if ($scores['criteria']): ?>
+                <p>Criteria where eligible applicants earned points most often appear first.</p>
+                <div class="table-responsive" tabindex="0" role="region" aria-label="<?= sanitize($category) ?> criteria">
+                    <table class="cycle-analysis-table">
+                        <thead><tr>
+                            <th scope="col">Criterion</th>
+                            <th scope="col">Earned points</th>
+                            <th scope="col">Scored zero</th>
+                        </tr></thead>
+                        <tbody>
+                            <?php foreach ($scores['criteria'] as $criterion): ?>
+                            <?php $eligible = number_format($criterion['earned'] + $criterion['zero']); ?>
+                            <tr>
+                                <th scope="row"><?= sanitize($criterion['label']) ?></th>
+                                <td><?= number_format($criterion['earned']) ?> of <?= $eligible ?></td>
+                                <td><?= number_format($criterion['zero']) ?> of <?= $eligible ?></td>
+                            </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+                <?php else: ?>
+                <p>No applicable criteria could be matched for this KRA.</p>
+                <?php endif; ?>
+            </details>
+            <?php endforeach; ?>
+        </div>
+        <p class="cycle-analysis-method">Each criterion counts only applicants it applied to.</p>
+        <?php endif; ?>
+    </section>
+
+    <?php if ($scoreBreakdown['profiles']):
+        $profileCategories = array_keys($scoreBreakdown['categories']);
+        $profileCount = count($scoreBreakdown['profiles']);
+        $scoreRanges = array_fill_keys($profileCategories, [0, 0, 0]);
+        foreach ($scoreBreakdown['profiles'] as $profile) {
+            foreach ($profile as $category => $score) {
+                $displayScore = round($score, 1);
+                $range = $displayScore < 50 ? 0 : ($displayScore < 75 ? 1 : 2);
+                $scoreRanges[$category][$range]++;
+            }
+        }
+    ?>
+    <section class="cycle-analysis-panel cycle-analysis-score-module" aria-labelledby="cycle-score-module-title">
+        <div>
+            <h2 id="cycle-score-module-title">Applicant scores</h2>
+            <p><?= number_format($profileCount) ?> completed <?= $profileCount === 1 ? 'evaluation' : 'evaluations' ?> with scores to compare</p>
+        </div>
+        <button class="cycle-analysis-primary" type="button" aria-haspopup="dialog" aria-controls="cycle-score-summary"
+                onclick="document.getElementById('cycle-score-summary').showModal()">View score summary</button>
+    </section>
+
+    <dialog class="cycle-analysis-score-dialog" id="cycle-score-summary" aria-labelledby="cycle-score-summary-title">
+        <div class="cycle-analysis-panel-heading">
+            <h2 id="cycle-score-summary-title">Applicant score summary</h2>
+            <form method="dialog">
+                <button class="cycle-analysis-primary" type="submit" autofocus>Close</button>
+            </form>
+        </div>
+        <p>See how many completed evaluations fell in each score range for each area.</p>
+        <div class="table-responsive" tabindex="0" role="region" aria-label="Evaluation counts by score range">
+            <table class="cycle-analysis-table cycle-analysis-score-ranges">
+                <thead><tr>
+                    <th scope="col">Scoring area</th>
+                    <th scope="col">Below 50%</th>
+                    <th scope="col">50% to under 75%</th>
+                    <th scope="col">75% and above</th>
+                </tr></thead>
+                <tbody>
+                    <?php foreach ($scoreRanges as $category => $counts): ?>
+                    <tr>
+                        <th scope="row"><?= sanitize($category) ?></th>
+                        <?php foreach ($counts as $count): ?>
+                        <td><?= number_format($count) ?></td>
+                        <?php endforeach; ?>
+                    </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+        <details class="cycle-analysis-score-detail cycle-analysis-score-drilldown">
+            <summary id="cycle-score-patterns">View individual scores</summary>
+            <p>Each numbered row is one completed evaluation. Darker cells show higher scores.</p>
+            <div class="table-responsive" tabindex="0" role="region" aria-labelledby="cycle-score-patterns">
+                <table class="cycle-analysis-table cycle-analysis-score-patterns">
+                    <thead><tr>
+                        <th scope="col">Evaluation</th>
+                        <?php foreach ($profileCategories as $category): ?>
+                        <th scope="col"><?= sanitize($category) ?></th>
+                        <?php endforeach; ?>
+                    </tr></thead>
+                    <tbody>
+                        <?php foreach ($scoreBreakdown['profiles'] as $index => $profile): ?>
+                        <tr>
+                            <th scope="row">Evaluation <?= number_format($index + 1) ?></th>
+                            <?php foreach ($profileCategories as $category): ?>
+                            <?php $score = $profile[$category] ?? null; ?>
+                            <td<?php if ($score !== null): ?> class="cycle-analysis-score-cell" style="--kra-share:<?= min(100, max(0, $score)) ?>%"<?php endif; ?>>
+                                <?= $formatMetric($score, 'rate') ?>
+                            </td>
+                            <?php endforeach; ?>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </details>
+    </dialog>
     <?php endif; ?>
 
     <?php if ($isOpen && $reviewQueue): ?>
@@ -337,7 +471,7 @@ $metrics = [
                         <td><?= number_format($campus['review_queue']) ?></td>
                         <td><?= number_format($campus['counts']['revision']) ?></td>
                         <td><?= number_format($campus['complete']) ?> / <?= number_format($campus['submitted']) ?> <small>(<?= $formatMetric($campus['completion_rate'], 'rate') ?>)</small></td>
-                        <td><?= $formatMetric($campus['score_median'], 'points') ?><?php if ($campus['score_count']): ?> <small>n=<?= $campus['score_count'] ?></small><?php endif; ?></td>
+                        <td><?= $formatMetric($campus['score_median'], 'points') ?></td>
                     </tr>
                     <?php endforeach; ?>
                 </tbody>
