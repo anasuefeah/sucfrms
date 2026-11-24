@@ -1,9 +1,9 @@
 <?php
 
-$host = getenv('DB_HOST') ?: 'sql107.infinityfree.com';
-$db   = getenv('DB_NAME') ?: 'if0_39940623_SUCFRMS';
-$user = getenv('DB_USER') ?: 'if0_39940623';
-$pass = getenv('DB_PASS') ?: 'Czarevan28';
+$host = getenv('DB_HOST') ?: '';
+$db   = getenv('DB_NAME') ?: '';
+$user = getenv('DB_USER') ?: '';
+$pass = getenv('DB_PASS') ?: '';
 
 
 function renderDatabaseSetupError(string $title, string $message, array $steps, ?string $detail = null): void
